@@ -9,9 +9,10 @@ class Exporter:
             os.makedirs(output_dir)
             
         used_filenames = set()
-        total_frames = len(project.frames)
+        enabled_frames = [f for f in project.frames if not f.is_disabled]
+        total_frames = len(enabled_frames)
             
-        for i, frame in enumerate(project.frames):
+        for i, frame in enumerate(enabled_frames):
             yield i + 1, total_frames # Progress
             
             # Create a blank canvas

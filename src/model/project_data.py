@@ -11,6 +11,7 @@ class FrameData:
                                        # Actually, simpler is: position is the offset from the top-left of the canvas.
     rotation: float = 0.0
     target_resolution: Optional[Tuple[int, int]] = None # (width, height)
+    is_disabled: bool = False
     
     def to_dict(self):
         return {
@@ -18,7 +19,8 @@ class FrameData:
             "scale": self.scale,
             "position": self.position,
             "rotation": self.rotation,
-            "target_resolution": self.target_resolution
+            "target_resolution": self.target_resolution,
+            "is_disabled": self.is_disabled
         }
 
     @classmethod
@@ -31,7 +33,8 @@ class FrameData:
             scale=data.get("scale", 1.0),
             position=tuple(data.get("position", (0, 0))),
             rotation=data.get("rotation", 0.0),
-            target_resolution=target_res
+            target_resolution=target_res,
+            is_disabled=data.get("is_disabled", data.get("is_active", False))
         )
 
 @dataclass
@@ -41,7 +44,10 @@ class ProjectData:
     height: int = 512
     frames: List[FrameData] = field(default_factory=list)
     background_color: str = "#000000" # Hex color
-    # maybe checkerboard option?
+    
+    # Persistent Settings
+    last_export_path: str = ""
+    export_use_orig_names: bool = True
 
     def to_json(self):
         return json.dumps({
@@ -49,7 +55,9 @@ class ProjectData:
             "width": self.width,
             "height": self.height,
             "background_color": self.background_color,
-            "frames": [f.to_dict() for f in self.frames]
+            "frames": [f.to_dict() for f in self.frames],
+            "last_export_path": self.last_export_path,
+            "export_use_orig_names": self.export_use_orig_names
         }, indent=4)
 
     @classmethod
@@ -63,4 +71,7 @@ class ProjectData:
         )
         if "frames" in data:
             project.frames = [FrameData.from_dict(f) for f in data["frames"]]
+            
+        project.last_export_path = data.get("last_export_path", "")
+        project.export_use_orig_names = data.get("export_use_orig_names", True)
         return project

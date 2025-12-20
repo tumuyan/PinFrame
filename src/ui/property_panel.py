@@ -1,7 +1,7 @@
 import os
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, 
                              QDoubleSpinBox, QGroupBox, QSpinBox, QPushButton, QGridLayout)
-from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtCore import Qt, pyqtSignal, QRect
 from PyQt6.QtGui import QImage, QPixmap, QPainter, QColor
 
 class PropertyPanel(QWidget):
@@ -320,46 +320,74 @@ class PropertyPanel(QWidget):
             self.preview_label.setText("No Selection")
             return
             
-        limit = 5
-        to_preview = self.selected_frames[:limit]
-        
         w, h = 200, 200
         preview_img = QImage(w, h, QImage.Format.Format_ARGB32)
         preview_img.fill(Qt.GlobalColor.transparent)
         
-        painter = QPainter(preview_img)
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        # Collect imagery and calculate bounding box
+        valid_frames = [] # list of (QImage, FrameData)
+        min_x, min_y = float('inf'), float('inf')
+        max_x, max_y = float('-inf'), float('-inf')
         
-        # Center in preview
-        painter.translate(w/2, h/2)
-        
-        # Calculate fit scale (e.g. project_width/height to 200x200 with padding)
-        # 160x160 target area (20px padding)
-        target_size = 160
-        scale_x = target_size / self.project_width if self.project_width > 0 else 0.2
-        scale_y = target_size / self.project_height if self.project_height > 0 else 0.2
-        scale_factor = min(scale_x, scale_y)
-        
-        painter.scale(scale_factor, scale_factor)
-        
-        # Draw Canvas bounds
-        painter.setPen(QColor(255, 255, 255, 100))
-        painter.drawRect(int(-self.project_width/2), int(-self.project_height/2), 
-                         self.project_width, self.project_height)
-        
-        for f in to_preview:
+        for f in self.selected_frames:
             if f.file_path and os.path.exists(f.file_path):
-                try:
-                    img = QImage(f.file_path)
-                    if not img.isNull():
+                img = QImage(f.file_path)
+                if not img.isNull():
+                    valid_frames.append((img, f))
+                    # Calculate corners
+                    fw = img.width() * f.scale
+                    fh = img.height() * f.scale
+                    cx, cy = f.position
+                    
+                    min_x = min(min_x, cx - fw/2)
+                    max_x = max(max_x, cx + fw/2)
+                    min_y = min(min_y, cy - fh/2)
+                    max_y = max(max_y, cy + fh/2)
+        
+        if not valid_frames:
+            self.preview_label.setPixmap(QPixmap.fromImage(preview_img))
+            return
+
+        painter = QPainter(preview_img)
+        try:
+            painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+            painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
+            
+            # Target padding
+            padding = 10
+            target_area = 200 - 2 * padding
+            
+            if len(valid_frames) == 1:
+                # Single selection: Fit image to 180x180 area
+                img, f = valid_frames[0]
+                src_w, src_h = img.width(), img.height()
+                scale = min(target_area / src_w, target_area / src_h)
+                
+                final_w, final_h = int(src_w * scale), int(src_h * scale)
+                dest_x, dest_y = (w - final_w) // 2, (h - final_h) // 2
+                painter.drawImage(QRect(dest_x, dest_y, final_w, final_h), img)
+            else:
+                # Multiple selection: Fit bounding box to 180x180 area
+                box_w = max_x - min_x
+                box_h = max_y - min_y
+                
+                if box_w > 0 and box_h > 0:
+                    scale = min(target_area / box_w, target_area / box_h)
+                    
+                    # Transformation to fit box
+                    painter.translate(w/2, h/2) # Move to preview center
+                    painter.scale(scale, scale)
+                    painter.translate(-(min_x + max_x)/2, -(min_y + max_y)/2) # Center the box
+                    
+                    # Draw frames with opacity
+                    for img, f in valid_frames:
                         painter.save()
+                        painter.setOpacity(0.5)
                         painter.translate(f.position[0], f.position[1])
                         painter.scale(f.scale, f.scale)
-                        painter.setOpacity(0.5 if len(to_preview) > 1 else 1.0)
                         painter.drawImage(int(-img.width()/2), int(-img.height()/2), img)
                         painter.restore()
-                except:
-                    pass
+        finally:
+            painter.end()
         
-        painter.end()
         self.preview_label.setPixmap(QPixmap.fromImage(preview_img))

@@ -146,22 +146,6 @@ class CanvasWidget(QWidget):
                 self.update()
                 return
 
-        # Scale Selection (Ctrl + +/- or similar)
-        # Using Ctrl + = (Plus) and Ctrl + - (Minus)
-        if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
-            scale_factor = 1.0
-            if event.key() == Qt.Key.Key_Equal: # Plus
-                scale_factor = 1.1
-            elif event.key() == Qt.Key.Key_Minus:
-                scale_factor = 0.9
-            
-            if scale_factor != 1.0 and self.selected_frames_data:
-                for f in self.selected_frames_data:
-                    f.scale *= scale_factor
-                self.transform_changed.emit(self.selected_frames_data[0])
-                self.update()
-                return
-
         super().keyPressEvent(event)
 
     def draw_checkerboard(self, painter, rect):

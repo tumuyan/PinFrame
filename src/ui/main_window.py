@@ -1,12 +1,11 @@
 from PyQt6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
                              QDockWidget, QToolBar, QFileDialog, QSpinBox, 
-                             QLabel, QPushButton, QInputDialog)
+                             QLabel, QPushButton, QInputDialog, QTreeWidgetItem)
 from PyQt6.QtGui import QAction, QIcon, QKeySequence, QImage
 from PyQt6.QtCore import Qt, QTimer
 
 from model.project_data import ProjectData, FrameData
 from ui.canvas import CanvasWidget
-from ui.timeline import TimelineWidget
 from ui.timeline import TimelineWidget
 from ui.property_panel import PropertyPanel
 from ui.settings_dialog import SettingsDialog
@@ -37,6 +36,13 @@ class MainWindow(QMainWindow):
         self.timeline = TimelineWidget()
         self.timeline.selection_changed.connect(self.on_selection_changed)
         self.timeline.order_changed.connect(self.on_order_changed)
+        self.timeline.files_dropped.connect(self.add_files)
+        self.timeline.copy_properties_requested.connect(self.copy_frame_properties)
+        self.timeline.paste_properties_requested.connect(self.paste_frame_properties)
+        self.timeline.duplicate_requested.connect(self.duplicate_frame)
+        self.timeline.remove_requested.connect(self.remove_frame)
+        self.timeline.disabled_state_changed.connect(self.on_frame_disabled_state_changed)
+        self.timeline.enable_requested.connect(self.toggle_enable_disable)
         self.timeline_dock.setWidget(self.timeline)
         self.addDockWidget(Qt.DockWidgetArea.BottomDockWidgetArea, self.timeline_dock)
         
@@ -114,6 +120,17 @@ class MainWindow(QMainWindow):
         self.reset_view_action.setShortcut("Ctrl+0")
         self.reset_view_action.triggered.connect(self.canvas.reset_view)
         self.addAction(self.reset_view_action)
+
+        # Scale Hotkeys (Global)
+        self.scale_up_action = QAction("Scale Up", self)
+        self.scale_up_action.setShortcuts([QKeySequence("Ctrl+="), QKeySequence("Ctrl++")])
+        self.scale_up_action.triggered.connect(lambda: self.adjust_selection_scale(1.1))
+        self.addAction(self.scale_up_action)
+
+        self.scale_down_action = QAction("Scale Down", self)
+        self.scale_down_action.setShortcut("Ctrl+-")
+        self.scale_down_action.triggered.connect(lambda: self.adjust_selection_scale(0.9))
+        self.addAction(self.scale_down_action)
 
     def create_toolbar(self):
         toolbar = QToolBar("Main")
@@ -194,18 +211,31 @@ class MainWindow(QMainWindow):
                 self.mark_dirty()
                 
                 # Refresh UI
-                if self.timeline.selectedItems():
-                     self.canvas.update()
-                     self.property_panel.update_ui_from_selection()
+                self.canvas.update()
+                self.property_panel.update_ui_from_selection()
 
     def import_images(self):
         files, _ = QFileDialog.getOpenFileNames(self, "Import Images", "", "Images (*.png *.jpg *.jpeg *.bmp)")
         if not files:
             return
+        self.add_files(files)
+
+    def add_files(self, files, index=-1):
+        if not files:
+            return
             
+        added_count = 0
+        valid_extensions = {'.png', '.jpg', '.jpeg', '.bmp'}
+        
+        # Prepare list of items to insert
+        new_items = []
+        
         for f in files:
+            _, ext = os.path.splitext(f)
+            if ext.lower() not in valid_extensions:
+                continue
+                
             frame_data = FrameData(file_path=f)
-            self.project.frames.append(frame_data)
             
             w, h = 0, 0
             try:
@@ -215,14 +245,207 @@ class MainWindow(QMainWindow):
             except:
                 pass
             
-            self.timeline.add_frame(os.path.basename(f), frame_data, w, h)
-        
-        if files:
-            self.mark_dirty()
+            new_items.append((os.path.basename(f), frame_data, w, h))
+            added_count += 1
+            
+        if added_count == 0:
+            return
 
-        # Select newly added
-        # By default just select the last one if nothing selected?
-        # Or let user decide.
+        # Insert logic
+        # index is user provided. If -1, append.
+        # MainWindow needs to update Timeline AND Project Data.
+        # Timeline usually manages its own view, but here we manually add.
+        # Actually logic is split. Timeline `add_frame` appends.
+        # We need an insertion method.
+        
+        if index == -1 or index >= len(self.project.frames):
+            # Append
+            for name, data, w, h in new_items:
+                self.project.frames.append(data)
+                self.timeline.add_frame(name, data, w, h)
+        else:
+            # Insert at Index
+            # Timeline logic now provides the exact insertion index.
+            # So we use it directly.
+            
+            target_idx = index
+            
+            # Slice insertion for project data
+            frames_to_insert = [x[1] for x in new_items]
+            self.project.frames[target_idx:target_idx] = frames_to_insert
+            
+            # Timeline insertion
+            for i, (name, data, w, h) in enumerate(new_items):
+                item = QTreeWidgetItem()
+                item.setData(0, Qt.ItemDataRole.UserRole, data)
+                item.setData(3, Qt.ItemDataRole.UserRole, (w, h))
+                item.setText(0, name)
+                
+                # Checkbox flags
+                item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+                # Checked = Disabled, Unchecked = Enabled
+                item.setCheckState(0, Qt.CheckState.Checked if data.is_disabled else Qt.CheckState.Unchecked)
+                
+                self.timeline.update_item_display(item, data, w, h)
+                self.timeline.insertTopLevelItem(target_idx + i, item)
+                
+        self.mark_dirty()
+
+    def copy_frame_properties(self):
+        selected = self.timeline.selectedItems()
+        if not selected:
+            return
+            
+        # Copy from the first selected item (Primary)
+        item = selected[0]
+        frame_data = item.data(0, Qt.ItemDataRole.UserRole)
+        
+        self.clipboard_frame_properties = {
+            "scale": frame_data.scale,
+            "position": frame_data.position,
+            "target_resolution": frame_data.target_resolution
+        }
+        self.statusBar().showMessage("Frame properties copied.", 3000)
+
+    def paste_frame_properties(self):
+        if not self.clipboard_frame_properties:
+            self.statusBar().showMessage("Clipboard empty.", 3000)
+            return
+            
+        selected = self.timeline.selectedItems()
+        if not selected:
+            return
+            
+        count = 0
+        for item in selected:
+            frame_data = item.data(0, Qt.ItemDataRole.UserRole)
+            
+            frame_data.scale = self.clipboard_frame_properties["scale"]
+            frame_data.position = self.clipboard_frame_properties["position"]
+            frame_data.target_resolution = self.clipboard_frame_properties["target_resolution"]
+            
+            # Update View
+            orig_res = item.data(3, Qt.ItemDataRole.UserRole)
+            w, h = orig_res if orig_res else (0, 0)
+            self.timeline.update_item_display(item, frame_data, w, h)
+            count += 1
+            
+        self.canvas.update()
+        self.property_panel.update_ui_from_selection()
+        self.mark_dirty()
+        self.statusBar().showMessage(f"Properties pasted to {count} frames.", 3000)
+
+    def duplicate_frame(self):
+        selected = self.timeline.selectedItems()
+        if not selected:
+            return
+            
+        # We duplicate all selected
+        # Insert them after the last selected item? Or after each?
+        # Standard: Insert after the selection block.
+        
+        # Get indices
+        indices = []
+        for item in selected:
+             indices.append(self.timeline.indexOfTopLevelItem(item))
+        
+        indices.sort(reverse=True) # Process from bottom up to avoid index shift issues if inserting logic is complex?
+        # Actually simplest is to process bottom up, clone, and insert after.
+        
+        added_count = 0
+        for idx in indices:
+            # Get original data
+            orig_data = self.project.frames[idx]
+            
+            # Clone data
+            new_data = FrameData(
+                file_path=orig_data.file_path,
+                scale=orig_data.scale,
+                position=orig_data.position,
+                rotation=orig_data.rotation,
+                target_resolution=orig_data.target_resolution,
+                is_active=orig_data.is_active
+            )
+            
+            # Insert into project
+            insert_idx = idx + 1
+            self.project.frames.insert(insert_idx, new_data)
+            
+            # Insert into Timeline
+            # Need original dimensions
+            # We can get them from the item
+            item = self.timeline.topLevelItem(idx)
+            orig_res = item.data(3, Qt.ItemDataRole.UserRole)
+            w, h = orig_res if orig_res else (0, 0)
+            
+            new_item = QTreeWidgetItem()
+            new_item.setData(0, Qt.ItemDataRole.UserRole, new_data)
+            new_item.setData(3, Qt.ItemDataRole.UserRole, (w, h))
+            new_item.setText(0, os.path.basename(new_data.file_path)) # Using same name
+            new_item.setFlags(new_item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+            new_item.setCheckState(0, Qt.CheckState.Checked if new_data.is_active else Qt.CheckState.Unchecked)
+            
+            self.timeline.update_item_display(new_item, new_data, w, h)
+            self.timeline.insertTopLevelItem(insert_idx, new_item)
+            
+            added_count += 1
+            
+        self.mark_dirty()
+        self.statusBar().showMessage(f"Duplicated {added_count} frames.", 3000)
+
+    def remove_frame(self):
+        selected = self.timeline.selectedItems()
+        if not selected:
+            return
+            
+        # Multiple selection removal.
+        # Need to remove from Project and Timeline.
+        # Indices are safer.
+        
+        indices = []
+        for item in selected:
+            indices.append(self.timeline.indexOfTopLevelItem(item))
+        
+        indices.sort(reverse=True) # Remove from end first to keep indices valid
+        
+        for idx in indices:
+            del self.project.frames[idx]
+            self.timeline.takeTopLevelItem(idx)
+            
+        self.mark_dirty()
+        self.canvas.set_selected_frames([])
+        self.property_panel.set_selection([]) # Clear selection in property panel
+        self.statusBar().showMessage(f"Removed {len(indices)} frames.", 3000)
+
+    def on_frame_disabled_state_changed(self, frame_data, is_disabled):
+        # Data already updated in Timeline logic
+        self.mark_dirty()
+        
+        # If this frame is currently displayed in preview/canvas, update it.
+        self.canvas.update() 
+        
+        # Update playlist if playing so that skip logic applies immediately
+        if self.is_playing:
+            self.update_playlist()
+
+    def toggle_enable_disable(self, enable):
+        selected = self.timeline.selectedItems()
+        if not selected:
+            return
+            
+        for item in selected:
+            data = item.data(0, Qt.ItemDataRole.UserRole)
+            is_disabled = not enable
+            if data.is_disabled != is_disabled:
+                data.is_disabled = is_disabled
+                # Update UI checkbox
+                item.setCheckState(0, Qt.CheckState.Checked if is_disabled else Qt.CheckState.Unchecked)
+        
+        self.mark_dirty()
+        self.canvas.update()
+        if self.is_playing:
+            self.update_playlist()
+        self.statusBar().showMessage(f"{'Enabled' if enable else 'Disabled'} {len(selected)} frames.", 3000)
 
     def on_selection_changed(self, frames):
         # 'frames' is a list of FrameData objects from Timeline
@@ -245,6 +468,24 @@ class MainWindow(QMainWindow):
         self.timeline.refresh_current_items()
         self.mark_dirty()
 
+    def adjust_selection_scale(self, factor):
+        selected_items = self.timeline.selectedItems()
+        if not selected_items:
+            return
+            
+        for item in selected_items:
+            frame_data = item.data(0, Qt.ItemDataRole.UserRole)
+            frame_data.scale *= factor
+            
+            # Update Timeline display
+            orig_res = item.data(3, Qt.ItemDataRole.UserRole)
+            w, h = orig_res if orig_res else (0, 0)
+            self.timeline.update_item_display(item, frame_data, w, h)
+            
+        self.canvas.update()
+        self.property_panel.update_ui_from_selection()
+        self.mark_dirty()
+
     def on_order_changed(self):
         # Rebuild project frames list based on timeline order
         new_frames = []
@@ -264,19 +505,28 @@ class MainWindow(QMainWindow):
     def update_playlist(self):
         # Build Playlist
         selected_items = self.timeline.selectedItems()
+        target_items = []
         if len(selected_items) > 1:
             # Play selected only
             # Sort by visual order (index) to ensure correct sequence
-            self.playlist = sorted(selected_items, key=lambda i: self.timeline.indexOfTopLevelItem(i))
+            target_items = sorted(selected_items, key=lambda i: self.timeline.indexOfTopLevelItem(i))
         else:
             # Play all
             root = self.timeline.invisibleRootItem()
-            self.playlist = [root.child(i) for i in range(root.childCount())]
+            target_items = [root.child(i) for i in range(root.childCount())]
+            
+        # Filter disabled
+        self.playlist = []
+        for item in target_items:
+            data = item.data(0, Qt.ItemDataRole.UserRole)
+            if not data.is_disabled:
+                self.playlist.append(item)
             
         # Reset index if out of bounds or empty?
-        # If we are playing, and playlist length changes, index might be invalid.
         if self.playlist:
             self.play_index = self.play_index % len(self.playlist)
+        else:
+            self.play_index = 0
 
     def toggle_play(self):
         self.is_playing = not self.is_playing
