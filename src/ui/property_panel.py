@@ -20,7 +20,6 @@ class PropertyPanel(QWidget):
         self.preview_label = QLabel("No Selection")
         self.preview_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.preview_label.setMinimumHeight(200)
-        self.preview_label.setStyleSheet("background-color: #444; border: 1px solid #666;")
         layout.addWidget(self.preview_label)
         
         # Transform Controls

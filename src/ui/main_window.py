@@ -1,7 +1,7 @@
-from PyQt6.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
+from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
                              QDockWidget, QToolBar, QFileDialog, QSpinBox, 
-                             QLabel, QPushButton, QInputDialog, QTreeWidgetItem)
-from PyQt6.QtGui import QAction, QIcon, QKeySequence, QImage
+                             QLabel, QPushButton, QInputDialog, QTreeWidgetItem, QMenu)
+from PyQt6.QtGui import QAction, QIcon, QKeySequence, QImage, QActionGroup
 from PyQt6.QtCore import Qt, QTimer
 
 from model.project_data import ProjectData, FrameData
@@ -19,6 +19,7 @@ class MainWindow(QMainWindow):
         # State
         self.current_project_path = None
         self.is_dirty = False
+        self.current_theme = "dark"
         
         self.setWindowTitle("Image2Frame - New Project")
         self.resize(1200, 800)
@@ -43,6 +44,7 @@ class MainWindow(QMainWindow):
         self.timeline.remove_requested.connect(self.remove_frame)
         self.timeline.disabled_state_changed.connect(self.on_frame_disabled_state_changed)
         self.timeline.enable_requested.connect(self.toggle_enable_disable)
+        self.timeline.reverse_order_requested.connect(self.reverse_selected_frames)
         self.timeline_dock.setWidget(self.timeline)
         self.addDockWidget(Qt.DockWidgetArea.BottomDockWidgetArea, self.timeline_dock)
         
@@ -57,14 +59,16 @@ class MainWindow(QMainWindow):
         self.property_dock.setWidget(self.property_panel)
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.property_dock)
 
-        # Toolbar
+        # Menus & Toolbar
         self.create_actions()
+        self.create_menus()
         self.create_toolbar()
         
         # Playback
         self.timer = QTimer()
         self.timer.timeout.connect(self.next_frame)
         self.is_playing = False
+        self.playback_reverse = False
         
         # Status Bar
         self.statusBar().showMessage("Ready")
@@ -73,6 +77,223 @@ class MainWindow(QMainWindow):
         # (Already loaded in ProjectData, but dialog defaults need setting)
         
         self.update_title()
+        self.apply_theme("dark")
+
+    def apply_theme(self, theme_name):
+        self.current_theme = theme_name
+        if theme_name == "dark":
+            qss = """
+                QMainWindow, QDialog, QMessageBox {
+                    background-color: #252526;
+                    color: #CCCCCC;
+                }
+                QWidget {
+                    background-color: #252526;
+                    color: #CCCCCC;
+                }
+                QDockWidget {
+                    background-color: #2D2D2D;
+                    color: #CCCCCC;
+                }
+                QDockWidget::title {
+                    background-color: #333333;
+                    padding: 4px;
+                    text-align: center;
+                }
+                QMenuBar {
+                    background-color: #2D2D2D;
+                    color: #CCCCCC;
+                    border-bottom: 1px solid #333;
+                }
+                QMenuBar::item:selected {
+                    background-color: #3E3E3E;
+                }
+                QMenu {
+                    background-color: #2D2D2D;
+                    color: #CCCCCC;
+                    border: 1px solid #454545;
+                }
+                QMenu::item:selected {
+                    background-color: #007ACC;
+                    color: white;
+                }
+                QToolBar {
+                    background-color: #2D2D2D;
+                    border: none;
+                    spacing: 5px;
+                    padding: 3px;
+                }
+                QStatusBar {
+                    background-color: #007ACC;
+                    color: white;
+                }
+                QPushButton {
+                    background-color: #3E3E42;
+                    color: #CCCCCC;
+                    border: 1px solid #454545;
+                    padding: 4px 8px;
+                    border-radius: 3px;
+                    min-width: 60px;
+                }
+                QPushButton:hover {
+                    background-color: #4E4E52;
+                    border: 1px solid #007ACC;
+                }
+                QPushButton:pressed {
+                    background-color: #2D2D30;
+                }
+                QPushButton#playBtn:checked {
+                    background-color: #28a745;
+                    color: white;
+                    border: 1px solid #1e7e34;
+                    font-weight: bold;
+                }
+                QPushButton#revPlayBtn:checked {
+                    background-color: #17a2b8;
+                    color: white;
+                    border: 1px solid #117a8b;
+                    font-weight: bold;
+                }
+                QSpinBox, QDoubleSpinBox, QLineEdit {
+                    background-color: #333333;
+                    color: #CCCCCC;
+                    border: 1px solid #454545;
+                    padding: 2px;
+                    selection-background-color: #007ACC;
+                }
+                QHeaderView::section {
+                    background-color: #333333;
+                    color: #CCCCCC;
+                    border: 1px solid #454545;
+                    padding: 4px;
+                }
+                QTreeWidget {
+                    background-color: #1E1E1E;
+                    color: #CCCCCC;
+                    border: none;
+                }
+                QTreeWidget::item:selected {
+                    background-color: #094771;
+                    color: white;
+                }
+                QGroupBox {
+                    border: 1px solid #454545;
+                    margin-top: 10px;
+                    font-weight: bold;
+                }
+                QGroupBox::title {
+                    subcontrol-origin: margin;
+                    left: 10px;
+                    padding: 0 3px 0 3px;
+                    color: #007ACC;
+                }
+            """
+        else:
+            qss = """
+                QMainWindow, QDialog, QMessageBox {
+                    background-color: #F3F3F3;
+                    color: #333333;
+                }
+                QWidget {
+                    background-color: #F3F3F3;
+                    color: #333333;
+                }
+                QDockWidget {
+                    background-color: #E0E0E0;
+                    color: #333333;
+                }
+                QDockWidget::title {
+                    background-color: #D6D6D6;
+                    padding: 4px;
+                }
+                QMenuBar {
+                    background-color: #E0E0E0;
+                    color: #333333;
+                    border-bottom: 1px solid #CCCCCC;
+                }
+                QMenuBar::item:selected {
+                    background-color: #D0D0D0;
+                }
+                QMenu {
+                    background-color: white;
+                    color: #333333;
+                    border: 1px solid #CCCCCC;
+                }
+                QMenu::item:selected {
+                    background-color: #007ACC;
+                    color: white;
+                }
+                QToolBar {
+                    background-color: #E0E0E0;
+                    border: none;
+                    padding: 3px;
+                }
+                QStatusBar {
+                    background-color: #007ACC;
+                    color: white;
+                }
+                QPushButton {
+                    background-color: #FFFFFF;
+                    color: #333333;
+                    border: 1px solid #CCCCCC;
+                    padding: 4px 8px;
+                    border-radius: 3px;
+                }
+                QPushButton:hover {
+                    background-color: #F0F7FF;
+                    border: 1px solid #007ACC;
+                }
+                QPushButton#playBtn:checked {
+                    background-color: #4CAF50;
+                    color: white;
+                    border: 1px solid #388E3C;
+                    font-weight: bold;
+                }
+                QPushButton#revPlayBtn:checked {
+                    background-color: #03A9F4;
+                    color: white;
+                    border: 1px solid #0288D1;
+                    font-weight: bold;
+                }
+                QSpinBox, QDoubleSpinBox, QLineEdit {
+                    background-color: white;
+                    color: #333333;
+                    border: 1px solid #CCCCCC;
+                    padding: 2px;
+                }
+                QHeaderView::section {
+                    background-color: #EAEAEA;
+                    color: #333333;
+                    border: 1px solid #CCCCCC;
+                    padding: 4px;
+                }
+                QTreeWidget {
+                    background-color: white;
+                    color: #333333;
+                    border: 1px solid #EEEEEE;
+                }
+                QTreeWidget::item:selected {
+                    background-color: #E5F3FF;
+                    color: black;
+                }
+                QGroupBox {
+                    border: 1px solid #CCCCCC;
+                    margin-top: 10px;
+                    font-weight: bold;
+                }
+                QGroupBox::title {
+                    subcontrol-origin: margin;
+                    left: 10px;
+                    padding: 0 3px 0 3px;
+                    color: #007ACC;
+                }
+            """
+            
+        QApplication.instance().setStyleSheet(qss)
+        
+        # Update specific widget styles that might need override
+        self.canvas.update()
+        self.property_panel.update_preview()
 
     def update_title(self):
         title = "Image2Frame - "
@@ -135,8 +356,58 @@ class MainWindow(QMainWindow):
         # Play/Pause Shortcut (Global Space)
         self.play_pause_action = QAction("Play/Pause", self)
         self.play_pause_action.setShortcut("Space")
-        self.play_pause_action.triggered.connect(self.toggle_play)
+        self.play_pause_action.triggered.connect(self.handle_space_shortcut)
         self.addAction(self.play_pause_action)
+
+        self.reverse_play_action = QAction("Reverse Playback", self)
+        self.reverse_play_action.setCheckable(True)
+        self.reverse_play_action.triggered.connect(self.toggle_reverse_playback)
+        self.addAction(self.reverse_play_action)
+
+        self.theme_dark_action = QAction("Dark Theme", self)
+        self.theme_dark_action.setCheckable(True)
+        self.theme_dark_action.setChecked(True)
+        self.theme_dark_action.triggered.connect(lambda: self.apply_theme("dark"))
+
+        self.theme_light_action = QAction("Light Theme", self)
+        self.theme_light_action.setCheckable(True)
+        self.theme_light_action.triggered.connect(lambda: self.apply_theme("light"))
+        
+        # Ensure only one theme is checked
+        self.theme_group = QActionGroup(self)
+        self.theme_group.addAction(self.theme_dark_action)
+        self.theme_group.addAction(self.theme_light_action)
+
+    def create_menus(self):
+        menubar = self.menuBar()
+        
+        # File Menu
+        file_menu = menubar.addMenu("&File")
+        file_menu.addAction(self.import_action)
+        file_menu.addSeparator()
+        file_menu.addAction(self.save_action)
+        file_menu.addAction(self.save_as_action)
+        file_menu.addAction(self.load_action)
+        file_menu.addSeparator()
+        file_menu.addAction(self.export_action)
+        
+        # Playback Menu
+        play_menu = menubar.addMenu("&Playback")
+        play_menu.addAction(self.play_pause_action)
+        play_menu.addAction(self.reverse_play_action)
+        
+        # View Menu
+        view_menu = menubar.addMenu("&View")
+        view_menu.addAction(self.reset_view_action)
+        view_menu.addAction(self.bg_toggle_action)
+        view_menu.addSeparator()
+        
+        theme_menu = view_menu.addMenu("Theme")
+        theme_menu.addAction(self.theme_dark_action)
+        theme_menu.addAction(self.theme_light_action)
+        
+        view_menu.addSeparator()
+        view_menu.addAction(self.settings_action)
 
     def create_toolbar(self):
         toolbar = QToolBar("Main")
@@ -167,8 +438,17 @@ class MainWindow(QMainWindow):
         
         # Play/Pause
         self.play_btn = QPushButton("Play")
+        self.play_btn.setObjectName("playBtn")
+        self.play_btn.setCheckable(True)
         self.play_btn.clicked.connect(self.toggle_play)
         toolbar.addWidget(self.play_btn)
+        
+        toolbar.addSeparator()
+        self.rev_play_btn = QPushButton("Backward")
+        self.rev_play_btn.setObjectName("revPlayBtn")
+        self.rev_play_btn.setCheckable(True)
+        self.rev_play_btn.clicked.connect(lambda: self.toggle_reverse_playback())
+        toolbar.addWidget(self.rev_play_btn)
 
     def open_settings(self):
         dlg = SettingsDialog(self, self.project.width, self.project.height)
@@ -501,6 +781,52 @@ class MainWindow(QMainWindow):
         self.project.frames = new_frames
         self.mark_dirty()
 
+    def reverse_selected_frames(self):
+        selected = self.timeline.selectedItems()
+        if len(selected) < 2:
+            return
+            
+        # Get indices
+        indices = []
+        for item in selected:
+            indices.append(self.timeline.indexOfTopLevelItem(item))
+        
+        indices.sort() # Ensure they are in order (e.g. [1, 3, 4, 10])
+        
+        # Get selected frames data
+        selected_frames = [self.project.frames[idx] for idx in indices]
+        
+        # Reverse them
+        selected_frames.reverse()
+        
+        # Put them back
+        for i, idx in enumerate(indices):
+            self.project.frames[idx] = selected_frames[i]
+            
+        # Refresh UI
+        # We need to refresh the Timeline items to reflect the change
+        # Easiest is to Clear and Reload, but we can also just update the data/text of existing items
+        for i, idx in enumerate(indices):
+            item = self.timeline.topLevelItem(idx)
+            frame_data = self.project.frames[idx]
+            
+            # Update item data
+            item.setData(0, Qt.ItemDataRole.UserRole, frame_data)
+            
+            # Update display
+            filename = os.path.basename(frame_data.file_path)
+            item.setText(1, filename)
+            item.setCheckState(0, Qt.CheckState.Checked if frame_data.is_disabled else Qt.CheckState.Unchecked)
+            
+            orig_res = item.data(3, Qt.ItemDataRole.UserRole)
+            w, h = orig_res if orig_res else (0, 0)
+            self.timeline.update_item_display(item, frame_data, w, h)
+            
+        self.mark_dirty()
+        self.canvas.update()
+        self.property_panel.update_ui_from_selection()
+        self.statusBar().showMessage(f"Reversed {len(indices)} frames.", 3000)
+
     def update_fps(self, fps):
         if self.project.fps != fps:
             self.project.fps = fps
@@ -534,10 +860,43 @@ class MainWindow(QMainWindow):
         else:
             self.play_index = 0
 
-    def toggle_play(self):
-        self.is_playing = not self.is_playing
+    def stop_playback(self):
+        self.is_playing = False
+        self.timer.stop()
+        self.play_btn.setText("Play")
+        self.play_btn.setChecked(False)
+        self.rev_play_btn.setText("Backward")
+        self.rev_play_btn.setChecked(False)
+        self.reverse_play_action.setChecked(False)
+        self.statusBar().showMessage("Stopped")
+        
+        # Restore selection
+        selected_items = self.timeline.selectedItems()
+        frames = [item.data(0, Qt.ItemDataRole.UserRole) for item in selected_items]
+        self.canvas.set_selected_frames(frames)
+
+    def handle_space_shortcut(self):
         if self.is_playing:
+            self.stop_playback()
+        else:
+            self.toggle_play()
+
+    def toggle_play(self):
+        # Forward Playback Toggle
+        if self.is_playing and not self.playback_reverse:
+            # Currently playing forward, so stop
+            self.stop_playback()
+        else:
+            # Either paused or playing backward, switch to forward
+            self.is_playing = True
+            self.playback_reverse = False
+            
+            # Update UI
             self.play_btn.setText("Pause")
+            self.play_btn.setChecked(True)
+            self.rev_play_btn.setText("Backward")
+            self.rev_play_btn.setChecked(False)
+            self.reverse_play_action.setChecked(False)
             
             self.playlist = []
             self.play_index = 0
@@ -549,15 +908,37 @@ class MainWindow(QMainWindow):
                 return
 
             self.timer.start(1000 // self.project.fps)
+
+    def toggle_reverse_playback(self):
+        # Backward Playback Toggle
+        # This can be triggered by button click or action trigger
+        if self.is_playing and self.playback_reverse:
+            # Currently playing backward, so stop
+            self.stop_playback()
         else:
-            self.play_btn.setText("Play")
-            self.timer.stop()
-            self.statusBar().showMessage("Ready")
+            # Either paused or playing forward, switch to backward
+            self.is_playing = True
+            self.playback_reverse = True
             
-            # Restore selection
-            selected_items = self.timeline.selectedItems()
-            frames = [item.data(0, Qt.ItemDataRole.UserRole) for item in selected_items]
-            self.canvas.set_selected_frames(frames)
+            # Update UI
+            self.play_btn.setText("Play")
+            self.play_btn.setChecked(False)
+            self.rev_play_btn.setText("Pause")
+            self.rev_play_btn.setChecked(True)
+            self.reverse_play_action.setChecked(True)
+            
+            self.playlist = []
+            self.play_index = 0
+            self.update_playlist()
+                
+            if not self.playlist:
+                self.is_playing = False
+                self.rev_play_btn.setText("Backward")
+                self.rev_play_btn.setChecked(False)
+                self.reverse_play_action.setChecked(False)
+                return
+
+            self.timer.start(1000 // self.project.fps)
 
     def next_frame(self):
         if not self.project.frames or not hasattr(self, 'playlist') or not self.playlist:
@@ -571,15 +952,14 @@ class MainWindow(QMainWindow):
         self.canvas.set_selected_frames([frame_data])
         
         # Update Status
-        # Find index in full project frames if playing subset? 
-        # Or just show "Playing Frame X/Y" of playlist?
-        # Let's show "Playing: [Filename] (Frame X/Y)"
         current_idx = self.play_index + 1
         total = len(self.playlist)
         filename = os.path.basename(frame_data.file_path)
-        self.statusBar().showMessage(f"Playing: {filename} ({current_idx}/{total})")
+        self.statusBar().showMessage(f"Playing: {filename} ({current_idx}/{total}) {'[REV]' if self.playback_reverse else ''}")
         
-        self.play_index = (self.play_index + 1) % len(self.playlist)
+        # Increment/Decrement index
+        step = -1 if self.playback_reverse else 1
+        self.play_index = (self.play_index + step) % len(self.playlist)
 
     def save_project(self):
         if self.current_project_path:

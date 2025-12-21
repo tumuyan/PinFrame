@@ -13,6 +13,7 @@ class TimelineWidget(QTreeWidget):
     remove_requested = pyqtSignal()
     disabled_state_changed = pyqtSignal(object, bool) # frame_data, is_disabled
     enable_requested = pyqtSignal(bool) # True for Enable, False for Disable
+    reverse_order_requested = pyqtSignal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -51,14 +52,6 @@ class TimelineWidget(QTreeWidget):
         # Enable Context Menu
         self.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.customContextMenuRequested.connect(self.show_context_menu)
-        
-        # Style
-        # Add checkbox indicator style if needed, but default is usually fine.
-        self.setStyleSheet("""
-            QTreeWidget { background-color: #333; color: white; border: none; }
-            QHeaderView::section { background-color: #444; color: white; padding: 4px; border: 1px solid #555; }
-            QTreeWidget::item:selected { background-color: #555; }
-        """)
         
         self.itemSelectionChanged.connect(self.on_selection_changed)
 
@@ -207,6 +200,11 @@ class TimelineWidget(QTreeWidget):
         
         menu.addAction(disable_action)
         menu.addAction(enable_action)
+        
+        reverse_action = QAction("Reverse Order", self)
+        reverse_action.triggered.connect(self.reverse_order_requested.emit)
+        reverse_action.setEnabled(len(selected_items) > 1)
+        menu.addAction(reverse_action)
         
         menu.addSeparator()
         menu.addAction(dup_action)
