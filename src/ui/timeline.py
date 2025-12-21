@@ -15,6 +15,7 @@ class TimelineWidget(QTreeWidget):
     disabled_state_changed = pyqtSignal(object, bool) # frame_data, is_disabled
     enable_requested = pyqtSignal(bool) # True for Enable, False for Disable
     reverse_order_requested = pyqtSignal()
+    integerize_offset_requested = pyqtSignal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -186,10 +187,6 @@ class TimelineWidget(QTreeWidget):
         rem_action.triggered.connect(self.remove_requested.emit)
         rem_action.setEnabled(has_selection)
 
-        menu.addAction(copy_action)
-        menu.addAction(paste_action)
-        menu.addSeparator()
-        
         # Disable/Enable actions
         disable_action = QAction("Disable Frame(s)", self)
         disable_action.triggered.connect(lambda: self.enable_requested.emit(False))
@@ -198,15 +195,23 @@ class TimelineWidget(QTreeWidget):
         enable_action = QAction("Enable Frame(s)", self)
         enable_action.triggered.connect(lambda: self.enable_requested.emit(True))
         enable_action.setEnabled(has_selection)
-        
-        menu.addAction(disable_action)
-        menu.addAction(enable_action)
-        
+
         reverse_action = QAction("Reverse Order", self)
         reverse_action.triggered.connect(self.reverse_order_requested.emit)
         reverse_action.setEnabled(len(selected_items) > 1)
-        menu.addAction(reverse_action)
         
+        int_action = QAction("Offset to Integer (偏移量整数化)", self)
+        int_action.triggered.connect(self.integerize_offset_requested.emit)
+        int_action.setEnabled(has_selection)
+
+        menu.addAction(copy_action)
+        menu.addAction(paste_action)
+        menu.addSeparator()
+        menu.addAction(int_action)
+        menu.addSeparator()
+        menu.addAction(disable_action)
+        menu.addAction(enable_action)
+        menu.addAction(reverse_action)
         menu.addSeparator()
         menu.addAction(dup_action)
         menu.addAction(rem_action)

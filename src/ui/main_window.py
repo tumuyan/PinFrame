@@ -47,6 +47,7 @@ class MainWindow(QMainWindow):
         self.timeline.disabled_state_changed.connect(self.on_frame_disabled_state_changed)
         self.timeline.enable_requested.connect(self.toggle_enable_disable)
         self.timeline.reverse_order_requested.connect(self.reverse_selected_frames)
+        self.timeline.integerize_offset_requested.connect(self.integerize_selection_offset)
         self.timeline_dock.setWidget(self.timeline)
         self.addDockWidget(Qt.DockWidgetArea.BottomDockWidgetArea, self.timeline_dock)
         
@@ -915,6 +916,26 @@ class MainWindow(QMainWindow):
             return
         # Use update_last=False
         self.apply_relative_move(-dx, -dy, update_last=False)
+
+    def integerize_selection_offset(self):
+        selected_items = self.timeline.selectedItems()
+        if not selected_items:
+            return
+            
+        for item in selected_items:
+            frame_data = item.data(0, Qt.ItemDataRole.UserRole)
+            x, y = frame_data.position
+            frame_data.position = (float(round(x)), float(round(y)))
+            
+            # Update Timeline display
+            orig_res = item.data(3, Qt.ItemDataRole.UserRole)
+            w, h = orig_res if orig_res else (0, 0)
+            self.timeline.update_item_display(item, frame_data, w, h)
+            
+        self.canvas.update()
+        self.property_panel.update_ui_from_selection()
+        self.mark_dirty()
+        self.statusBar().showMessage("Integerized selected offsets", 2000)
 
     def adjust_selection_scale(self, factor):
         selected_items = self.timeline.selectedItems()
