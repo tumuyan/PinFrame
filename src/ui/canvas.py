@@ -43,10 +43,10 @@ class CanvasWidget(QWidget):
         
         self.checkerboard_color1 = QColor(200, 200, 200)
         self.checkerboard_color2 = QColor(160, 160, 160)
-        self.show_checkerboard = True
+        self.background_mode = "checkerboard" # "checkerboard", "black", "white", "red", "green"
 
-    def toggle_background_mode(self):
-        self.show_checkerboard = not self.show_checkerboard
+    def set_background_mode(self, mode):
+        self.background_mode = mode
         self.update()
 
     def set_project_settings(self, width, height):
@@ -84,10 +84,16 @@ class CanvasWidget(QWidget):
         output_rect = QRectF(-self.project_width / 2, -self.project_height / 2, 
                              self.project_width, self.project_height)
         
-        if self.show_checkerboard:
+        if self.background_mode == "checkerboard":
             self.draw_checkerboard(painter, output_rect)
-        else:
+        elif self.background_mode == "black":
             painter.fillRect(output_rect, Qt.GlobalColor.black)
+        elif self.background_mode == "white":
+            painter.fillRect(output_rect, Qt.GlobalColor.white)
+        elif self.background_mode == "red":
+            painter.fillRect(output_rect, Qt.GlobalColor.red)
+        elif self.background_mode == "green":
+            painter.fillRect(output_rect, Qt.GlobalColor.green)
             
         painter.setPen(QPen(Qt.GlobalColor.white, 2))
         painter.drawRect(output_rect)

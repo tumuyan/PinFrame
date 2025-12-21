@@ -108,6 +108,10 @@ class MainWindow(QMainWindow):
         self.property_panel.set_repeat_interval(repeat_ms)
         self.set_repeat_action_checked(repeat_ms)
 
+        # Restore background mode
+        bg_mode = self.settings.value("background_mode", "checkerboard")
+        self.update_background_mode(bg_mode)
+
     def set_repeat_action_checked(self, ms):
         if not hasattr(self, 'repeat_actions'):
             return
@@ -393,8 +397,16 @@ class MainWindow(QMainWindow):
         self.reverse_order_action = QAction(i18n.t("action_reverse_order"), self)
         self.reverse_order_action.triggered.connect(self.reverse_selected_frames)
 
-        self.bg_toggle_action = QAction(i18n.t("action_bg_toggle"), self)
-        self.bg_toggle_action.triggered.connect(self.toggle_background)
+        # Background Actions
+        self.bg_group = QActionGroup(self)
+        self.bg_actions = {}
+        for mode in ["checkerboard", "black", "white", "red", "green"]:
+            action = QAction(i18n.t(f"bg_{mode}"), self)
+            action.setCheckable(True)
+            action.triggered.connect(lambda checked, m=mode: self.update_background_mode(m))
+            self.bg_group.addAction(action)
+            self.bg_actions[mode] = action
+        self.bg_actions["checkerboard"].setChecked(True)
         
         self.settings_action = QAction(i18n.t("action_settings"), self)
         self.settings_action.triggered.connect(self.open_settings)
@@ -547,7 +559,11 @@ class MainWindow(QMainWindow):
         # View Menu
         view_menu = menubar.addMenu(i18n.t("menu_view"))
         view_menu.addAction(self.reset_view_action)
-        view_menu.addAction(self.bg_toggle_action)
+        
+        self.background_menu = view_menu.addMenu(i18n.t("menu_background"))
+        for action in self.bg_actions.values():
+            self.background_menu.addAction(action)
+        
         view_menu.addSeparator()
         
         theme_menu = view_menu.addMenu(i18n.t("menu_theme"))
@@ -570,9 +586,6 @@ class MainWindow(QMainWindow):
         toolbar.addSeparator()
         toolbar.addAction(self.settings_action)
         toolbar.addAction(self.export_action)
-        
-        toolbar.addSeparator()
-        toolbar.addAction(self.bg_toggle_action)
         
         toolbar.addSeparator()
         
@@ -1338,9 +1351,12 @@ class MainWindow(QMainWindow):
         self.dup_frame_action.setText(i18n.t("action_dup_frame"))
         self.rem_frame_action.setText(i18n.t("action_rem_frame"))
         self.reverse_order_action.setText(i18n.t("action_reverse_order"))
-        self.bg_toggle_action.setText(i18n.t("action_bg_toggle"))
         self.settings_action.setText(i18n.t("action_settings"))
         self.reset_view_action.setText(i18n.t("action_reset_view"))
+        
+        # Background Actions
+        for mode, action in self.bg_actions.items():
+            action.setText(i18n.t(f"bg_{mode}"))
         
         # Playback buttons (conditional)
         if self.is_playing:
@@ -1389,6 +1405,12 @@ class MainWindow(QMainWindow):
         self.theme_dark_action.setChecked(self.current_theme == "dark")
         self.theme_light_action.setChecked(self.current_theme == "light")
         
+        # Sync background actions
+        if hasattr(self, 'bg_actions'):
+            bg_mode = self.settings.value("background_mode", "checkerboard")
+            if bg_mode in self.bg_actions:
+                self.bg_actions[bg_mode].setChecked(True)
+        
         # Update Toolbar
         # Find which toolbar to update or just re-init text for existing ones?
         # Re-creating toolbar is messy. Let's just update the FPS label if we held a reference.
@@ -1424,13 +1446,24 @@ class MainWindow(QMainWindow):
     def local_test(self):
         pass
 
-    def toggle_background(self):
-        self.canvas.toggle_background_mode()
+    def update_background_mode(self, mode):
+        self.canvas.set_background_mode(mode)
+        self.settings.setValue("background_mode", mode)
+        self.current_background_mode = mode
+        
+        # Sync menu check state
+        if hasattr(self, 'bg_actions'):
+            for action_mode, action in self.bg_actions.items():
+                action.setChecked(action_mode == mode)
+
+    def on_canvas_transform_changed(self, frame_data):
+        self.property_panel.update_ui_from_selection()
+        self.mark_dirty()
 
     def export_sequence(self):
         # Stop playback if running
         if self.is_playing:
-            self.toggle_play()
+            self.stop_playback()
         
         # Options
         dlg = ExportOptionsDialog(self)
@@ -1448,7 +1481,7 @@ class MainWindow(QMainWindow):
         from PyQt6.QtWidgets import QApplication
         
         start_dir = self.project.last_export_path if self.project.last_export_path else ""
-        out_dir = QFileDialog.getExistingDirectory(self, "Select Output Directory", start_dir)
+        out_dir = QFileDialog.getExistingDirectory(self, i18n.t("dlg_save_title"), start_dir)
         if not out_dir:
             return
             
@@ -1456,12 +1489,11 @@ class MainWindow(QMainWindow):
         self.mark_dirty() # Settings changed
         
         # Export Loop
-        self.statusBar().showMessage("Starting Export...")
+        self.statusBar().showMessage(i18n.t("msg_exporting").format(index=0, total=len(self.project.frames)))
         try:
             for current, total in Exporter.export_iter(self.project, out_dir, use_orig_names):
-                self.statusBar().showMessage(f"Exporting: Frame {current}/{total}")
-                QApplication.processEvents() # Keep UI responsive
-            
-            self.statusBar().showMessage("Export Complete!", 5000)
+                self.statusBar().showMessage(i18n.t("msg_exporting").format(index=current, total=total))
+                QApplication.processEvents()
+            self.statusBar().showMessage(i18n.t("msg_export_complete"), 3000)
         except Exception as e:
-            self.statusBar().showMessage(f"Export Error: {e}", 5000)
+            self.statusBar().showMessage(f"Export Error: {str(e)}", 5000)
