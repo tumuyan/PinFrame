@@ -384,6 +384,14 @@ class MainWindow(QMainWindow):
         self.load_action = QAction(i18n.t("action_load"), self)
         self.load_action.triggered.connect(self.load_project)
         
+        self.close_action = QAction(i18n.t("action_close"), self)
+        self.close_action.triggered.connect(self.close_project)
+        self.close_action.setShortcut("Ctrl+W")
+        
+        self.reload_action = QAction(i18n.t("action_reload"), self)
+        self.reload_action.triggered.connect(self.reload_project)
+        self.reload_action.setShortcut("Ctrl+R")
+        
         self.export_action = QAction(i18n.t("action_export"), self)
         self.export_action.triggered.connect(self.export_sequence)
 
@@ -534,6 +542,9 @@ class MainWindow(QMainWindow):
         file_menu.addAction(self.load_action)
         file_menu.addAction(self.save_action)
         file_menu.addAction(self.save_as_action)
+        file_menu.addSeparator()
+        file_menu.addAction(self.close_action)
+        file_menu.addAction(self.reload_action)
         file_menu.addSeparator()
         file_menu.addAction(self.settings_action)
         file_menu.addSeparator()
@@ -1274,6 +1285,76 @@ class MainWindow(QMainWindow):
                 return False
             
         return True
+    
+    def close_project(self):
+        """Close current project and reset to empty state."""
+        if not self.check_unsaved_changes():
+            return
+        
+        # Reset project to empty state
+        self.project = ProjectData()
+        self.fps_spin.setValue(self.project.fps)
+        self.canvas.set_project_settings(self.project.width, self.project.height)
+        self.property_panel.set_project_info(self.project.width, self.project.height)
+        
+        # Clear timeline
+        self.timeline.clear()
+        
+        # Clear canvas selection
+        self.canvas.set_selected_frames([])
+        
+        # Reset project path and dirty flag
+        self.current_project_path = None
+        self.is_dirty = False
+        
+        # Update UI
+        self.update_title()
+        self.statusBar().showMessage(i18n.t("msg_project_closed"), 3000)
+    
+    def reload_project(self):
+        """Reload current project from disk."""
+        if not self.current_project_path:
+            self.statusBar().showMessage(i18n.t("msg_no_project_reload"), 3000)
+            return
+        
+        if not self.check_unsaved_changes():
+            return
+        
+        # Reload from the current path
+        try:
+            with open(self.current_project_path, 'r') as f:
+                json_str = f.read()
+                
+            self.project = ProjectData.from_json(json_str)
+            self.fps_spin.setValue(self.project.fps)
+            self.canvas.set_project_settings(self.project.width, self.project.height)
+            self.property_panel.set_project_info(self.project.width, self.project.height)
+            
+            self.timeline.clear()
+            for frame in self.project.frames:
+                w, h = 0, 0
+                if frame.crop_rect:
+                    w, h = frame.crop_rect[2], frame.crop_rect[3]
+                elif os.path.exists(frame.file_path):
+                     try:
+                         from PIL import Image
+                         with Image.open(frame.file_path) as img:
+                             w, h = img.size
+                     except: 
+                         pass
+                
+                self.timeline.add_frame(os.path.basename(frame.file_path), frame, w, h)
+                
+            if self.project.frames:
+                 # Select first
+                 if self.timeline.topLevelItemCount() > 0:
+                     self.timeline.setCurrentItem(self.timeline.topLevelItem(0))
+                     
+            self.is_dirty = False
+            self.update_title()
+            self.statusBar().showMessage(i18n.t("msg_project_reloaded").format(name=os.path.basename(self.current_project_path)), 3000)
+        except Exception as e:
+            self.statusBar().showMessage(i18n.t("msg_load_error").format(error=str(e)), 5000)
         
     def apply_layout_preset(self, preset):
         # Default area configuration for stacking
@@ -1396,6 +1477,8 @@ class MainWindow(QMainWindow):
         self.save_action.setText(i18n.t("action_save"))
         self.save_as_action.setText(i18n.t("action_save_as"))
         self.load_action.setText(i18n.t("action_load"))
+        self.close_action.setText(i18n.t("action_close"))
+        self.reload_action.setText(i18n.t("action_reload"))
         self.export_action.setText(i18n.t("action_export"))
         self.export_sheet_action.setText(i18n.t("action_export_sheet"))
         self.copy_props_action.setText(i18n.t("action_copy_props"))
