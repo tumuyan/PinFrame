@@ -6,12 +6,11 @@ from typing import List, Tuple, Optional
 class FrameData:
     file_path: str
     scale: float = 1.0
-    position: Tuple[int, int] = (0, 0) # x, y relative to center or top-left? Let's say relative to center of canvas for now, or maybe top-left of canvas. 
-                                       # Convention: Let's use center relative to canvas center for easier centering. 
-                                       # Actually, simpler is: position is the offset from the top-left of the canvas.
+    position: Tuple[int, int] = (0, 0)
     rotation: float = 0.0
-    target_resolution: Optional[Tuple[int, int]] = None # (width, height)
+    target_resolution: Optional[Tuple[int, int]] = None
     is_disabled: bool = False
+    crop_rect: Optional[Tuple[int, int, int, int]] = None # (x, y, w, h)
     
     def to_dict(self):
         return {
@@ -20,7 +19,8 @@ class FrameData:
             "position": self.position,
             "rotation": self.rotation,
             "target_resolution": self.target_resolution,
-            "is_disabled": self.is_disabled
+            "is_disabled": self.is_disabled,
+            "crop_rect": self.crop_rect
         }
 
     @classmethod
@@ -28,13 +28,17 @@ class FrameData:
         data_target_res = data.get("target_resolution", None)
         target_res = tuple(data_target_res) if data_target_res else None
         
+        data_crop_rect = data.get("crop_rect", None)
+        crop_rect = tuple(data_crop_rect) if data_crop_rect else None
+        
         return cls(
             file_path=data["file_path"],
             scale=data.get("scale", 1.0),
             position=tuple(data.get("position", (0, 0))),
             rotation=data.get("rotation", 0.0),
             target_resolution=target_res,
-            is_disabled=data.get("is_disabled", data.get("is_active", False))
+            is_disabled=data.get("is_disabled", data.get("is_active", False)),
+            crop_rect=crop_rect
         )
 
 @dataclass
@@ -43,11 +47,13 @@ class ProjectData:
     width: int = 512
     height: int = 512
     frames: List[FrameData] = field(default_factory=list)
-    background_color: str = "#000000" # Hex color
+    background_color: str = "#000000"
     
     # Persistent Settings
     last_export_path: str = ""
     export_use_orig_names: bool = True
+    export_sheet_cols: int = 4
+    export_sheet_padding: int = 0
 
     def to_json(self):
         return json.dumps({
@@ -57,7 +63,9 @@ class ProjectData:
             "background_color": self.background_color,
             "frames": [f.to_dict() for f in self.frames],
             "last_export_path": self.last_export_path,
-            "export_use_orig_names": self.export_use_orig_names
+            "export_use_orig_names": self.export_use_orig_names,
+            "export_sheet_cols": self.export_sheet_cols,
+            "export_sheet_padding": self.export_sheet_padding
         }, indent=4)
 
     @classmethod
@@ -74,4 +82,6 @@ class ProjectData:
             
         project.last_export_path = data.get("last_export_path", "")
         project.export_use_orig_names = data.get("export_use_orig_names", True)
+        project.export_sheet_cols = data.get("export_sheet_cols", 4)
+        project.export_sheet_padding = data.get("export_sheet_padding", 0)
         return project

@@ -296,23 +296,13 @@ class PropertyPanel(QWidget):
         for f in self.selected_frames:
             f.target_resolution = (w, h)
             if os.path.exists(f.file_path):
-                # Calculate scale to match this res
-                # Assuming keeping aspect ratio? 
-                # "Target resolution matches scale" -> implies we just stretch or fit?
-                # Usually resizing to specific WxH implies exact match. 
-                # But if we change scale, it's uniform. 
-                # We can't have non-uniform scale in currently defined FrameData (single scale float).
-                # So we must pick one dimension or use the one that fits?
-                # Or maybe user meant "Resample to this WxH"?
-                # If FrameData only has uniform 'scale', we can only support 'target width' OR 'target height' meaningfully 
-                # unless source aspect ratio matches target aspect ratio.
-                # Use Width as primarily driver if both set? Or just update scale based on Width.
-                
                 try:
                     img = QImage(f.file_path)
-                    if not img.isNull() and img.width() > 0:
-                        scale = w / img.width()
-                        f.scale = scale
+                    if not img.isNull():
+                        orig_w = f.crop_rect[2] if f.crop_rect else img.width()
+                        if orig_w > 0:
+                            scale = w / orig_w
+                            f.scale = scale
                 except:
                     pass
         
@@ -335,10 +325,14 @@ class PropertyPanel(QWidget):
                 try:
                     img = QImage(f.file_path)
                     if not img.isNull():
-                        if mode == "width" and img.width() > 0:
-                            f.scale = self.project_width / img.width()
-                        elif mode == "height" and img.height() > 0:
-                            f.scale = self.project_height / img.height()
+                        # Use sliced dimensions if available
+                        cur_w = f.crop_rect[2] if f.crop_rect else img.width()
+                        cur_h = f.crop_rect[3] if f.crop_rect else img.height()
+                        
+                        if mode == "width" and cur_w > 0:
+                            f.scale = self.project_width / cur_w
+                        elif mode == "height" and cur_h > 0:
+                            f.scale = self.project_height / cur_h
                 except:
                     pass
         
@@ -367,9 +361,14 @@ class PropertyPanel(QWidget):
         for f in self.selected_frames:
             if os.path.exists(f.file_path):
                 img = QImage(f.file_path)
-                # Scaled dimensions
-                w = img.width() * f.scale
-                h = img.height() * f.scale
+                # Scaled dimensions (sliced or full)
+                if f.crop_rect:
+                    _, _, cw, ch = f.crop_rect
+                    w = cw * f.scale
+                    h = ch * f.scale
+                else:
+                    w = img.width() * f.scale
+                    h = img.height() * f.scale
                 
                 # Image bounds relative to its center are (-w/2, -h/2) to (w/2, h/2).
                 
@@ -460,12 +459,20 @@ class PropertyPanel(QWidget):
             if len(valid_frames) == 1:
                 # Single selection: Fit image to 180x180 area
                 img, f = valid_frames[0]
-                src_w, src_h = img.width(), img.height()
-                scale = min(target_area / src_w, target_area / src_h)
                 
-                final_w, final_h = int(src_w * scale), int(src_h * scale)
-                dest_x, dest_y = (w - final_w) // 2, (h - final_h) // 2
-                painter.drawImage(QRect(dest_x, dest_y, final_w, final_h), img)
+                if f.crop_rect:
+                    cx, cy, cw, ch = f.crop_rect
+                    src_w, src_h = cw, ch
+                    scale = min(target_area / src_w, target_area / src_h)
+                    final_w, final_h = int(src_w * scale), int(src_h * scale)
+                    dest_x, dest_y = (w - final_w) // 2, (h - final_h) // 2
+                    painter.drawImage(QRect(dest_x, dest_y, final_w, final_h), img, QRect(cx, cy, cw, ch))
+                else:
+                    src_w, src_h = img.width(), img.height()
+                    scale = min(target_area / src_w, target_area / src_h)
+                    final_w, final_h = int(src_w * scale), int(src_h * scale)
+                    dest_x, dest_y = (w - final_w) // 2, (h - final_h) // 2
+                    painter.drawImage(QRect(dest_x, dest_y, final_w, final_h), img)
             else:
                 # Multiple selection: Fit bounding box to 180x180 area
                 box_w = max_x - min_x
@@ -485,7 +492,12 @@ class PropertyPanel(QWidget):
                         painter.setOpacity(0.5)
                         painter.translate(f.position[0], f.position[1])
                         painter.scale(f.scale, f.scale)
-                        painter.drawImage(int(-img.width()/2), int(-img.height()/2), img)
+                        
+                        if f.crop_rect:
+                            cx, cy, cw, ch = f.crop_rect
+                            painter.drawImage(QRect(int(-cw/2), int(-ch/2), int(cw), int(ch)), img, QRect(cx, cy, cw, ch))
+                        else:
+                            painter.drawImage(int(-img.width()/2), int(-img.height()/2), img)
                         painter.restore()
         finally:
             painter.end()

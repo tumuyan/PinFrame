@@ -254,7 +254,16 @@ class TimelineWidget(QTreeWidget):
 
     def update_item_display(self, item, frame_data, orig_w, orig_h):
         # Filename
-        item.setText(1, os.path.basename(frame_data.file_path))
+        fname = os.path.basename(frame_data.file_path)
+        if frame_data.crop_rect:
+            x, y, w, h = frame_data.crop_rect
+            # Attempt to calculate col/row. 
+            # We need the full resolution of the source image to be accurate if it's not a simple grid,
+            # but usually it is. 
+            col = x // w
+            row = y // h
+            fname += f" [{col},{row}]"
+        item.setText(1, fname)
         
         # Scale
         item.setText(2, f"{frame_data.scale:.4f}")

@@ -363,6 +363,10 @@ class MainWindow(QMainWindow):
         self.import_action.triggered.connect(self.import_images)
         self.import_action.setShortcut(QKeySequence.StandardKey.Open)
         
+        self.import_slice_action = QAction(i18n.t("action_import_slice"), self)
+        self.import_slice_action.triggered.connect(self.import_sprite_sheet)
+        self.import_slice_action.setShortcut("Ctrl+Shift+I")
+        
         self.save_action = QAction(i18n.t("action_save"), self)
         self.save_action.triggered.connect(self.save_project)
         self.save_action.setShortcut(QKeySequence.StandardKey.Save)
@@ -376,6 +380,9 @@ class MainWindow(QMainWindow):
         
         self.export_action = QAction(i18n.t("action_export"), self)
         self.export_action.triggered.connect(self.export_sequence)
+
+        self.export_sheet_action = QAction(i18n.t("action_export_sheet"), self)
+        self.export_sheet_action.triggered.connect(self.export_sprite_sheet)
 
         # Edit Actions
         self.copy_props_action = QAction(i18n.t("action_copy_props"), self)
@@ -516,14 +523,16 @@ class MainWindow(QMainWindow):
         # File Menu
         file_menu = menubar.addMenu(i18n.t("menu_file"))
         file_menu.addAction(self.import_action)
+        file_menu.addAction(self.import_slice_action)
         file_menu.addSeparator()
+        file_menu.addAction(self.load_action)
         file_menu.addAction(self.save_action)
         file_menu.addAction(self.save_as_action)
-        file_menu.addAction(self.load_action)
         file_menu.addSeparator()
         file_menu.addAction(self.settings_action)
         file_menu.addSeparator()
         file_menu.addAction(self.export_action)
+        file_menu.addAction(self.export_sheet_action)
         
         # Edit Menu
         edit_menu = menubar.addMenu(i18n.t("menu_edit"))
@@ -1223,7 +1232,9 @@ class MainWindow(QMainWindow):
         self.timeline.clear()
         for frame in self.project.frames:
             w, h = 0, 0
-            if os.path.exists(frame.file_path):
+            if frame.crop_rect:
+                w, h = frame.crop_rect[2], frame.crop_rect[3]
+            elif os.path.exists(frame.file_path):
                  try:
                      from PIL import Image
                      with Image.open(frame.file_path) as img:
@@ -1342,10 +1353,12 @@ class MainWindow(QMainWindow):
     def refresh_ui_text(self):
         # Refresh Actions
         self.import_action.setText(i18n.t("action_import"))
+        self.import_slice_action.setText(i18n.t("action_import_slice"))
         self.save_action.setText(i18n.t("action_save"))
         self.save_as_action.setText(i18n.t("action_save_as"))
         self.load_action.setText(i18n.t("action_load"))
         self.export_action.setText(i18n.t("action_export"))
+        self.export_sheet_action.setText(i18n.t("action_export_sheet"))
         self.copy_props_action.setText(i18n.t("action_copy_props"))
         self.paste_props_action.setText(i18n.t("action_paste_props"))
         self.dup_frame_action.setText(i18n.t("action_dup_frame"))
@@ -1456,9 +1469,78 @@ class MainWindow(QMainWindow):
             for action_mode, action in self.bg_actions.items():
                 action.setChecked(action_mode == mode)
 
-    def on_canvas_transform_changed(self, frame_data):
-        self.property_panel.update_ui_from_selection()
+    def import_sprite_sheet(self):
+        file, _ = QFileDialog.getOpenFileName(self, i18n.t("dlg_import_title"), "", i18n.t("dlg_filter_images"))
+        if not file:
+            return
+            
+        from ui.slice_dialog import SliceImportDialog
+        dlg = SliceImportDialog(file, self)
+        if not dlg.exec():
+            return
+            
+        results = dlg.get_results()
+        mode = results["mode"]
+        crops = results["crops"]
+        
+        if mode == "virtual":
+            # Virtual Slicing: Add FrameData with crop_rect
+            for crop in crops:
+                # Need original resolution for calculation
+                # QImage is already loaded in dialog, but let's be efficient
+                img = QImage(file)
+                frame = FrameData(file_path=file, crop_rect=crop)
+                self.project.frames.append(frame)
+                self.timeline.add_frame(os.path.basename(file), frame, crop[2], crop[3])
+                
+        else:
+            # Real Slicing: Save files to a subfolder
+            base_dir = os.path.dirname(file)
+            base_name = os.path.splitext(os.path.basename(file))[0]
+            slice_dir = os.path.join(base_dir, f"{base_name}_slices")
+            if not os.path.exists(slice_dir):
+                os.makedirs(slice_dir)
+                
+            from PIL import Image
+            src = Image.open(file).convert("RGBA")
+            
+            for i, crop in enumerate(crops):
+                x, y, w, h = crop
+                part = src.crop((x, y, x + w, y + h))
+                out_path = os.path.join(slice_dir, f"{base_name}_{i:03d}.png")
+                part.save(out_path)
+                
+                frame = FrameData(file_path=out_path)
+                self.project.frames.append(frame)
+                self.timeline.add_frame(os.path.basename(out_path), frame, w, h)
+                
         self.mark_dirty()
+        self.statusBar().showMessage(f"Imported {len(crops)} slices", 3000)
+
+    def export_sprite_sheet(self):
+        from ui.export_dialog import SpriteSheetExportDialog
+        dlg = SpriteSheetExportDialog(self)
+        dlg.cols_spin.setValue(self.project.export_sheet_cols)
+        dlg.padding_spin.setValue(self.project.export_sheet_padding)
+        
+        if not dlg.exec():
+            return
+            
+        self.project.export_sheet_cols = dlg.cols_spin.value()
+        self.project.export_sheet_padding = dlg.padding_spin.value()
+        self.mark_dirty()
+        
+        file, _ = QFileDialog.getSaveFileName(self, i18n.t("action_export_sheet"), "", "Image (*.png)")
+        if not file:
+            return
+            
+        from utils.exporter import Exporter
+        try:
+            Exporter.export_sprite_sheet(self.project, file)
+            self.statusBar().showMessage(i18n.t("msg_export_complete"), 3000)
+        except Exception as e:
+            self.statusBar().showMessage(f"Export Error: {str(e)}", 5000)
+
 
     def export_sequence(self):
         # Stop playback if running

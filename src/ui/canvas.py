@@ -117,14 +117,25 @@ class CanvasWidget(QWidget):
                 w = img.width()
                 h = img.height()
                 
-                # If multiple are selected, maybe make them slightly transparent?
-                # Or just draw normally.
-                painter.drawImage(QRectF(-w/2, -h/2, w, h), img)
-                
-                # Draw selection outline
-                painter.setPen(QPen(Qt.GlobalColor.cyan, 2))
-                painter.setBrush(Qt.BrushStyle.NoBrush)
-                painter.drawRect(QRectF(-w/2, -h/2, w, h))
+                # Handle crop_rect
+                if frame_data.crop_rect:
+                    cx, cy, cw, ch = frame_data.crop_rect
+                    source_rect = QRectF(cx, cy, cw, ch)
+                    target_rect = QRectF(-cw/2, -ch/2, cw, ch)
+                    painter.drawImage(target_rect, img, source_rect)
+                    
+                    # Draw selection outline for the crop
+                    painter.setPen(QPen(Qt.GlobalColor.cyan, 2))
+                    painter.setBrush(Qt.BrushStyle.NoBrush)
+                    painter.drawRect(target_rect)
+                else:
+                    target_rect = QRectF(-w/2, -h/2, w, h)
+                    painter.drawImage(target_rect, img)
+                    
+                    # Draw selection outline
+                    painter.setPen(QPen(Qt.GlobalColor.cyan, 2))
+                    painter.setBrush(Qt.BrushStyle.NoBrush)
+                    painter.drawRect(target_rect)
                 
                 painter.restore()
 
