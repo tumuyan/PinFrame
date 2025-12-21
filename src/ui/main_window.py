@@ -201,7 +201,10 @@ class MainWindow(QMainWindow):
                     border: 1px solid #117a8b;
                     font-weight: bold;
                 }
-                QSpinBox, QDoubleSpinBox, QLineEdit {
+                QSpinBox, QDoubleSpinBox {
+                    color: #CCCCCC;
+                }
+                QLineEdit {
                     background-color: #333333;
                     color: #CCCCCC;
                     border: 1px solid #454545;
@@ -302,7 +305,10 @@ class MainWindow(QMainWindow):
                     border: 1px solid #0288D1;
                     font-weight: bold;
                 }
-                QSpinBox, QDoubleSpinBox, QLineEdit {
+                QSpinBox, QDoubleSpinBox {
+                    color: #333333;
+                }
+                QLineEdit {
                     background-color: white;
                     color: #333333;
                     border: 1px solid #CCCCCC;
@@ -1276,6 +1282,8 @@ class MainWindow(QMainWindow):
         
         if preset == "standard":
             # Timeline Bottom, Property Right
+            self.timeline_dock.setFloating(False)
+            self.property_dock.setFloating(False)
             self.addDockWidget(Qt.DockWidgetArea.BottomDockWidgetArea, self.timeline_dock)
             self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.property_dock)
             self.timeline_dock.show()
@@ -1283,6 +1291,8 @@ class MainWindow(QMainWindow):
             
         elif preset == "side":
             # Timeline Left, Property Right
+            self.timeline_dock.setFloating(False)
+            self.property_dock.setFloating(False)
             self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, self.timeline_dock)
             self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.property_dock)
             self.timeline_dock.show()
@@ -1290,6 +1300,8 @@ class MainWindow(QMainWindow):
             
         elif preset == "stack_ltp":
             # Stacked Left, Timeline on Top
+            self.timeline_dock.setFloating(False)
+            self.property_dock.setFloating(False)
             self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, self.timeline_dock)
             self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, self.property_dock)
             self.splitDockWidget(self.timeline_dock, self.property_dock, Qt.Orientation.Vertical)
@@ -1298,6 +1310,33 @@ class MainWindow(QMainWindow):
 
         elif preset == "stack_lpt":
             # Stacked Left, Property on Top
+            self.timeline_dock.setFloating(False)
+            self.property_dock.setFloating(False)
+            self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, self.timeline_dock)
+            self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, self.property_dock)
+            self.splitDockWidget(self.property_dock, self.timeline_dock, Qt.Orientation.Vertical)
+            self.timeline_dock.show()
+            self.property_dock.show()
+
+        elif preset == "stack_rtp":
+            # Stacked Right, Timeline on Top
+            self.timeline_dock.setFloating(False)
+            self.property_dock.setFloating(False)
+            self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.timeline_dock)
+            self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.property_dock)
+            self.splitDockWidget(self.timeline_dock, self.property_dock, Qt.Orientation.Vertical)
+            self.timeline_dock.show()
+            self.property_dock.show()
+
+        elif preset == "stack_rpt":
+            # Stacked Right, Property on Top
+            self.timeline_dock.setFloating(False)
+            self.property_dock.setFloating(False)
+            self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.timeline_dock)
+            self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.property_dock)
+            self.splitDockWidget(self.property_dock, self.timeline_dock, Qt.Orientation.Vertical)
+            self.timeline_dock.show()
+            self.property_dock.show()
             self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, self.property_dock)
             self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, self.timeline_dock)
             self.splitDockWidget(self.property_dock, self.timeline_dock, Qt.Orientation.Vertical)
@@ -1405,6 +1444,8 @@ class MainWindow(QMainWindow):
         # Update Docks
         self.timeline_dock.setWindowTitle(i18n.t("dock_timeline"))
         self.property_dock.setWindowTitle(i18n.t("dock_properties"))
+        self.timeline.refresh_ui_text()
+        self.property_panel.refresh_ui_text()
         
         menubar = self.menuBar()
         menubar.clear()

@@ -43,7 +43,7 @@ class FrameData:
 
 @dataclass
 class ProjectData:
-    fps: int = 12
+    fps: int = 6
     width: int = 512
     height: int = 512
     frames: List[FrameData] = field(default_factory=list)
@@ -72,7 +72,7 @@ class ProjectData:
     def from_json(cls, json_str):
         data = json.loads(json_str)
         project = cls(
-            fps=data.get("fps", 12),
+            fps=data.get("fps", 6),
             width=data.get("width", 512),
             height=data.get("height", 512),
             background_color=data.get("background_color", "#000000")

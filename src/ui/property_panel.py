@@ -113,6 +113,8 @@ class PropertyPanel(QWidget):
         self.dx_spin = QDoubleSpinBox()
         self.dx_spin.setRange(-9999, 9999)
         self.dx_spin.setDecimals(2)
+        self.dx_spin.setSingleStep(1.0)
+        self.dx_spin.setValue(1.0)
         d_input_layout.addWidget(self.dx_spin)
         
         self.label_dy = QLabel(i18n.t("prop_dy"))
@@ -120,6 +122,8 @@ class PropertyPanel(QWidget):
         self.dy_spin = QDoubleSpinBox()
         self.dy_spin.setRange(-9999, 9999)
         self.dy_spin.setDecimals(2)
+        self.dy_spin.setSingleStep(1.0)
+        self.dy_spin.setValue(1.0)
         d_input_layout.addWidget(self.dy_spin)
         rel_layout.addLayout(d_input_layout)
         
@@ -157,19 +161,20 @@ class PropertyPanel(QWidget):
         
         # 3x3 Grid
         positions = [
-            ("align_tl", 0, 0), ("align_tc", 0, 1), ("align_tr", 0, 2),
-            ("align_cl", 1, 0), ("align_cc", 1, 1), ("align_cr", 1, 2),
-            ("align_bl", 2, 0), ("align_bc", 2, 1), ("align_br", 2, 2)
+            ("⇖", 0, 0), ("⇑", 0, 1), ("⇗", 0, 2),
+            ("⇐", 1, 0), ("⏺", 1, 1), ("⇒", 1, 2),
+            ("⇙", 2, 0), ("⇓", 2, 1), ("⇘", 2, 2)
         ]
         
         self.align_btns = {}
-        for key, r, c in positions:
-            btn = QPushButton(i18n.t(key))
-            self.align_btns[key] = btn
-            btn.setFixedSize(30, 30)
-            # Use small font
+        for symbol, r, c in positions:
+            btn = QPushButton(symbol)
+            self.align_btns[f"align_{r}_{c}"] = btn
+            btn.setFixedSize(32, 32)
+            # Use larger font for symbols
             f = btn.font()
-            f.setPointSize(7)
+            f.setPointSize(12)
+            f.setBold(True)
             btn.setFont(f)
             # 0=Top/Left, 1=Center, 2=Bottom/Right
             # Mapping logic:
@@ -213,9 +218,8 @@ class PropertyPanel(QWidget):
         self.btn_repeat.setText(i18n.t("btn_repeat"))
         self.btn_rev_repeat.setText(i18n.t("btn_rev_repeat"))
         
-        # Alignment buttons
-        for key, btn in self.align_btns.items():
-            btn.setText(i18n.t(key))
+        # Alignment buttons (Symbols are static, no need to refresh unless we change symbols)
+        pass
             
         # Preview label if no selection
         if not self.selected_frames:

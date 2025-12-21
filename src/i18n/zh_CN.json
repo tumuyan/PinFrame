@@ -71,7 +71,7 @@
     "col_filename": "文件名",
     "col_scale": "缩放",
     "col_position": "位置",
-    "col_orig_res": "原始分辨率",
+    "col_res_combined": "原分辨率和目标分辨率",
     "prop_preview": "预览",
     "prop_transform": "变换",
     "prop_scale": "缩放 (%)",

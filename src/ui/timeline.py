@@ -26,7 +26,7 @@ class TimelineWidget(QTreeWidget):
             i18n.t("col_filename"), 
             i18n.t("col_scale"), 
             i18n.t("col_position"), 
-            i18n.t("col_orig_res")
+            i18n.t("col_res_combined")
         ])
         
         header = self.header()
@@ -277,10 +277,24 @@ class TimelineWidget(QTreeWidget):
             final_w = int(orig_w * frame_data.scale)
             final_h = int(orig_h * frame_data.scale)
             res_str = f"{orig_w}x{orig_h} -> {final_w}x{final_h}"
+            
+            if frame_data.target_resolution:
+                tw, th = frame_data.target_resolution
+                res_str += f" ({tw}x{th})"
         else:
             res_str = "?x?"
         
         item.setText(4, res_str)
+
+    def refresh_ui_text(self):
+        self.setHeaderLabels([
+            i18n.t("col_disabled"), 
+            i18n.t("col_filename"), 
+            i18n.t("col_scale"), 
+            i18n.t("col_position"), 
+            i18n.t("col_res_combined")
+        ])
+        self.refresh_current_items()
 
     def refresh_current_items(self):
         items = self.findItems("*", Qt.MatchFlag.MatchWildcard | Qt.MatchFlag.MatchRecursive)

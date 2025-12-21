@@ -57,7 +57,7 @@ class SlicePreviewLabel(QLabel):
             
         painter.end()
         self.setPixmap(preview)
-        self.setFixedSize(preview.size()) # Ensure scroll area knows size
+        self.setFixedSize(preview.size())
 
 class SliceImportDialog(QDialog):
     def __init__(self, image_path, parent=None):
@@ -75,7 +75,7 @@ class SliceImportDialog(QDialog):
         self.preview_label = SlicePreviewLabel()
         self.preview_label.set_image(QPixmap.fromImage(self.img))
         self.scroll_area.setWidget(self.preview_label)
-        self.scroll_area.setWidgetResizable(True)
+        self.scroll_area.setWidgetResizable(False) # Support explicit sizing
         self.scroll_area.setAlignment(Qt.AlignmentFlag.AlignCenter)
         main_layout.addWidget(self.scroll_area, 3)
         
@@ -93,16 +93,21 @@ class SliceImportDialog(QDialog):
         grid_group.addWidget(QLabel(i18n.t("slice_cols")))
         self.cols_spin = QSpinBox()
         self.cols_spin.setRange(1, 100)
-        self.cols_spin.setValue(1)
-        self.cols_spin.valueChanged.connect(self.update_grid)
         grid_group.addWidget(self.cols_spin)
         
         grid_group.addWidget(QLabel(i18n.t("slice_rows")))
         self.rows_spin = QSpinBox()
         self.rows_spin.setRange(1, 100)
-        self.rows_spin.setValue(1)
-        self.rows_spin.valueChanged.connect(self.update_grid)
         grid_group.addWidget(self.rows_spin)
+        
+        # Connect signals AFTER both are created
+        self.cols_spin.valueChanged.connect(self.update_grid)
+        self.rows_spin.valueChanged.connect(self.update_grid)
+        
+        # Set default values
+        self.cols_spin.setValue(2)
+        self.rows_spin.setValue(2)
+        
         ctrl_layout.addLayout(grid_group)
         
         ctrl_layout.addSpacing(20)

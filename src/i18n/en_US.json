@@ -46,7 +46,7 @@
     "col_filename": "Filename",
     "col_scale": "Scale",
     "col_position": "Position",
-    "col_orig_res": "Orig. Res",
+    "col_res_combined": "Original & Target Resolution",
     "prop_preview": "Preview",
     "prop_transform": "Transform",
     "prop_scale": "Scale (%)",
