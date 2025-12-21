@@ -1,11 +1,12 @@
 from PyQt6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel, 
                              QSpinBox, QCheckBox, QPushButton, QGroupBox, QGridLayout)
 from PyQt6.QtCore import Qt
+from i18n.manager import i18n
 
 class SettingsDialog(QDialog):
     def __init__(self, parent=None, current_width=1920, current_height=1080):
         super().__init__(parent)
-        self.setWindowTitle("Project Settings")
+        self.setWindowTitle(i18n.t("dialog_settings_title"))
         self.resize(300, 200)
         
         self.current_width = current_width
@@ -15,16 +16,16 @@ class SettingsDialog(QDialog):
         layout = QVBoxLayout(self)
         
         # Resolution Group
-        res_group = QGroupBox("Canvas Resolution")
+        res_group = QGroupBox(i18n.t("settings_target_res"))
         res_layout = QGridLayout(res_group)
         
-        res_layout.addWidget(QLabel("Width:"), 0, 0)
+        res_layout.addWidget(QLabel(i18n.t("settings_width")), 0, 0)
         self.width_spin = QSpinBox()
         self.width_spin.setRange(1, 16384)
         self.width_spin.setValue(current_width)
         res_layout.addWidget(self.width_spin, 0, 1)
         
-        res_layout.addWidget(QLabel("Height:"), 1, 0)
+        res_layout.addWidget(QLabel(i18n.t("settings_height")), 1, 0)
         self.height_spin = QSpinBox()
         self.height_spin.setRange(1, 16384)
         self.height_spin.setValue(current_height)
@@ -33,12 +34,12 @@ class SettingsDialog(QDialog):
         layout.addWidget(res_group)
         
         # Options
-        self.lock_ar_check = QCheckBox("Lock Aspect Ratio")
+        self.lock_ar_check = QCheckBox(i18n.t("settings_lock_ar"))
         self.lock_ar_check.setChecked(True)
         layout.addWidget(self.lock_ar_check)
         
-        self.prop_rescale_check = QCheckBox("Adjust frames proportionally")
-        self.prop_rescale_check.setToolTip("Scale and move frames to match the new resolution")
+        self.prop_rescale_check = QCheckBox(i18n.t("settings_rescale"))
+        self.prop_rescale_check.setToolTip(i18n.t("settings_rescale_tip", "Scale and move frames to match the new resolution"))
         self.prop_rescale_check.setChecked(True)
         layout.addWidget(self.prop_rescale_check)
         
@@ -46,11 +47,11 @@ class SettingsDialog(QDialog):
         btn_layout = QHBoxLayout()
         btn_layout.addStretch()
         
-        self.ok_btn = QPushButton("OK")
+        self.ok_btn = QPushButton(i18n.t("btn_ok"))
         self.ok_btn.clicked.connect(self.accept)
         btn_layout.addWidget(self.ok_btn)
         
-        self.cancel_btn = QPushButton("Cancel")
+        self.cancel_btn = QPushButton(i18n.t("btn_cancel"))
         self.cancel_btn.clicked.connect(self.reject)
         btn_layout.addWidget(self.cancel_btn)
         

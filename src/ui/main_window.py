@@ -10,6 +10,7 @@ from ui.timeline import TimelineWidget
 from ui.property_panel import PropertyPanel
 from ui.settings_dialog import SettingsDialog
 from ui.export_dialog import ExportOptionsDialog
+from i18n.manager import i18n
 import os
 
 class MainWindow(QMainWindow):
@@ -21,8 +22,10 @@ class MainWindow(QMainWindow):
         self.is_dirty = False
         self.settings = QSettings("Yazii", "Image2Frame")
         self.current_theme = self.settings.value("theme", "dark")
+        self.current_lang = self.settings.value("language", "zh_CN")
+        i18n.load_language(self.current_lang)
         
-        self.setWindowTitle("Image2Frame - New Project")
+        self.setWindowTitle(i18n.t("app_title") + " - " + i18n.t("new_project"))
         self.resize(1200, 800)
         
         # Data
@@ -34,7 +37,7 @@ class MainWindow(QMainWindow):
         self.canvas.transform_changed.connect(self.on_canvas_transform_changed)
 
         # Dock Widget (Timeline)
-        self.timeline_dock = QDockWidget("Timeline", self)
+        self.timeline_dock = QDockWidget(i18n.t("dock_timeline"), self)
         self.timeline_dock.setObjectName("TimelineDock")
         self.timeline = TimelineWidget()
         self.timeline.selection_changed.connect(self.on_selection_changed)
@@ -52,7 +55,7 @@ class MainWindow(QMainWindow):
         self.addDockWidget(Qt.DockWidgetArea.BottomDockWidgetArea, self.timeline_dock)
         
         # Dock Widget (Property Panel)
-        self.property_dock = QDockWidget("Properties", self)
+        self.property_dock = QDockWidget(i18n.t("dock_properties"), self)
         self.property_dock.setObjectName("PropertyDock")
         self.property_panel = PropertyPanel()
         self.property_panel.frame_data_changed.connect(self.on_property_changed)
@@ -84,7 +87,7 @@ class MainWindow(QMainWindow):
         self.play_index = 0
         
         # Status Bar
-        self.statusBar().showMessage("Ready")
+        self.statusBar().showMessage(i18n.t("ready"))
         
         # Load persistent export settings if available
         # (Already loaded in ProjectData, but dialog defaults need setting)
@@ -336,14 +339,14 @@ class MainWindow(QMainWindow):
         self.property_panel.update_preview()
 
     def update_title(self):
-        title = "Image2Frame - "
+        title = i18n.t("app_title") + " - "
         if self.current_project_path:
             title += os.path.basename(self.current_project_path)
         else:
-            title += "New Project"
+            title += i18n.t("new_project")
             
         if self.is_dirty:
-            title += " *"
+            title += i18n.t("dirty_suffix")
         self.setWindowTitle(title)
 
     def mark_dirty(self):
@@ -352,52 +355,52 @@ class MainWindow(QMainWindow):
             self.update_title()
 
     def create_actions(self):
-        self.import_action = QAction("Import Images", self)
+        self.import_action = QAction(i18n.t("action_import"), self)
         self.import_action.triggered.connect(self.import_images)
         self.import_action.setShortcut(QKeySequence.StandardKey.Open)
         
-        self.save_action = QAction("Save Project", self)
+        self.save_action = QAction(i18n.t("action_save"), self)
         self.save_action.triggered.connect(self.save_project)
         self.save_action.setShortcut(QKeySequence.StandardKey.Save)
 
-        self.save_as_action = QAction("Save Project As...", self)
+        self.save_as_action = QAction(i18n.t("action_save_as"), self)
         self.save_as_action.triggered.connect(self.save_project_as)
         self.save_as_action.setShortcut("Ctrl+Shift+S")
 
-        self.load_action = QAction("Load Project", self)
+        self.load_action = QAction(i18n.t("action_load"), self)
         self.load_action.triggered.connect(self.load_project)
         
-        self.export_action = QAction("Export Sequence", self)
+        self.export_action = QAction(i18n.t("action_export"), self)
         self.export_action.triggered.connect(self.export_sequence)
 
         # Edit Actions
-        self.copy_props_action = QAction("Copy Properties", self)
+        self.copy_props_action = QAction(i18n.t("action_copy_props"), self)
         self.copy_props_action.setShortcut(QKeySequence.StandardKey.Copy)
         self.copy_props_action.triggered.connect(self.copy_frame_properties)
         
-        self.paste_props_action = QAction("Paste Properties", self)
+        self.paste_props_action = QAction(i18n.t("action_paste_props"), self)
         self.paste_props_action.setShortcut(QKeySequence.StandardKey.Paste)
         self.paste_props_action.triggered.connect(self.paste_frame_properties)
         
-        self.dup_frame_action = QAction("Duplicate Frame", self)
+        self.dup_frame_action = QAction(i18n.t("action_dup_frame"), self)
         self.dup_frame_action.setShortcut("Ctrl+D")
         self.dup_frame_action.triggered.connect(self.duplicate_frame)
         
-        self.rem_frame_action = QAction("Remove Frame", self)
+        self.rem_frame_action = QAction(i18n.t("action_rem_frame"), self)
         self.rem_frame_action.setShortcut(QKeySequence.StandardKey.Delete)
         self.rem_frame_action.triggered.connect(self.remove_frame)
 
-        self.reverse_order_action = QAction("Reverse Selected Order", self)
+        self.reverse_order_action = QAction(i18n.t("action_reverse_order"), self)
         self.reverse_order_action.triggered.connect(self.reverse_selected_frames)
 
-        self.bg_toggle_action = QAction("Toggle Background", self)
+        self.bg_toggle_action = QAction(i18n.t("action_bg_toggle"), self)
         self.bg_toggle_action.triggered.connect(self.toggle_background)
         
-        self.settings_action = QAction("Project Settings", self)
+        self.settings_action = QAction(i18n.t("action_settings"), self)
         self.settings_action.triggered.connect(self.open_settings)
 
         # View Reset Shortcut (Global)
-        self.reset_view_action = QAction("Reset View", self)
+        self.reset_view_action = QAction(i18n.t("action_reset_view"), self)
         self.reset_view_action.setShortcut("Ctrl+0")
         self.reset_view_action.triggered.connect(self.canvas.reset_view)
         self.addAction(self.reset_view_action)
@@ -438,23 +441,40 @@ class MainWindow(QMainWindow):
         self.theme_group.addAction(self.theme_dark_action)
         self.theme_group.addAction(self.theme_light_action)
 
+        # Language Actions
+        self.lang_zh_action = QAction("简体中文", self)
+        self.lang_zh_action.setCheckable(True)
+        self.lang_zh_action.triggered.connect(lambda: self.change_language("zh_CN"))
+        
+        self.lang_en_action = QAction("English", self)
+        self.lang_en_action.setCheckable(True)
+        self.lang_en_action.triggered.connect(lambda: self.change_language("en_US"))
+        
+        self.lang_group = QActionGroup(self)
+        self.lang_group.addAction(self.lang_zh_action)
+        self.lang_group.addAction(self.lang_en_action)
+        if self.current_lang == "zh_CN":
+            self.lang_zh_action.setChecked(True)
+        else:
+            self.lang_en_action.setChecked(True)
+
         # Layout Presets
-        self.layout_std_action = QAction("Standard (Bottom)", self)
+        self.layout_std_action = QAction(i18n.t("preset_std"), self)
         self.layout_std_action.triggered.connect(lambda: self.apply_layout_preset("standard"))
         
-        self.layout_side_action = QAction("Sidebar (Left)", self)
+        self.layout_side_action = QAction(i18n.t("preset_side"), self)
         self.layout_side_action.triggered.connect(lambda: self.apply_layout_preset("side"))
         
-        self.layout_stack_ltp_action = QAction("Stacked Left (Timeline Top)", self)
+        self.layout_stack_ltp_action = QAction(i18n.t("preset_stack_ltp"), self)
         self.layout_stack_ltp_action.triggered.connect(lambda: self.apply_layout_preset("stack_ltp"))
         
-        self.layout_stack_lpt_action = QAction("Stacked Left (Prop Top)", self)
+        self.layout_stack_lpt_action = QAction(i18n.t("preset_stack_lpt"), self)
         self.layout_stack_lpt_action.triggered.connect(lambda: self.apply_layout_preset("stack_lpt"))
         
-        self.layout_stack_rtp_action = QAction("Stacked Right (Timeline Top)", self)
+        self.layout_stack_rtp_action = QAction(i18n.t("preset_stack_rtp"), self)
         self.layout_stack_rtp_action.triggered.connect(lambda: self.apply_layout_preset("stack_rtp"))
         
-        self.layout_stack_rpt_action = QAction("Stacked Right (Prop Top)", self)
+        self.layout_stack_rpt_action = QAction(i18n.t("preset_stack_rpt"), self)
         self.layout_stack_rpt_action.triggered.connect(lambda: self.apply_layout_preset("stack_rpt"))
 
         # Auto-Repeat Settings
@@ -462,9 +482,9 @@ class MainWindow(QMainWindow):
         self.repeat_actions = {}
         
         intervals = [
-            ("Disabled", 0),
+            (i18n.t("lang_disabled"), 0),
             ("100ms", 100),
-            ("250ms (Default)", 250),
+            (i18n.t("lang_250_default", "250ms (Default)"), 250),
             ("500ms", 500),
             ("1000ms", 1000)
         ]
@@ -482,7 +502,7 @@ class MainWindow(QMainWindow):
         menubar = self.menuBar()
         
         # File Menu
-        file_menu = menubar.addMenu("&File")
+        file_menu = menubar.addMenu(i18n.t("menu_file"))
         file_menu.addAction(self.import_action)
         file_menu.addSeparator()
         file_menu.addAction(self.save_action)
@@ -494,7 +514,7 @@ class MainWindow(QMainWindow):
         file_menu.addAction(self.export_action)
         
         # Edit Menu
-        edit_menu = menubar.addMenu("&Edit")
+        edit_menu = menubar.addMenu(i18n.t("menu_edit"))
         edit_menu.addAction(self.copy_props_action)
         edit_menu.addAction(self.paste_props_action)
         edit_menu.addSeparator()
@@ -504,12 +524,12 @@ class MainWindow(QMainWindow):
         edit_menu.addAction(self.reverse_order_action)
         edit_menu.addSeparator()
         
-        repeat_menu = edit_menu.addMenu("Auto-Repeat Delay")
+        repeat_menu = edit_menu.addMenu(i18n.t("menu_repeat_delay"))
         for ms in [0, 100, 250, 500, 1000]:
             repeat_menu.addAction(self.repeat_actions[ms])
         
         # Layout Menu
-        layout_menu = menubar.addMenu("&Layout")
+        layout_menu = menubar.addMenu(i18n.t("menu_layout"))
         layout_menu.addAction(self.layout_std_action)
         layout_menu.addAction(self.layout_side_action)
         layout_menu.addSeparator()
@@ -520,22 +540,26 @@ class MainWindow(QMainWindow):
         layout_menu.addAction(self.layout_stack_rpt_action)
         
         # Playback Menu
-        play_menu = menubar.addMenu("&Playback")
+        play_menu = menubar.addMenu(i18n.t("menu_playback"))
         play_menu.addAction(self.play_pause_action)
         play_menu.addAction(self.reverse_play_action)
         
         # View Menu
-        view_menu = menubar.addMenu("&View")
+        view_menu = menubar.addMenu(i18n.t("menu_view"))
         view_menu.addAction(self.reset_view_action)
         view_menu.addAction(self.bg_toggle_action)
         view_menu.addSeparator()
         
-        theme_menu = view_menu.addMenu("Theme")
+        theme_menu = view_menu.addMenu(i18n.t("menu_theme"))
         theme_menu.addAction(self.theme_dark_action)
         theme_menu.addAction(self.theme_light_action)
+        
+        lang_menu = view_menu.addMenu("Language (语言)")
+        lang_menu.addAction(self.lang_zh_action)
+        lang_menu.addAction(self.lang_en_action)
 
     def create_toolbar(self):
-        toolbar = QToolBar("Main")
+        toolbar = QToolBar(i18n.t("toolbar_main"))
         toolbar.setObjectName("MainToolbar")
         self.addToolBar(toolbar)
         
@@ -553,7 +577,7 @@ class MainWindow(QMainWindow):
         toolbar.addSeparator()
         
         # FPS Control
-        toolbar.addWidget(QLabel(" FPS: "))
+        toolbar.addWidget(QLabel(i18n.t("label_fps")))
         self.fps_spin = QSpinBox()
         self.fps_spin.setRange(1, 60)
         self.fps_spin.setValue(self.project.fps)
@@ -563,14 +587,14 @@ class MainWindow(QMainWindow):
         toolbar.addSeparator()
         
         # Play/Pause
-        self.play_btn = QPushButton("Play")
+        self.play_btn = QPushButton(i18n.t("btn_play"))
         self.play_btn.setObjectName("playBtn")
         self.play_btn.setCheckable(True)
         self.play_btn.clicked.connect(self.toggle_play)
         toolbar.addWidget(self.play_btn)
         
         toolbar.addSeparator()
-        self.rev_play_btn = QPushButton("Backward")
+        self.rev_play_btn = QPushButton(i18n.t("btn_backward"))
         self.rev_play_btn.setObjectName("revPlayBtn")
         self.rev_play_btn.setCheckable(True)
         self.rev_play_btn.clicked.connect(lambda: self.toggle_reverse_playback())
@@ -627,7 +651,7 @@ class MainWindow(QMainWindow):
                 self.property_panel.update_ui_from_selection()
 
     def import_images(self):
-        files, _ = QFileDialog.getOpenFileNames(self, "Import Images", "", "Images (*.png *.jpg *.jpeg *.bmp)")
+        files, _ = QFileDialog.getOpenFileNames(self, i18n.t("dlg_import_title"), "", i18n.t("dlg_filter_images"))
         if not files:
             return
         self.add_files(files)
@@ -717,11 +741,11 @@ class MainWindow(QMainWindow):
             "position": frame_data.position,
             "target_resolution": frame_data.target_resolution
         }
-        self.statusBar().showMessage("Frame properties copied.", 3000)
+        self.statusBar().showMessage(i18n.t("msg_props_copied"), 3000)
 
     def paste_frame_properties(self):
         if not self.clipboard_frame_properties:
-            self.statusBar().showMessage("Clipboard empty.", 3000)
+            self.statusBar().showMessage(i18n.t("msg_clipboard_empty"), 3000)
             return
             
         selected = self.timeline.selectedItems()
@@ -745,7 +769,7 @@ class MainWindow(QMainWindow):
         self.canvas.update()
         self.property_panel.update_ui_from_selection()
         self.mark_dirty()
-        self.statusBar().showMessage(f"Properties pasted to {count} frames.", 3000)
+        self.statusBar().showMessage(i18n.t("msg_props_pasted").format(count=count), 3000)
 
     def duplicate_frame(self):
         selected = self.timeline.selectedItems()
@@ -803,7 +827,7 @@ class MainWindow(QMainWindow):
             added_count += 1
             
         self.mark_dirty()
-        self.statusBar().showMessage(f"Duplicated {added_count} frames.", 3000)
+        self.statusBar().showMessage(i18n.t("msg_frames_duplicated").format(count=added_count), 3000)
 
     def remove_frame(self):
         selected = self.timeline.selectedItems()
@@ -827,7 +851,7 @@ class MainWindow(QMainWindow):
         self.mark_dirty()
         self.canvas.set_selected_frames([])
         self.property_panel.set_selection([]) # Clear selection in property panel
-        self.statusBar().showMessage(f"Removed {len(indices)} frames.", 3000)
+        self.statusBar().showMessage(i18n.t("msg_frames_removed").format(count=len(indices)), 3000)
 
     def on_frame_disabled_state_changed(self, frame_data, is_disabled):
         # Data already updated in Timeline logic
@@ -857,7 +881,7 @@ class MainWindow(QMainWindow):
         self.canvas.update()
         if self.is_playing:
             self.update_playlist()
-        self.statusBar().showMessage(f"{'Enabled' if enable else 'Disabled'} {len(selected)} frames.", 3000)
+        self.statusBar().showMessage(i18n.t("msg_frames_enabled_disabled").format(action=i18n.t("action_enabled") if enable else i18n.t("action_disabled"), count=len(selected)), 3000)
 
     def on_selection_changed(self, frames):
         # 'frames' is a list of FrameData objects from Timeline
@@ -897,15 +921,15 @@ class MainWindow(QMainWindow):
         if update_last:
             self.last_relative_offset = (dx, dy)
             self.property_panel.set_repeat_enabled(True)
-            
         self.canvas.update()
         self.property_panel.update_ui_from_selection()
         self.mark_dirty()
-        self.statusBar().showMessage(f"Applied relative move: ({dx}, {dy})", 2000)
+        self.statusBar().showMessage(i18n.t("msg_applied_rel_move").format(dx=dx, dy=dy), 2000)
 
     def repeat_last_move(self):
         dx, dy = self.last_relative_offset
         if dx == 0 and dy == 0:
+            self.statusBar().showMessage(i18n.t("msg_no_prev_move"), 2000)
             return
         # Use update_last=False so we don't overwrite the manual move vector
         self.apply_relative_move(dx, dy, update_last=False)
@@ -935,7 +959,7 @@ class MainWindow(QMainWindow):
         self.canvas.update()
         self.property_panel.update_ui_from_selection()
         self.mark_dirty()
-        self.statusBar().showMessage("Integerized selected offsets", 2000)
+        self.statusBar().showMessage(i18n.t("msg_integerized"), 2000)
 
     def adjust_selection_scale(self, factor):
         selected_items = self.timeline.selectedItems()
@@ -1045,10 +1069,10 @@ class MainWindow(QMainWindow):
         self.timer.stop()
         self.play_btn.setText("Play")
         self.play_btn.setChecked(False)
-        self.rev_play_btn.setText("Backward")
+        self.rev_play_btn.setText(i18n.t("btn_backward"))
         self.rev_play_btn.setChecked(False)
         self.reverse_play_action.setChecked(False)
-        self.statusBar().showMessage("Stopped")
+        self.statusBar().showMessage(i18n.t("msg_playback_stopped"))
         
         # Restore selection
         selected_items = self.timeline.selectedItems()
@@ -1072,9 +1096,9 @@ class MainWindow(QMainWindow):
             self.playback_reverse = False
             
             # Update UI
-            self.play_btn.setText("Pause")
+            self.play_btn.setText(i18n.t("btn_pause"))
             self.play_btn.setChecked(True)
-            self.rev_play_btn.setText("Backward")
+            self.rev_play_btn.setText(i18n.t("btn_backward"))
             self.rev_play_btn.setChecked(False)
             self.reverse_play_action.setChecked(False)
             
@@ -1101,9 +1125,9 @@ class MainWindow(QMainWindow):
             self.playback_reverse = True
             
             # Update UI
-            self.play_btn.setText("Play")
+            self.play_btn.setText(i18n.t("btn_play"))
             self.play_btn.setChecked(False)
-            self.rev_play_btn.setText("Pause")
+            self.rev_play_btn.setText(i18n.t("btn_pause"))
             self.rev_play_btn.setChecked(True)
             self.reverse_play_action.setChecked(True)
             
@@ -1113,7 +1137,7 @@ class MainWindow(QMainWindow):
                 
             if not self.playlist:
                 self.is_playing = False
-                self.rev_play_btn.setText("Backward")
+                self.rev_play_btn.setText(i18n.t("btn_backward"))
                 self.rev_play_btn.setChecked(False)
                 self.reverse_play_action.setChecked(False)
                 return
@@ -1132,10 +1156,12 @@ class MainWindow(QMainWindow):
         self.canvas.set_selected_frames([frame_data])
         
         # Update Status
-        current_idx = self.play_index + 1
-        total = len(self.playlist)
-        filename = os.path.basename(frame_data.file_path)
-        self.statusBar().showMessage(f"Playing: {filename} ({current_idx}/{total}) {'[REV]' if self.playback_reverse else ''}")
+        self.statusBar().showMessage(i18n.t("msg_playback_playing").format(
+            index=self.play_index + 1, 
+            total=len(self.playlist), 
+            name=os.path.basename(frame_data.file_path),
+            direction='[REV]' if self.playback_reverse else ''
+        ))
         
         # Increment/Decrement index
         step = -1 if self.playback_reverse else 1
@@ -1273,7 +1299,117 @@ class MainWindow(QMainWindow):
     def update_repeat_interval(self, ms):
         self.property_panel.set_repeat_interval(ms)
         self.settings.setValue("repeat_interval", ms)
-        self.statusBar().showMessage(f"Auto-repeat delay set to {ms}ms" if ms > 0 else "Auto-repeat disabled", 2000)
+        if ms > 0:
+            self.statusBar().showMessage(i18n.t("msg_repeat_delay").format(ms=ms), 2000)
+        else:
+            self.statusBar().showMessage(i18n.t("msg_repeat_disabled"), 2000)
+
+    def change_language(self, lang_code):
+        if self.current_lang == lang_code:
+            return
+        
+        self.current_lang = lang_code
+        self.settings.setValue("language", lang_code)
+        i18n.load_language(lang_code)
+        
+        # We need to re-create menus/toolbar or restart. 
+        # Re-creating is cleaner but harder. Let's warn the user and restart or just re-init text.
+        # Actually, for most strings, we can just call create_menus / create_actions again.
+        # But we need to CLEAR existing ones first.
+        
+        # Simple approach for now: Ask for restart or just re-apply strings manually.
+        # Since we have so many strings, let's try a "refresh_ui" method.
+        # Language selection check states
+        # We need to find the Language menu. It's under View menu or we can find by title.
+        # But we just re-created the menu bar in refresh_ui_text, so the actions are new.
+        # Let's move the check state logic INTO refresh_ui_text or after create_menus.
+        
+        self.refresh_ui_text()
+
+    def refresh_ui_text(self):
+        # Refresh Actions
+        self.import_action.setText(i18n.t("action_import"))
+        self.save_action.setText(i18n.t("action_save"))
+        self.save_as_action.setText(i18n.t("action_save_as"))
+        self.load_action.setText(i18n.t("action_load"))
+        self.export_action.setText(i18n.t("action_export"))
+        self.copy_props_action.setText(i18n.t("action_copy_props"))
+        self.paste_props_action.setText(i18n.t("action_paste_props"))
+        self.dup_frame_action.setText(i18n.t("action_dup_frame"))
+        self.rem_frame_action.setText(i18n.t("action_rem_frame"))
+        self.reverse_order_action.setText(i18n.t("action_reverse_order"))
+        self.bg_toggle_action.setText(i18n.t("action_bg_toggle"))
+        self.settings_action.setText(i18n.t("action_settings"))
+        self.reset_view_action.setText(i18n.t("action_reset_view"))
+        
+        # Playback buttons (conditional)
+        if self.is_playing:
+            if self.playback_reverse:
+                self.rev_play_btn.setText(i18n.t("btn_pause"))
+                self.play_btn.setText(i18n.t("btn_play"))
+            else:
+                self.play_btn.setText(i18n.t("btn_pause"))
+                self.rev_play_btn.setText(i18n.t("btn_backward"))
+        else:
+            self.play_btn.setText(i18n.t("btn_play"))
+            self.rev_play_btn.setText(i18n.t("btn_backward"))
+            
+        # Layouts
+        self.layout_std_action.setText(i18n.t("preset_std"))
+        self.layout_side_action.setText(i18n.t("preset_side"))
+        self.layout_stack_ltp_action.setText(i18n.t("preset_stack_ltp"))
+        self.layout_stack_lpt_action.setText(i18n.t("preset_stack_lpt"))
+        self.layout_stack_rtp_action.setText(i18n.t("preset_stack_rtp"))
+        self.layout_stack_rpt_action.setText(i18n.t("preset_stack_rpt"))
+        
+        # Misc
+        self.theme_dark_action.setText(i18n.t("theme_dark"))
+        self.theme_light_action.setText(i18n.t("theme_light"))
+        
+        # Repeat Actions
+        for ms, action in self.repeat_actions.items():
+            if ms == 0:
+                action.setText(i18n.t("lang_disabled"))
+            elif ms == 250:
+                action.setText(i18n.t("lang_250_default", "250ms (Default)"))
+        
+        # Update Docks
+        self.timeline_dock.setWindowTitle(i18n.t("dock_timeline"))
+        self.property_dock.setWindowTitle(i18n.t("dock_properties"))
+        
+        menubar = self.menuBar()
+        menubar.clear()
+        self.create_menus()
+        
+        # After re-creating menus, sync the checked states
+        self.lang_zh_action.setChecked(self.current_lang == "zh_CN")
+        self.lang_en_action.setChecked(self.current_lang == "en_US")
+        
+        # Also sync theme actions if needed (theme is persistent too)
+        self.theme_dark_action.setChecked(self.current_theme == "dark")
+        self.theme_light_action.setChecked(self.current_theme == "light")
+        
+        # Update Toolbar
+        # Find which toolbar to update or just re-init text for existing ones?
+        # Re-creating toolbar is messy. Let's just update the FPS label if we held a reference.
+        # Wait, I didn't hold a reference to all labels.
+        # Simple approach: Re-create toolbar.
+        self.removeToolBar(self.findChild(QToolBar, "MainToolbar"))
+        self.create_toolbar()
+
+        # Update Sub-widgets
+        self.property_panel.refresh_ui_text()
+        self.timeline.setHeaderLabels([
+            i18n.t("col_disabled"), 
+            i18n.t("col_filename"), 
+            i18n.t("col_scale"), 
+            i18n.t("col_position"), 
+            i18n.t("col_orig_res")
+        ])
+        
+        # This is enough for now. A restart is always safer.
+        self.update_title()
+        self.statusBar().showMessage(i18n.t("ready"))
 
     def closeEvent(self, event):
         if self.check_unsaved_changes():

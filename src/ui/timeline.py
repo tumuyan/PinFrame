@@ -2,6 +2,7 @@ from PyQt6.QtWidgets import (QTreeWidget, QTreeWidgetItem, QAbstractItemView,
                              QHeaderView)
 from PyQt6.QtCore import Qt, pyqtSignal, QSize
 from PyQt6.QtGui import QColor, QFont
+from i18n.manager import i18n
 import os
 
 class TimelineWidget(QTreeWidget):
@@ -20,7 +21,13 @@ class TimelineWidget(QTreeWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setColumnCount(5)
-        self.setHeaderLabels(["🚫", "Filename", "Scale", "Position", "Orig. Res"])
+        self.setHeaderLabels([
+            i18n.t("col_disabled"), 
+            i18n.t("col_filename"), 
+            i18n.t("col_scale"), 
+            i18n.t("col_position"), 
+            i18n.t("col_orig_res")
+        ])
         
         header = self.header()
         header.setStretchLastSection(False)
@@ -172,35 +179,35 @@ class TimelineWidget(QTreeWidget):
         selected_items = self.selectedItems()
         has_selection = bool(selected_items)
         
-        copy_action = QAction("Copy Properties", self)
+        copy_action = QAction(i18n.t("action_copy_props"), self)
         copy_action.triggered.connect(self.copy_properties_requested.emit)
         copy_action.setEnabled(has_selection)
         
-        paste_action = QAction("Paste Properties", self)
+        paste_action = QAction(i18n.t("action_paste_props"), self)
         paste_action.triggered.connect(self.paste_properties_requested.emit)
         
-        dup_action = QAction("Duplicate Frame", self)
+        dup_action = QAction(i18n.t("action_dup_frame"), self)
         dup_action.triggered.connect(self.duplicate_requested.emit)
         dup_action.setEnabled(has_selection)
         
-        rem_action = QAction("Remove Frame", self)
+        rem_action = QAction(i18n.t("action_rem_frame"), self)
         rem_action.triggered.connect(self.remove_requested.emit)
         rem_action.setEnabled(has_selection)
 
         # Disable/Enable actions
-        disable_action = QAction("Disable Frame(s)", self)
+        disable_action = QAction(i18n.t("disable_frame_label", "Disable Frame(s)"), self)
         disable_action.triggered.connect(lambda: self.enable_requested.emit(False))
         disable_action.setEnabled(has_selection)
         
-        enable_action = QAction("Enable Frame(s)", self)
+        enable_action = QAction(i18n.t("enable_frame_label", "Enable Frame(s)"), self)
         enable_action.triggered.connect(lambda: self.enable_requested.emit(True))
         enable_action.setEnabled(has_selection)
 
-        reverse_action = QAction("Reverse Order", self)
+        reverse_action = QAction(i18n.t("action_reverse_order"), self)
         reverse_action.triggered.connect(self.reverse_order_requested.emit)
         reverse_action.setEnabled(len(selected_items) > 1)
         
-        int_action = QAction("Offset to Integer (偏移量整数化)", self)
+        int_action = QAction(i18n.t("action_integerize"), self)
         int_action.triggered.connect(self.integerize_offset_requested.emit)
         int_action.setEnabled(has_selection)
 

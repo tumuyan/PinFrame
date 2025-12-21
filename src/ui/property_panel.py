@@ -3,6 +3,7 @@ from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel,
                              QDoubleSpinBox, QGroupBox, QSpinBox, QPushButton, QGridLayout)
 from PyQt6.QtCore import Qt, pyqtSignal, QRect, QTimer
 from PyQt6.QtGui import QImage, QPixmap, QPainter, QColor
+from i18n.manager import i18n
 
 class PropertyPanel(QWidget):
     # Signals
@@ -29,12 +30,13 @@ class PropertyPanel(QWidget):
         layout.addWidget(self.preview_label)
         
         # Transform Controls
-        group = QGroupBox("Transform")
-        form = QVBoxLayout(group)
+        self.transform_group = QGroupBox(i18n.t("prop_transform"))
+        form = QVBoxLayout(self.transform_group)
         
         # Scale
         scale_layout = QHBoxLayout()
-        scale_layout.addWidget(QLabel("Scale:"))
+        self.label_scale = QLabel(i18n.t("prop_scale_label"))
+        scale_layout.addWidget(self.label_scale)
         self.scale_spin = QDoubleSpinBox()
         self.scale_spin.setDecimals(4)
         self.scale_spin.setRange(0.01, 100.0)
@@ -46,69 +48,75 @@ class PropertyPanel(QWidget):
         
         # Position
         pos_layout = QHBoxLayout()
-        pos_layout.addWidget(QLabel("X:"))
+        self.label_x = QLabel("X:")
+        pos_layout.addWidget(self.label_x)
         self.x_spin = QDoubleSpinBox()
         self.x_spin.setRange(-9999, 9999)
         self.x_spin.valueChanged.connect(self.on_value_changed)
         pos_layout.addWidget(self.x_spin)
         
-        pos_layout.addWidget(QLabel("Y:"))
+        self.label_y = QLabel("Y:")
+        pos_layout.addWidget(self.label_y)
         self.y_spin = QDoubleSpinBox()
         self.y_spin.setRange(-9999, 9999)
         self.y_spin.valueChanged.connect(self.on_value_changed)
         pos_layout.addWidget(self.y_spin)
         
         form.addLayout(pos_layout)
-        layout.addWidget(group)
+        layout.addWidget(self.transform_group)
         
         # Advanced Sizing
-        size_group = QGroupBox("Size & Resolution")
-        size_layout = QVBoxLayout(size_group)
+        self.size_group = QGroupBox(i18n.t("prop_size_resolution"))
+        size_layout = QVBoxLayout(self.size_group)
         
         # Quick Size Buttons
         quick_layout = QHBoxLayout()
-        btn_fit_w = QPushButton("Fit Width")
-        btn_fit_w.clicked.connect(lambda: self.fit_to_canvas("width"))
-        quick_layout.addWidget(btn_fit_w)
+        self.btn_fit_w = QPushButton(i18n.t("btn_fit_width"))
+        self.btn_fit_w.clicked.connect(lambda: self.fit_to_canvas("width"))
+        quick_layout.addWidget(self.btn_fit_w)
         
-        btn_fit_h = QPushButton("Fit Height")
-        btn_fit_h.clicked.connect(lambda: self.fit_to_canvas("height"))
-        quick_layout.addWidget(btn_fit_h)
+        self.btn_fit_h = QPushButton(i18n.t("btn_fit_height"))
+        self.btn_fit_h.clicked.connect(lambda: self.fit_to_canvas("height"))
+        quick_layout.addWidget(self.btn_fit_h)
         size_layout.addLayout(quick_layout)
         
         # Target Resolution
         t_res_layout = QHBoxLayout()
-        t_res_layout.addWidget(QLabel("Target Res:"))
+        self.label_target_res = QLabel(i18n.t("prop_target_res"))
+        t_res_layout.addWidget(self.label_target_res)
         self.t_w_spin = QSpinBox()
         self.t_w_spin.setRange(0, 9999)
-        self.t_w_spin.setSpecialValueText("None")
+        self.t_w_spin.setSpecialValueText(i18n.t("prop_res_none"))
         self.t_w_spin.valueChanged.connect(self.on_target_res_changed)
         
         self.t_h_spin = QSpinBox()
         self.t_h_spin.setRange(0, 9999)
-        self.t_h_spin.setSpecialValueText("None")
+        self.t_h_spin.setSpecialValueText(i18n.t("prop_res_none"))
         self.t_h_spin.valueChanged.connect(self.on_target_res_changed)
         
         t_res_layout.addWidget(self.t_w_spin)
-        t_res_layout.addWidget(QLabel("x"))
+        self.label_x_sep = QLabel("x")
+        t_res_layout.addWidget(self.label_x_sep)
         t_res_layout.addWidget(self.t_h_spin)
         size_layout.addLayout(t_res_layout)
         
-        layout.addWidget(size_group)
+        layout.addWidget(self.size_group)
         
         # Relative Move
-        rel_move_group = QGroupBox("Relative Move")
-        rel_layout = QVBoxLayout(rel_move_group)
+        self.rel_move_group = QGroupBox(i18n.t("prop_rel_move"))
+        rel_layout = QVBoxLayout(self.rel_move_group)
         
         # dx/dy inputs
         d_input_layout = QHBoxLayout()
-        d_input_layout.addWidget(QLabel("dX:"))
+        self.label_dx = QLabel(i18n.t("prop_dx"))
+        d_input_layout.addWidget(self.label_dx)
         self.dx_spin = QDoubleSpinBox()
         self.dx_spin.setRange(-9999, 9999)
         self.dx_spin.setDecimals(2)
         d_input_layout.addWidget(self.dx_spin)
         
-        d_input_layout.addWidget(QLabel("dY:"))
+        self.label_dy = QLabel(i18n.t("prop_dy"))
+        d_input_layout.addWidget(self.label_dy)
         self.dy_spin = QDoubleSpinBox()
         self.dy_spin.setRange(-9999, 9999)
         self.dy_spin.setDecimals(2)
@@ -117,45 +125,47 @@ class PropertyPanel(QWidget):
         
         # Move Buttons
         move_btn_layout = QHBoxLayout()
-        self.btn_move_x = QPushButton("Move X")
+        self.btn_move_x = QPushButton(i18n.t("btn_move_x"))
         self.btn_move_x.clicked.connect(lambda: self.relative_move_requested.emit(self.dx_spin.value(), 0))
         move_btn_layout.addWidget(self.btn_move_x)
         
-        self.btn_move_y = QPushButton("Move Y")
+        self.btn_move_y = QPushButton(i18n.t("btn_move_y"))
         self.btn_move_y.clicked.connect(lambda: self.relative_move_requested.emit(0, self.dy_spin.value()))
         move_btn_layout.addWidget(self.btn_move_y)
         rel_layout.addLayout(move_btn_layout)
         
         # Repeat Buttons
         repeat_layout = QHBoxLayout()
-        self.btn_repeat = QPushButton("Repeat")
+        self.btn_repeat = QPushButton(i18n.t("btn_repeat"))
         self.btn_repeat.setEnabled(False)
         self.btn_repeat.pressed.connect(lambda: self.start_repeat("repeat"))
         self.btn_repeat.released.connect(self.stop_repeat)
         repeat_layout.addWidget(self.btn_repeat)
         
-        self.btn_rev_repeat = QPushButton("Rev Repeat")
+        self.btn_rev_repeat = QPushButton(i18n.t("btn_rev_repeat"))
         self.btn_rev_repeat.setEnabled(False)
         self.btn_rev_repeat.pressed.connect(lambda: self.start_repeat("rev"))
         self.btn_rev_repeat.released.connect(self.stop_repeat)
         repeat_layout.addWidget(self.btn_rev_repeat)
         rel_layout.addLayout(repeat_layout)
         
-        layout.addWidget(rel_move_group)
+        layout.addWidget(self.rel_move_group)
         
         # Alignment
-        align_group = QGroupBox("Alignment")
-        align_layout = QGridLayout(align_group)
+        self.align_group = QGroupBox(i18n.t("prop_alignment"))
+        align_layout = QGridLayout(self.align_group)
         
         # 3x3 Grid
         positions = [
-            ("TL", 0, 0), ("TC", 0, 1), ("TR", 0, 2),
-            ("CL", 1, 0), ("CC", 1, 1), ("CR", 1, 2),
-            ("BL", 2, 0), ("BC", 2, 1), ("BR", 2, 2)
+            ("align_tl", 0, 0), ("align_tc", 0, 1), ("align_tr", 0, 2),
+            ("align_cl", 1, 0), ("align_cc", 1, 1), ("align_cr", 1, 2),
+            ("align_bl", 2, 0), ("align_bc", 2, 1), ("align_br", 2, 2)
         ]
         
-        for name, r, c in positions:
-            btn = QPushButton(name)
+        self.align_btns = {}
+        for key, r, c in positions:
+            btn = QPushButton(i18n.t(key))
+            self.align_btns[key] = btn
             btn.setFixedSize(30, 30)
             # Use small font
             f = btn.font()
@@ -170,11 +180,48 @@ class PropertyPanel(QWidget):
             btn.clicked.connect(lambda _, x=x_align, y=y_align: self.quick_align(x, y))
             align_layout.addWidget(btn, r, c)
             
-        layout.addWidget(align_group)
+        layout.addWidget(self.align_group)
 
         layout.addStretch()
         
         self.updating_ui = False
+
+    def refresh_ui_text(self):
+        from src.i18n.manager import i18n
+        
+        # Groups
+        self.transform_group.setTitle(i18n.t("prop_transform"))
+        self.size_group.setTitle(i18n.t("prop_size_resolution"))
+        self.rel_move_group.setTitle(i18n.t("prop_rel_move"))
+        self.align_group.setTitle(i18n.t("prop_alignment"))
+        
+        # Labels
+        self.label_scale.setText(i18n.t("prop_scale_label"))
+        self.label_target_res.setText(i18n.t("prop_target_res"))
+        self.label_dx.setText(i18n.t("prop_dx"))
+        self.label_dy.setText(i18n.t("prop_dy"))
+        
+        # Special value text
+        self.t_w_spin.setSpecialValueText(i18n.t("prop_res_none"))
+        self.t_h_spin.setSpecialValueText(i18n.t("prop_res_none"))
+        
+        # Buttons
+        self.btn_fit_w.setText(i18n.t("btn_fit_width"))
+        self.btn_fit_h.setText(i18n.t("btn_fit_height"))
+        self.btn_move_x.setText(i18n.t("btn_move_x"))
+        self.btn_move_y.setText(i18n.t("btn_move_y"))
+        self.btn_repeat.setText(i18n.t("btn_repeat"))
+        self.btn_rev_repeat.setText(i18n.t("btn_rev_repeat"))
+        
+        # Alignment buttons
+        for key, btn in self.align_btns.items():
+            btn.setText(i18n.t(key))
+            
+        # Preview label if no selection
+        if not self.selected_frames:
+            self.preview_label.setText(i18n.t("ready")) # Or "No Selection" but ready is localized
+            
+        self.update_ui_from_selection()
 
     def set_project_info(self, w, h):
         self.project_width = w
