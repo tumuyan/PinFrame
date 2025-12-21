@@ -2,6 +2,7 @@ from PyQt6.QtWidgets import (QTreeWidget, QTreeWidgetItem, QAbstractItemView,
                              QHeaderView)
 from PyQt6.QtCore import Qt, pyqtSignal, QSize
 from PyQt6.QtGui import QColor, QFont
+import os
 
 class TimelineWidget(QTreeWidget):
     selection_changed = pyqtSignal(list) 
@@ -240,6 +241,9 @@ class TimelineWidget(QTreeWidget):
         self.update_item_display(item, frame_data, orig_width, orig_height)
 
     def update_item_display(self, item, frame_data, orig_w, orig_h):
+        # Filename
+        item.setText(1, os.path.basename(frame_data.file_path))
+        
         # Scale
         item.setText(2, f"{frame_data.scale:.4f}")
         

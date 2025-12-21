@@ -2,7 +2,7 @@ from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QH
                              QDockWidget, QToolBar, QFileDialog, QSpinBox, 
                              QLabel, QPushButton, QInputDialog, QTreeWidgetItem, QMenu)
 from PyQt6.QtGui import QAction, QIcon, QKeySequence, QImage, QActionGroup
-from PyQt6.QtCore import Qt, QTimer
+from PyQt6.QtCore import Qt, QTimer, QSettings, QByteArray
 
 from model.project_data import ProjectData, FrameData
 from ui.canvas import CanvasWidget
@@ -19,7 +19,8 @@ class MainWindow(QMainWindow):
         # State
         self.current_project_path = None
         self.is_dirty = False
-        self.current_theme = "dark"
+        self.settings = QSettings("Yazii", "Image2Frame")
+        self.current_theme = self.settings.value("theme", "dark")
         
         self.setWindowTitle("Image2Frame - New Project")
         self.resize(1200, 800)
@@ -34,6 +35,7 @@ class MainWindow(QMainWindow):
 
         # Dock Widget (Timeline)
         self.timeline_dock = QDockWidget("Timeline", self)
+        self.timeline_dock.setObjectName("TimelineDock")
         self.timeline = TimelineWidget()
         self.timeline.selection_changed.connect(self.on_selection_changed)
         self.timeline.order_changed.connect(self.on_order_changed)
@@ -50,6 +52,7 @@ class MainWindow(QMainWindow):
         
         # Dock Widget (Property Panel)
         self.property_dock = QDockWidget("Properties", self)
+        self.property_dock.setObjectName("PropertyDock")
         self.property_panel = PropertyPanel()
         self.property_panel.frame_data_changed.connect(self.on_property_changed)
         
@@ -77,10 +80,24 @@ class MainWindow(QMainWindow):
         # (Already loaded in ProjectData, but dialog defaults need setting)
         
         self.update_title()
-        self.apply_theme("dark")
+        self.apply_theme(self.current_theme)
+        
+        # Restore window state
+        geometry = self.settings.value("geometry")
+        if geometry:
+            self.restoreGeometry(geometry)
+        state = self.settings.value("windowState")
+        if state:
+            self.restoreState(state)
 
     def apply_theme(self, theme_name):
         self.current_theme = theme_name
+        self.settings.setValue("theme", theme_name)
+        
+        # Update menu check state
+        if hasattr(self, 'theme_dark_action'):
+            self.theme_dark_action.setChecked(theme_name == "dark")
+            self.theme_light_action.setChecked(theme_name == "light")
         if theme_name == "dark":
             qss = """
                 QMainWindow, QDialog, QMessageBox {
@@ -330,6 +347,26 @@ class MainWindow(QMainWindow):
         self.export_action = QAction("Export Sequence", self)
         self.export_action.triggered.connect(self.export_sequence)
 
+        # Edit Actions
+        self.copy_props_action = QAction("Copy Properties", self)
+        self.copy_props_action.setShortcut(QKeySequence.StandardKey.Copy)
+        self.copy_props_action.triggered.connect(self.copy_frame_properties)
+        
+        self.paste_props_action = QAction("Paste Properties", self)
+        self.paste_props_action.setShortcut(QKeySequence.StandardKey.Paste)
+        self.paste_props_action.triggered.connect(self.paste_frame_properties)
+        
+        self.dup_frame_action = QAction("Duplicate Frame", self)
+        self.dup_frame_action.setShortcut("Ctrl+D")
+        self.dup_frame_action.triggered.connect(self.duplicate_frame)
+        
+        self.rem_frame_action = QAction("Remove Frame", self)
+        self.rem_frame_action.setShortcut(QKeySequence.StandardKey.Delete)
+        self.rem_frame_action.triggered.connect(self.remove_frame)
+
+        self.reverse_order_action = QAction("Reverse Selected Order", self)
+        self.reverse_order_action.triggered.connect(self.reverse_selected_frames)
+
         self.bg_toggle_action = QAction("Toggle Background", self)
         self.bg_toggle_action.triggered.connect(self.toggle_background)
         
@@ -378,6 +415,25 @@ class MainWindow(QMainWindow):
         self.theme_group.addAction(self.theme_dark_action)
         self.theme_group.addAction(self.theme_light_action)
 
+        # Layout Presets
+        self.layout_std_action = QAction("Standard (Bottom)", self)
+        self.layout_std_action.triggered.connect(lambda: self.apply_layout_preset("standard"))
+        
+        self.layout_side_action = QAction("Sidebar (Left)", self)
+        self.layout_side_action.triggered.connect(lambda: self.apply_layout_preset("side"))
+        
+        self.layout_stack_ltp_action = QAction("Stacked Left (Timeline Top)", self)
+        self.layout_stack_ltp_action.triggered.connect(lambda: self.apply_layout_preset("stack_ltp"))
+        
+        self.layout_stack_lpt_action = QAction("Stacked Left (Prop Top)", self)
+        self.layout_stack_lpt_action.triggered.connect(lambda: self.apply_layout_preset("stack_lpt"))
+        
+        self.layout_stack_rtp_action = QAction("Stacked Right (Timeline Top)", self)
+        self.layout_stack_rtp_action.triggered.connect(lambda: self.apply_layout_preset("stack_rtp"))
+        
+        self.layout_stack_rpt_action = QAction("Stacked Right (Prop Top)", self)
+        self.layout_stack_rpt_action.triggered.connect(lambda: self.apply_layout_preset("stack_rpt"))
+
     def create_menus(self):
         menubar = self.menuBar()
         
@@ -389,7 +445,30 @@ class MainWindow(QMainWindow):
         file_menu.addAction(self.save_as_action)
         file_menu.addAction(self.load_action)
         file_menu.addSeparator()
+        file_menu.addAction(self.settings_action)
+        file_menu.addSeparator()
         file_menu.addAction(self.export_action)
+        
+        # Edit Menu
+        edit_menu = menubar.addMenu("&Edit")
+        edit_menu.addAction(self.copy_props_action)
+        edit_menu.addAction(self.paste_props_action)
+        edit_menu.addSeparator()
+        edit_menu.addAction(self.dup_frame_action)
+        edit_menu.addAction(self.rem_frame_action)
+        edit_menu.addSeparator()
+        edit_menu.addAction(self.reverse_order_action)
+        
+        # Layout Menu
+        layout_menu = menubar.addMenu("&Layout")
+        layout_menu.addAction(self.layout_std_action)
+        layout_menu.addAction(self.layout_side_action)
+        layout_menu.addSeparator()
+        layout_menu.addAction(self.layout_stack_ltp_action)
+        layout_menu.addAction(self.layout_stack_lpt_action)
+        layout_menu.addSeparator()
+        layout_menu.addAction(self.layout_stack_rtp_action)
+        layout_menu.addAction(self.layout_stack_rpt_action)
         
         # Playback Menu
         play_menu = menubar.addMenu("&Playback")
@@ -405,12 +484,10 @@ class MainWindow(QMainWindow):
         theme_menu = view_menu.addMenu("Theme")
         theme_menu.addAction(self.theme_dark_action)
         theme_menu.addAction(self.theme_light_action)
-        
-        view_menu.addSeparator()
-        view_menu.addAction(self.settings_action)
 
     def create_toolbar(self):
         toolbar = QToolBar("Main")
+        toolbar.setObjectName("MainToolbar")
         self.addToolBar(toolbar)
         
         toolbar.addAction(self.import_action)
@@ -565,7 +642,7 @@ class MainWindow(QMainWindow):
                 item = QTreeWidgetItem()
                 item.setData(0, Qt.ItemDataRole.UserRole, data)
                 item.setData(3, Qt.ItemDataRole.UserRole, (w, h))
-                item.setText(0, name)
+                item.setText(1, name)
                 
                 # Checkbox flags
                 item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
@@ -813,14 +890,11 @@ class MainWindow(QMainWindow):
             # Update item data
             item.setData(0, Qt.ItemDataRole.UserRole, frame_data)
             
-            # Update display
-            filename = os.path.basename(frame_data.file_path)
-            item.setText(1, filename)
-            item.setCheckState(0, Qt.CheckState.Checked if frame_data.is_disabled else Qt.CheckState.Unchecked)
-            
+            # Update display (including name via update_item_display)
             orig_res = item.data(3, Qt.ItemDataRole.UserRole)
             w, h = orig_res if orig_res else (0, 0)
             self.timeline.update_item_display(item, frame_data, w, h)
+            item.setCheckState(0, Qt.CheckState.Checked if frame_data.is_disabled else Qt.CheckState.Unchecked)
             
         self.mark_dirty()
         self.canvas.update()
@@ -1039,8 +1113,63 @@ class MainWindow(QMainWindow):
             
         return True
         
+    def apply_layout_preset(self, preset):
+        # Default area configuration for stacking
+        # We need to unstack first? restoreState handles it.
+        # But we can align docks manually.
+        
+        if preset == "standard":
+            # Timeline Bottom, Property Right
+            self.addDockWidget(Qt.DockWidgetArea.BottomDockWidgetArea, self.timeline_dock)
+            self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.property_dock)
+            self.timeline_dock.show()
+            self.property_dock.show()
+            
+        elif preset == "side":
+            # Timeline Left, Property Right
+            self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, self.timeline_dock)
+            self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.property_dock)
+            self.timeline_dock.show()
+            self.property_dock.show()
+            
+        elif preset == "stack_ltp":
+            # Stacked Left, Timeline on Top
+            self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, self.timeline_dock)
+            self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, self.property_dock)
+            self.splitDockWidget(self.timeline_dock, self.property_dock, Qt.Orientation.Vertical)
+            self.timeline_dock.show()
+            self.property_dock.show()
+
+        elif preset == "stack_lpt":
+            # Stacked Left, Property on Top
+            self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, self.property_dock)
+            self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, self.timeline_dock)
+            self.splitDockWidget(self.property_dock, self.timeline_dock, Qt.Orientation.Vertical)
+            self.timeline_dock.show()
+            self.property_dock.show()
+
+        elif preset == "stack_rtp":
+            # Stacked Right, Timeline on Top
+            self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.timeline_dock)
+            self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.property_dock)
+            self.splitDockWidget(self.timeline_dock, self.property_dock, Qt.Orientation.Vertical)
+            self.timeline_dock.show()
+            self.property_dock.show()
+
+        elif preset == "stack_rpt":
+            # Stacked Right, Property on Top
+            self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.property_dock)
+            self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.timeline_dock)
+            self.splitDockWidget(self.property_dock, self.timeline_dock, Qt.Orientation.Vertical)
+            self.timeline_dock.show()
+            self.property_dock.show()
+
     def closeEvent(self, event):
         if self.check_unsaved_changes():
+            # Save settings
+            self.settings.setValue("geometry", self.saveGeometry())
+            self.settings.setValue("windowState", self.saveState())
+            self.settings.setValue("theme", self.current_theme)
             event.accept()
         else:
             event.ignore()
