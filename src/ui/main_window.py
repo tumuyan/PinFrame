@@ -132,6 +132,12 @@ class MainWindow(QMainWindow):
         self.scale_down_action.triggered.connect(lambda: self.adjust_selection_scale(0.9))
         self.addAction(self.scale_down_action)
 
+        # Play/Pause Shortcut (Global Space)
+        self.play_pause_action = QAction("Play/Pause", self)
+        self.play_pause_action.setShortcut("Space")
+        self.play_pause_action.triggered.connect(self.toggle_play)
+        self.addAction(self.play_pause_action)
+
     def create_toolbar(self):
         toolbar = QToolBar("Main")
         self.addToolBar(toolbar)

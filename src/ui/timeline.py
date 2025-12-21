@@ -16,8 +16,28 @@ class TimelineWidget(QTreeWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setColumnCount(4)
-        self.setHeaderLabels(["Filename", "Scale", "Position", "Orig. Res"])
+        self.setColumnCount(5)
+        self.setHeaderLabels(["🚫", "Filename", "Scale", "Position", "Orig. Res"])
+        
+        header = self.header()
+        header.setStretchLastSection(False)
+        header.setMinimumSectionSize(0)
+        
+        # Column 0: Disable icon
+        header.setSectionResizeMode(0, QHeaderView.ResizeMode.Fixed)
+        header.resizeSection(0, 24) # Slightly smaller
+        
+        # Columns 2-4: Fixed/Interactive sizes
+        header.setSectionResizeMode(2, QHeaderView.ResizeMode.Interactive)
+        header.resizeSection(2, 80)
+        header.setSectionResizeMode(3, QHeaderView.ResizeMode.Interactive)
+        header.resizeSection(3, 100)
+        header.setSectionResizeMode(4, QHeaderView.ResizeMode.Interactive)
+        header.resizeSection(4, 150)
+        
+        # Column 1: Filename - STRETCH
+        header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        
         self.setDragDropMode(QAbstractItemView.DragDropMode.DragDrop)
         self.setAcceptDrops(True)
         self.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
@@ -40,12 +60,6 @@ class TimelineWidget(QTreeWidget):
             QTreeWidget::item:selected { background-color: #555; }
         """)
         
-        header = self.header()
-        header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
-        header.setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
-        header.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
-        header.setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
-
         self.itemSelectionChanged.connect(self.on_selection_changed)
 
     def dragEnterEvent(self, event):
@@ -217,7 +231,8 @@ class TimelineWidget(QTreeWidget):
         # Store original resolution for calculation
         item.setData(3, Qt.ItemDataRole.UserRole, (orig_width, orig_height))
         
-        item.setText(0, filename)
+        item.setText(0, "") # Just the checkbox
+        item.setText(1, filename)
         
         # Checkbox
         item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
@@ -228,11 +243,11 @@ class TimelineWidget(QTreeWidget):
 
     def update_item_display(self, item, frame_data, orig_w, orig_h):
         # Scale
-        item.setText(1, f"{frame_data.scale:.2f}")
+        item.setText(2, f"{frame_data.scale:.4f}")
         
         # Position
         pos_str = f"({int(frame_data.position[0])}, {int(frame_data.position[1])})"
-        item.setText(2, pos_str)
+        item.setText(3, pos_str)
         
         # Orig Res and Calculated Res
         if orig_w > 0:
@@ -242,7 +257,7 @@ class TimelineWidget(QTreeWidget):
         else:
             res_str = "?x?"
         
-        item.setText(3, res_str)
+        item.setText(4, res_str)
 
     def refresh_current_items(self):
         items = self.findItems("*", Qt.MatchFlag.MatchWildcard | Qt.MatchFlag.MatchRecursive)
