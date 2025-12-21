@@ -97,6 +97,8 @@
     "msg_unsaved_changes": "You have unsaved changes. Save now?",
     "dlg_load_error": "Failed to load project",
     "dlg_slice_title": "Slice Image",
+    "dlg_import_slice_title": "Select Sprite Sheet to Slice",
+    "dlg_unsaved_title": "Unsaved Changes",
     "slice_cols": "Horizontal Slices (Cols):",
     "slice_rows": "Vertical Slices (Rows):",
     "slice_mode": "Slice Mode:",

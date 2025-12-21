@@ -804,19 +804,18 @@ class MainWindow(QMainWindow):
         if not selected:
             return
             
-        # We duplicate all selected
-        # Insert them after the last selected item? Or after each?
-        # Standard: Insert after the selection block.
-        
-        # Get indices
+        # Get indices of all selected items
         indices = []
         for item in selected:
              indices.append(self.timeline.indexOfTopLevelItem(item))
         
-        indices.sort(reverse=True) # Process from bottom up to avoid index shift issues if inserting logic is complex?
-        # Actually simplest is to process bottom up, clone, and insert after.
+        indices.sort()  # Sort in ascending order
         
-        added_count = 0
+        # Find the insertion point (after the last selected item)
+        insert_pos = indices[-1] + 1
+        
+        # Collect all duplicates first
+        duplicates = []
         for idx in indices:
             # Get original data
             orig_data = self.project.frames[idx]
@@ -828,34 +827,35 @@ class MainWindow(QMainWindow):
                 position=orig_data.position,
                 rotation=orig_data.rotation,
                 target_resolution=orig_data.target_resolution,
-                is_active=orig_data.is_active
+                is_disabled=orig_data.is_disabled,
+                crop_rect=orig_data.crop_rect
             )
             
-            # Insert into project
-            insert_idx = idx + 1
-            self.project.frames.insert(insert_idx, new_data)
-            
-            # Insert into Timeline
-            # Need original dimensions
-            # We can get them from the item
+            # Get original dimensions from timeline item
             item = self.timeline.topLevelItem(idx)
             orig_res = item.data(3, Qt.ItemDataRole.UserRole)
             w, h = orig_res if orig_res else (0, 0)
             
+            duplicates.append((new_data, w, h))
+        
+        # Insert all duplicates at the end of selection
+        for i, (new_data, w, h) in enumerate(duplicates):
+            # Insert into project
+            self.project.frames.insert(insert_pos + i, new_data)
+            
+            # Create timeline item
             new_item = QTreeWidgetItem()
             new_item.setData(0, Qt.ItemDataRole.UserRole, new_data)
             new_item.setData(3, Qt.ItemDataRole.UserRole, (w, h))
-            new_item.setText(0, os.path.basename(new_data.file_path)) # Using same name
+            new_item.setText(0, os.path.basename(new_data.file_path))
             new_item.setFlags(new_item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
-            new_item.setCheckState(0, Qt.CheckState.Checked if new_data.is_active else Qt.CheckState.Unchecked)
+            new_item.setCheckState(0, Qt.CheckState.Checked if new_data.is_disabled else Qt.CheckState.Unchecked)
             
             self.timeline.update_item_display(new_item, new_data, w, h)
-            self.timeline.insertTopLevelItem(insert_idx, new_item)
-            
-            added_count += 1
+            self.timeline.insertTopLevelItem(insert_pos + i, new_item)
             
         self.mark_dirty()
-        self.statusBar().showMessage(i18n.t("msg_frames_duplicated").format(count=added_count), 3000)
+        self.statusBar().showMessage(i18n.t("msg_frames_duplicated").format(count=len(duplicates)), 3000)
 
     def remove_frame(self):
         selected = self.timeline.selectedItems()
@@ -1263,8 +1263,8 @@ class MainWindow(QMainWindow):
     def check_unsaved_changes(self):
         if self.is_dirty:
             from PyQt6.QtWidgets import QMessageBox
-            reply = QMessageBox.question(self, "Unsaved Changes", 
-                                        "You have unsaved changes. Do you want to save them?",
+            reply = QMessageBox.question(self, i18n.t("dlg_unsaved_title"), 
+                                        i18n.t("msg_unsaved_changes"),
                                         QMessageBox.StandardButton.Save | QMessageBox.StandardButton.Discard | QMessageBox.StandardButton.Cancel)
             
             if reply == QMessageBox.StandardButton.Save:
@@ -1511,7 +1511,7 @@ class MainWindow(QMainWindow):
                 action.setChecked(action_mode == mode)
 
     def import_sprite_sheet(self):
-        file, _ = QFileDialog.getOpenFileName(self, i18n.t("dlg_import_title"), "", i18n.t("dlg_filter_images"))
+        file, _ = QFileDialog.getOpenFileName(self, i18n.t("dlg_import_slice_title"), "", i18n.t("dlg_filter_images"))
         if not file:
             return
             

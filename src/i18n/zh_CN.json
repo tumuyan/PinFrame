@@ -23,6 +23,8 @@
     "dlg_load_title": "加载项目",
     "dlg_load_error": "加载项目失败",
     "dlg_slice_title": "切割图像",
+    "dlg_import_slice_title": "选择要切割的精灵表",
+    "dlg_unsaved_title": "未保存的更改",
     "slice_cols": "水平切割 (列数):",
     "slice_rows": "垂直切割 (行数):",
     "slice_mode": "切割方式:",
