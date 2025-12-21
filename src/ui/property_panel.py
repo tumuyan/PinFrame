@@ -1,18 +1,24 @@
 import os
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, 
                              QDoubleSpinBox, QGroupBox, QSpinBox, QPushButton, QGridLayout)
-from PyQt6.QtCore import Qt, pyqtSignal, QRect
+from PyQt6.QtCore import Qt, pyqtSignal, QRect, QTimer
 from PyQt6.QtGui import QImage, QPixmap, QPainter, QColor
 
 class PropertyPanel(QWidget):
     # Signals
     frame_data_changed = pyqtSignal(object, object, object) # scale, x, y
+    relative_move_requested = pyqtSignal(float, float) # dx, dy
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.selected_frames = []
         self.project_width = 512 # Set externally
         self.project_height = 512
+        
+        self.repeat_timer = QTimer(self)
+        self.repeat_timer.timeout.connect(self.on_repeat_timer_timeout)
+        self.repeat_mode = None # "repeat" or "rev"
+        self.repeat_interval = 250
         
         layout = QVBoxLayout(self)
         
@@ -89,6 +95,53 @@ class PropertyPanel(QWidget):
         size_layout.addLayout(t_res_layout)
         
         layout.addWidget(size_group)
+        
+        # Relative Move
+        rel_move_group = QGroupBox("Relative Move")
+        rel_layout = QVBoxLayout(rel_move_group)
+        
+        # dx/dy inputs
+        d_input_layout = QHBoxLayout()
+        d_input_layout.addWidget(QLabel("dX:"))
+        self.dx_spin = QDoubleSpinBox()
+        self.dx_spin.setRange(-9999, 9999)
+        self.dx_spin.setDecimals(2)
+        d_input_layout.addWidget(self.dx_spin)
+        
+        d_input_layout.addWidget(QLabel("dY:"))
+        self.dy_spin = QDoubleSpinBox()
+        self.dy_spin.setRange(-9999, 9999)
+        self.dy_spin.setDecimals(2)
+        d_input_layout.addWidget(self.dy_spin)
+        rel_layout.addLayout(d_input_layout)
+        
+        # Move Buttons
+        move_btn_layout = QHBoxLayout()
+        self.btn_move_x = QPushButton("Move X")
+        self.btn_move_x.clicked.connect(lambda: self.relative_move_requested.emit(self.dx_spin.value(), 0))
+        move_btn_layout.addWidget(self.btn_move_x)
+        
+        self.btn_move_y = QPushButton("Move Y")
+        self.btn_move_y.clicked.connect(lambda: self.relative_move_requested.emit(0, self.dy_spin.value()))
+        move_btn_layout.addWidget(self.btn_move_y)
+        rel_layout.addLayout(move_btn_layout)
+        
+        # Repeat Buttons
+        repeat_layout = QHBoxLayout()
+        self.btn_repeat = QPushButton("Repeat")
+        self.btn_repeat.setEnabled(False)
+        self.btn_repeat.pressed.connect(lambda: self.start_repeat("repeat"))
+        self.btn_repeat.released.connect(self.stop_repeat)
+        repeat_layout.addWidget(self.btn_repeat)
+        
+        self.btn_rev_repeat = QPushButton("Rev Repeat")
+        self.btn_rev_repeat.setEnabled(False)
+        self.btn_rev_repeat.pressed.connect(lambda: self.start_repeat("rev"))
+        self.btn_rev_repeat.released.connect(self.stop_repeat)
+        repeat_layout.addWidget(self.btn_rev_repeat)
+        rel_layout.addLayout(repeat_layout)
+        
+        layout.addWidget(rel_move_group)
         
         # Alignment
         align_group = QGroupBox("Alignment")
@@ -391,3 +444,61 @@ class PropertyPanel(QWidget):
             painter.end()
         
         self.preview_label.setPixmap(QPixmap.fromImage(preview_img))
+    def on_repeat_clicked(self):
+        # Signaling 0,0 basically means "use whatever MainWindow has as last" 
+        # But better to stay explicit. MainWindow will handle the actual "last" storage.
+        # Actually, let's just emit a special value or let MainWindow handle it.
+        # User said "repeat上次移动的操作".
+        self.relative_move_requested.emit(99999, 99999) # Special value for repeat? 
+        # No, better: connect to a slot in MainWindow that knows the last move.
+
+    def on_rev_repeat_clicked(self):
+        self.relative_move_requested.emit(-99999, -99999) # Special value for rev repeat?
+        # Actually let's just add specific methods or more signals.
+
+    # Better approach: specific signals for repeat/rev_repeat
+    repeat_requested = pyqtSignal()
+    rev_repeat_requested = pyqtSignal()
+
+    # Re-doing the connections in __init__ would be better but let's just make these slots emit.
+    def on_repeat_clicked(self):
+        self.repeat_requested.emit()
+
+    def set_repeat_enabled(self, enabled):
+        self.btn_repeat.setEnabled(enabled)
+        self.btn_rev_repeat.setEnabled(enabled)
+
+    def set_repeat_interval(self, ms):
+        """ ms <= 0 means disabled """
+        self.repeat_interval = ms
+        if ms <= 0:
+            self.stop_repeat()
+
+    def start_repeat(self, mode):
+        if self.repeat_interval <= 0:
+            # If auto-repeat is disabled, just trigger once immediately
+            if mode == "repeat":
+                self.repeat_requested.emit()
+            else:
+                self.rev_repeat_requested.emit()
+            return
+
+        self.repeat_mode = mode
+        # Trigger immediately once
+        if mode == "repeat":
+            self.repeat_requested.emit()
+        else:
+            self.rev_repeat_requested.emit()
+            
+        # Start timer for auto-repeat
+        self.repeat_timer.start(self.repeat_interval)
+
+    def stop_repeat(self):
+        self.repeat_timer.stop()
+        self.repeat_mode = None
+
+    def on_repeat_timer_timeout(self):
+        if self.repeat_mode == "repeat":
+            self.repeat_requested.emit()
+        elif self.repeat_mode == "rev":
+            self.rev_repeat_requested.emit()

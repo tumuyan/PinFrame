@@ -62,6 +62,13 @@ class MainWindow(QMainWindow):
         self.property_dock.setWidget(self.property_panel)
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.property_dock)
 
+        # Connect relative move
+        self.property_panel.relative_move_requested.connect(self.apply_relative_move)
+        self.property_panel.repeat_requested.connect(self.repeat_last_move)
+        self.property_panel.rev_repeat_requested.connect(self.reverse_repeat_last_move)
+        
+        self.last_relative_offset = (0.0, 0.0)
+
         # Menus & Toolbar
         self.create_actions()
         self.create_menus()
@@ -72,6 +79,8 @@ class MainWindow(QMainWindow):
         self.timer.timeout.connect(self.next_frame)
         self.is_playing = False
         self.playback_reverse = False
+        self.playlist = []
+        self.play_index = 0
         
         # Status Bar
         self.statusBar().showMessage("Ready")
@@ -89,6 +98,19 @@ class MainWindow(QMainWindow):
         state = self.settings.value("windowState")
         if state:
             self.restoreState(state)
+            
+        # Restore repeat interval
+        repeat_ms = int(self.settings.value("repeat_interval", 250))
+        self.property_panel.set_repeat_interval(repeat_ms)
+        self.set_repeat_action_checked(repeat_ms)
+
+    def set_repeat_action_checked(self, ms):
+        if not hasattr(self, 'repeat_actions'):
+            return
+        for val, action in self.repeat_actions.items():
+            if val == ms:
+                action.setChecked(True)
+                break
 
     def apply_theme(self, theme_name):
         self.current_theme = theme_name
@@ -434,6 +456,27 @@ class MainWindow(QMainWindow):
         self.layout_stack_rpt_action = QAction("Stacked Right (Prop Top)", self)
         self.layout_stack_rpt_action.triggered.connect(lambda: self.apply_layout_preset("stack_rpt"))
 
+        # Auto-Repeat Settings
+        self.repeat_group = QActionGroup(self)
+        self.repeat_actions = {}
+        
+        intervals = [
+            ("Disabled", 0),
+            ("100ms", 100),
+            ("250ms (Default)", 250),
+            ("500ms", 500),
+            ("1000ms", 1000)
+        ]
+        
+        for name, ms in intervals:
+            action = QAction(name, self)
+            action.setCheckable(True)
+            action.triggered.connect(lambda checked, m=ms: self.update_repeat_interval(m))
+            self.repeat_group.addAction(action)
+            self.repeat_actions[ms] = action
+        
+
+
     def create_menus(self):
         menubar = self.menuBar()
         
@@ -458,6 +501,11 @@ class MainWindow(QMainWindow):
         edit_menu.addAction(self.rem_frame_action)
         edit_menu.addSeparator()
         edit_menu.addAction(self.reverse_order_action)
+        edit_menu.addSeparator()
+        
+        repeat_menu = edit_menu.addMenu("Auto-Repeat Delay")
+        for ms in [0, 100, 250, 500, 1000]:
+            repeat_menu.addAction(self.repeat_actions[ms])
         
         # Layout Menu
         layout_menu = menubar.addMenu("&Layout")
@@ -831,6 +879,43 @@ class MainWindow(QMainWindow):
         self.timeline.refresh_current_items()
         self.mark_dirty()
 
+    def apply_relative_move(self, dx, dy, update_last=True):
+        selected_items = self.timeline.selectedItems()
+        if not selected_items:
+            return
+            
+        for item in selected_items:
+            frame_data = item.data(0, Qt.ItemDataRole.UserRole)
+            frame_data.position = (frame_data.position[0] + dx, frame_data.position[1] + dy)
+            
+            # Update Timeline display
+            orig_res = item.data(3, Qt.ItemDataRole.UserRole)
+            w, h = orig_res if orig_res else (0, 0)
+            self.timeline.update_item_display(item, frame_data, w, h)
+            
+        if update_last:
+            self.last_relative_offset = (dx, dy)
+            self.property_panel.set_repeat_enabled(True)
+            
+        self.canvas.update()
+        self.property_panel.update_ui_from_selection()
+        self.mark_dirty()
+        self.statusBar().showMessage(f"Applied relative move: ({dx}, {dy})", 2000)
+
+    def repeat_last_move(self):
+        dx, dy = self.last_relative_offset
+        if dx == 0 and dy == 0:
+            return
+        # Use update_last=False so we don't overwrite the manual move vector
+        self.apply_relative_move(dx, dy, update_last=False)
+
+    def reverse_repeat_last_move(self):
+        dx, dy = self.last_relative_offset
+        if dx == 0 and dy == 0:
+            return
+        # Use update_last=False
+        self.apply_relative_move(-dx, -dy, update_last=False)
+
     def adjust_selection_scale(self, factor):
         selected_items = self.timeline.selectedItems()
         if not selected_items:
@@ -1163,6 +1248,11 @@ class MainWindow(QMainWindow):
             self.splitDockWidget(self.property_dock, self.timeline_dock, Qt.Orientation.Vertical)
             self.timeline_dock.show()
             self.property_dock.show()
+
+    def update_repeat_interval(self, ms):
+        self.property_panel.set_repeat_interval(ms)
+        self.settings.setValue("repeat_interval", ms)
+        self.statusBar().showMessage(f"Auto-repeat delay set to {ms}ms" if ms > 0 else "Auto-repeat disabled", 2000)
 
     def closeEvent(self, event):
         if self.check_unsaved_changes():
