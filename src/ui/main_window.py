@@ -10,6 +10,7 @@ from ui.timeline import TimelineWidget
 from ui.property_panel import PropertyPanel
 from ui.settings_dialog import SettingsDialog
 from ui.export_dialog import ExportOptionsDialog
+from ui.onion_settings import OnionSettingsDialog
 from i18n.manager import i18n
 import os
 
@@ -50,7 +51,11 @@ class MainWindow(QMainWindow):
         self.timeline.disabled_state_changed.connect(self.on_frame_disabled_state_changed)
         self.timeline.enable_requested.connect(self.toggle_enable_disable)
         self.timeline.reverse_order_requested.connect(self.reverse_selected_frames)
+        self.timeline.enable_requested.connect(self.toggle_enable_disable)
+        self.timeline.reverse_order_requested.connect(self.reverse_selected_frames)
         self.timeline.integerize_offset_requested.connect(self.integerize_selection_offset)
+        self.timeline.set_reference_requested.connect(self.set_reference_frame_from_selection)
+        self.timeline.clear_reference_requested.connect(self.clear_reference_frame)
         self.timeline_dock.setWidget(self.timeline)
         self.addDockWidget(Qt.DockWidgetArea.BottomDockWidgetArea, self.timeline_dock)
         
@@ -111,6 +116,14 @@ class MainWindow(QMainWindow):
         # Restore background mode
         bg_mode = self.settings.value("background_mode", "checkerboard")
         self.update_background_mode(bg_mode)
+
+        # Onion Skin & Reference State
+        self.onion_enabled = False
+        self.onion_prev = self.settings.value("onion_prev", 1, type=int)
+        self.onion_next = self.settings.value("onion_next", 0, type=int)
+        self.onion_opacity_step = self.settings.value("onion_opacity_step", 0.2, type=float)
+        self.onion_ref_exclusive = self.settings.value("onion_exclusive", False, type=bool)
+        self.reference_frame = None # FrameData
 
     def set_repeat_action_checked(self, ms):
         if not hasattr(self, 'repeat_actions'):
@@ -344,6 +357,12 @@ class MainWindow(QMainWindow):
             
         QApplication.instance().setStyleSheet(qss)
         
+        # Refresh visuals (specifically for Reference Frame highlight)
+        if hasattr(self, 'timeline'):
+            self.timeline.set_theme_mode(theme_name == "dark")
+            if hasattr(self, 'reference_frame'):
+                 self.timeline.set_visual_reference_frame(self.reference_frame)
+        
         # Update specific widget styles that might need override
         self.canvas.update()
         self.property_panel.update_preview()
@@ -435,7 +454,23 @@ class MainWindow(QMainWindow):
         # View Reset Shortcut (Global)
         self.reset_view_action = QAction(i18n.t("action_reset_view"), self)
         self.reset_view_action.setShortcut("Ctrl+0")
+        self.reset_view_action.setShortcut("Ctrl+0")
         self.reset_view_action.triggered.connect(self.canvas.reset_view)
+        
+        # Onion Skin Actions
+        self.onion_action = QAction(i18n.t("action_onion_skin"), self)
+        self.onion_action.setCheckable(True)
+        self.onion_action.setShortcut("O")
+        self.onion_action.triggered.connect(self.toggle_onion_skin)
+        
+        self.onion_settings_action = QAction(i18n.t("action_onion_settings"), self)
+        self.onion_settings_action.triggered.connect(self.configure_onion_settings)
+        
+        # Toolbar Onion Action (Separate for dynamic text)
+        self.onion_toolbar_action = QAction(i18n.t("toolbar_onion_off"), self)
+        self.onion_toolbar_action.setCheckable(True)
+        self.onion_toolbar_action.triggered.connect(self.toggle_onion_skin)
+        
         self.addAction(self.reset_view_action)
 
         # Scale Hotkeys (Global)
@@ -545,6 +580,11 @@ class MainWindow(QMainWindow):
         file_menu.addSeparator()
         file_menu.addAction(self.close_action)
         file_menu.addAction(self.reload_action)
+        
+        self.reload_images_action = QAction(i18n.t("action_reload_images"), self)
+        self.reload_images_action.triggered.connect(self.reload_image_resources)
+        file_menu.addAction(self.reload_images_action)
+        
         file_menu.addSeparator()
         file_menu.addAction(self.settings_action)
         file_menu.addSeparator()
@@ -585,6 +625,13 @@ class MainWindow(QMainWindow):
         # View Menu
         view_menu = menubar.addMenu(i18n.t("menu_view"))
         view_menu.addAction(self.reset_view_action)
+        view_menu.addSeparator()
+        
+        onion_menu = view_menu.addMenu(i18n.t("menu_onion"))
+        onion_menu.addAction(self.onion_action)
+        onion_menu.addAction(self.onion_settings_action)
+        
+        view_menu.addSeparator()
         
         self.background_menu = view_menu.addMenu(i18n.t("menu_background"))
         for action in self.bg_actions.values():
@@ -607,11 +654,21 @@ class MainWindow(QMainWindow):
         
         toolbar.addAction(self.import_action)
         toolbar.addAction(self.save_action)
-        toolbar.addAction(self.save_as_action)
+        # toolbar.addAction(self.save_as_action) # Removed as per Cycle 33
         toolbar.addAction(self.load_action)
         toolbar.addSeparator()
         toolbar.addAction(self.settings_action)
         toolbar.addAction(self.export_action)
+        
+        toolbar.addSeparator()
+        
+        # Onion/Reference Actions (Merged into Main Toolbar)
+        toolbar.addAction(self.onion_toolbar_action)
+        
+        # Add "Set Reference" action (from selection)
+        self.set_ref_action = QAction(i18n.t("action_set_reference"), self)
+        self.set_ref_action.triggered.connect(self.set_reference_frame_from_selection)
+        toolbar.addAction(self.set_ref_action)
         
         toolbar.addSeparator()
         
@@ -922,14 +979,212 @@ class MainWindow(QMainWindow):
             self.update_playlist()
         self.statusBar().showMessage(i18n.t("msg_frames_enabled_disabled").format(action=i18n.t("action_enabled") if enable else i18n.t("action_disabled"), count=len(selected)), 3000)
 
+        if self.is_playing:
+            self.update_playlist()
+        self.statusBar().showMessage(i18n.t("msg_frames_enabled_disabled").format(action=i18n.t("action_enabled") if enable else i18n.t("action_disabled"), count=len(selected)), 3000)
+
+    # --- Onion Skin & Reference Logic ---
+    
+    def toggle_onion_skin(self, checked):
+        # Update both actions
+        self.onion_action.setChecked(checked)
+        self.onion_toolbar_action.setChecked(checked)
+        
+        # Update Toolbar Text
+        if checked:
+            self.onion_toolbar_action.setText(i18n.t("toolbar_onion_on"))
+        else:
+             self.onion_toolbar_action.setText(i18n.t("toolbar_onion_off"))
+
+        self.onion_enabled = checked 
+        if self.onion_enabled and self.onion_ref_exclusive:
+            # print("[DEBUG] Exclusive mode: Clearing reference frame visual")
+            self.clear_reference_frame(update=False)
+            
+        self.update_canvas_extras()
+        
+    def configure_onion_settings(self):
+        dlg = OnionSettingsDialog(self, self.onion_prev, self.onion_next, self.onion_opacity_step, self.onion_ref_exclusive)
+        if dlg.exec():
+            settings = dlg.get_settings()
+            # onion_enabled is NOT updated here anymore
+            self.onion_prev = settings["prev"]
+            self.onion_next = settings["next"]
+            self.onion_opacity_step = settings["opacity"]
+            self.onion_ref_exclusive = settings["exclusive"]
+            
+            # Sync action state and text (Just re-apply current state to update visuals if options changed)
+            self.toggle_onion_skin(self.onion_enabled)
+            
+            if self.onion_enabled and self.onion_ref_exclusive:
+                 self.clear_reference_frame(update=False)
+
+            self.update_canvas_extras()
+
+    def set_reference_frame_from_selection(self):
+        selected = self.timeline.selectedItems()
+        if len(selected) != 1:
+            return
+            
+        frame_data = selected[0].data(0, Qt.ItemDataRole.UserRole)
+        
+        # Toggle / Cancel if already Ref
+        if self.reference_frame and frame_data == self.reference_frame:
+             self.clear_reference_frame()
+             self.set_ref_action.setText(i18n.t("action_set_reference"))
+             return
+             
+        # print(f"[DEBUG] Setting reference frame: {frame_data.file_path}")
+        
+        self.reference_frame = frame_data
+        
+        if self.onion_ref_exclusive:
+            # print("[DEBUG] Exclusive mode: Disabling onion skin")
+            # Reuse toggle to update text/state
+            self.toggle_onion_skin(False)
+        
+        # Update Action Text
+        self.set_ref_action.setText(i18n.t("action_cancel_reference"))
+        
+        # update UI indication
+        self.update_canvas_extras()
+        self.timeline.set_visual_reference_frame(self.reference_frame) # Ensure timeline update
+        self.timeline.viewport().update()
+        
+    def clear_reference_frame(self, update=True):
+        self.reference_frame = None
+        if update:
+            self.update_canvas_extras()
+            self.timeline.set_visual_reference_frame(None)
+            self.timeline.viewport().update()
+
+    def update_canvas_extras(self):
+        # 1. Reference Frame
+        self.canvas.set_reference_frame(self.reference_frame)
+        self.timeline.set_visual_reference_frame(self.reference_frame)
+        
+        # 2. Onion Skins
+        onion_skins = []
+        if self.onion_enabled and (self.onion_prev > 0 or self.onion_next > 0):
+            # Find current frame index
+            current_item = self.timeline.currentItem()
+            if current_item:
+                index = self.timeline.indexOfTopLevelItem(current_item)
+                
+                # Previous Frames
+                for i in range(1, self.onion_prev + 1):
+                    target_idx = index - i
+                    if target_idx >= 0:
+                        item = self.timeline.topLevelItem(target_idx)
+                        data = item.data(0, Qt.ItemDataRole.UserRole)
+                        opacity = max(0.05, 1.0 - (i * self.onion_opacity_step))
+                        onion_skins.append((data, opacity))
+                
+                # Next Frames
+                for i in range(1, self.onion_next + 1):
+                    target_idx = index + i
+                    if target_idx < self.timeline.topLevelItemCount():
+                        item = self.timeline.topLevelItem(target_idx)
+                        data = item.data(0, Qt.ItemDataRole.UserRole)
+                        opacity = max(0.05, 1.0 - (i * self.onion_opacity_step))
+                        onion_skins.append((data, opacity))
+
+        self.canvas.set_onion_skins(onion_skins)
+
     def on_selection_changed(self, frames):
         # 'frames' is a list of FrameData objects from Timeline
         self.canvas.set_selected_frames(frames)
         self.property_panel.set_selection(frames)
         
+        # Update Reference Action Text
+        if len(frames) == 1 and self.reference_frame and frames[0] == self.reference_frame:
+             self.set_ref_action.setText(i18n.t("action_cancel_reference"))
+        else:
+             self.set_ref_action.setText(i18n.t("action_set_reference"))
+        
+        self.update_canvas_extras() # Update Onion/Ref
+        
         # Update playlist if playing
         if self.is_playing:
             self.update_playlist()
+        
+        # Show offset information for multi-frame selection when not playing
+        if not self.is_playing and len(frames) >= 2:
+            self.show_frame_offset_info(frames)
+    
+    def show_frame_offset_info(self, frames):
+        """Calculate and display offset information between first and last selected frames."""
+        first_frame = frames[0]
+        last_frame = frames[-1]
+        
+        # Get dimensions for both frames
+        first_w, first_h = self.get_frame_dimensions(first_frame)
+        last_w, last_h = self.get_frame_dimensions(last_frame)
+        
+        if first_w == 0 or last_w == 0:
+            return
+        
+        # Calculate scaled dimensions
+        first_scaled_w = first_w * first_frame.scale
+        first_scaled_h = first_h * first_frame.scale
+        last_scaled_w = last_w * last_frame.scale
+        last_scaled_h = last_h * last_frame.scale
+        
+        # Center positions
+        first_center_x = first_frame.position[0]
+        first_center_y = first_frame.position[1]
+        last_center_x = last_frame.position[0]
+        last_center_y = last_frame.position[1]
+        
+        # Center offset
+        center_dx = last_center_x - first_center_x
+        center_dy = last_center_y - first_center_y
+        
+        # Edge positions
+        first_left = first_center_x - first_scaled_w / 2
+        first_right = first_center_x + first_scaled_w / 2
+        first_top = first_center_y - first_scaled_h / 2
+        first_bottom = first_center_y + first_scaled_h / 2
+        
+        last_left = last_center_x - last_scaled_w / 2
+        last_right = last_center_x + last_scaled_w / 2
+        last_top = last_center_y - last_scaled_h / 2
+        last_bottom = last_center_y + last_scaled_h / 2
+        
+        # Edge offsets
+        left_offset = last_left - first_left
+        right_offset = last_right - first_right
+        top_offset = last_top - first_top
+        bottom_offset = last_bottom - first_bottom
+        
+        # Format message
+        msg = i18n.t("msg_multi_frame_offset").format(
+            count=len(frames),
+            center_dx=int(center_dx),
+            center_dy=int(center_dy),
+            left=int(left_offset),
+            right=int(right_offset),
+            top=int(top_offset),
+            bottom=int(bottom_offset)
+        )
+        
+        self.statusBar().showMessage(msg)
+    
+    def get_frame_dimensions(self, frame):
+        """Get the original dimensions of a frame, respecting crop_rect if present."""
+        if frame.crop_rect:
+            return frame.crop_rect[2], frame.crop_rect[3]
+        
+        # Try to get from file
+        if os.path.exists(frame.file_path):
+            try:
+                from PIL import Image
+                with Image.open(frame.file_path) as img:
+                    return img.size
+            except:
+                pass
+        
+        return 0, 0
 
     def on_canvas_transform_changed(self, primary_frame_data):
         # Update property panel ref
@@ -1352,9 +1607,18 @@ class MainWindow(QMainWindow):
                      
             self.is_dirty = False
             self.update_title()
+            
+            # Ensure resources are refreshed
+            self.reload_image_resources()
+            
             self.statusBar().showMessage(i18n.t("msg_project_reloaded").format(name=os.path.basename(self.current_project_path)), 3000)
         except Exception as e:
             self.statusBar().showMessage(i18n.t("msg_load_error").format(error=str(e)), 5000)
+
+    def reload_image_resources(self):
+        """Force reload of all image resources in the canvas."""
+        self.canvas.refresh_resources()
+        self.statusBar().showMessage(i18n.t("action_reload_images"), 3000) # Reusing label for status for now or simple msg
         
     def apply_layout_preset(self, preset):
         # Default area configuration for stacking
@@ -1576,6 +1840,10 @@ class MainWindow(QMainWindow):
             self.settings.setValue("geometry", self.saveGeometry())
             self.settings.setValue("windowState", self.saveState())
             self.settings.setValue("theme", self.current_theme)
+            self.settings.setValue("onion_exclusive", self.onion_ref_exclusive)
+            self.settings.setValue("onion_prev", self.onion_prev)
+            self.settings.setValue("onion_next", self.onion_next)
+            self.settings.setValue("onion_opacity_step", self.onion_opacity_step)
             event.accept()
         else:
             event.ignore()

@@ -30,6 +30,8 @@ class CanvasWidget(QWidget):
         # So we need to draw all selected images.
         
         self.selected_frames_data = [] # List of FrameData
+        self.onion_skin_frames = [] # List of (FrameData, opacity)
+        self.reference_frame = None # FrameData or None
         self.image_cache = {} # path -> QImage
 
         # Project Settings
@@ -60,6 +62,21 @@ class CanvasWidget(QWidget):
         for f in frames_data:
             if f.file_path not in self.image_cache:
                 self.image_cache[f.file_path] = QImage(f.file_path)
+        self.update()
+
+    def set_onion_skins(self, skins):
+        """Set onion skin frames. skins is a list of (FrameData, opacity)."""
+        self.onion_skin_frames = skins
+        for f, _ in skins:
+            if f.file_path not in self.image_cache:
+                self.image_cache[f.file_path] = QImage(f.file_path)
+        self.update()
+
+    def set_reference_frame(self, frame_data):
+        """Set a single reference frame."""
+        self.reference_frame = frame_data
+        if frame_data and frame_data.file_path not in self.image_cache:
+            self.image_cache[frame_data.file_path] = QImage(frame_data.file_path)
         self.update()
 
     def reset_view(self):
@@ -98,11 +115,8 @@ class CanvasWidget(QWidget):
         painter.setPen(QPen(Qt.GlobalColor.white, 2))
         painter.drawRect(output_rect)
 
-        # Draw Selected Images
-        # We should draw them in some order (preferably timeline order), but we only know selected ones here.
-        # User didn't specify Z-order of selection. We'll just draw all selected.
-        
-        for frame_data in self.selected_frames_data:
+        # Draw Frame Helper
+        def draw_frame(frame_data, opacity=1.0, is_ref=False):
             if frame_data.file_path in self.image_cache:
                 img = self.image_cache[frame_data.file_path]
                 
@@ -117,27 +131,67 @@ class CanvasWidget(QWidget):
                 w = img.width()
                 h = img.height()
                 
+                # Setup transparency
+                if opacity < 1.0:
+                    painter.setOpacity(opacity)
+                
                 # Handle crop_rect
                 if frame_data.crop_rect:
                     cx, cy, cw, ch = frame_data.crop_rect
                     source_rect = QRectF(cx, cy, cw, ch)
                     target_rect = QRectF(-cw/2, -ch/2, cw, ch)
                     painter.drawImage(target_rect, img, source_rect)
-                    
-                    # Draw selection outline for the crop
-                    painter.setPen(QPen(Qt.GlobalColor.cyan, 2))
-                    painter.setBrush(Qt.BrushStyle.NoBrush)
-                    painter.drawRect(target_rect)
                 else:
                     target_rect = QRectF(-w/2, -h/2, w, h)
                     painter.drawImage(target_rect, img)
                     
-                    # Draw selection outline
+                # Reference Outline (Different color)
+                # But user said Reference frame is "preview" state.
+                # Usually references don't have outlines unless selected.
+                # We can skip outline for reference/onion.
+                
+                if not is_ref and opacity == 1.0: # Active Selection Outline
                     painter.setPen(QPen(Qt.GlobalColor.cyan, 2))
                     painter.setBrush(Qt.BrushStyle.NoBrush)
                     painter.drawRect(target_rect)
                 
                 painter.restore()
+
+        # 1. Draw Reference Frame (Bottom)
+        if self.reference_frame:
+            # Fixed 50% opacity or user configurable? User said "semi-transparent preview state".
+            draw_frame(self.reference_frame, 0.5, is_ref=True)
+
+        # 2. Draw Onion Skins
+        for frame, opacity in self.onion_skin_frames:
+            draw_frame(frame, opacity, is_ref=True) # Treat as ref to avoid outlines
+
+        # 3. Draw Selected Images (Active)
+        # We should draw them in some order (preferably timeline order), but we only know selected ones here.
+        # User didn't specify Z-order of selection. We'll just draw all selected.
+        
+        for frame_data in self.selected_frames_data:
+            draw_frame(frame_data)
+
+    def refresh_resources(self):
+        """Clear image cache and reload images for active frames."""
+        self.image_cache.clear()
+        
+        # Reload selected frames
+        self.set_selected_frames(self.selected_frames_data)
+        
+        # Reload onion skins
+        frames_list = [f for f, _ in self.onion_skin_frames]
+        for f in frames_list:
+             if f.file_path not in self.image_cache:
+                self.image_cache[f.file_path] = QImage(f.file_path)
+        
+        # Reload reference frame
+        if self.reference_frame:
+            if self.reference_frame.file_path not in self.image_cache:
+                self.image_cache[self.reference_frame.file_path] = QImage(self.reference_frame.file_path)
+                
+        self.update()
 
     def keyPressEvent(self, event):
         # View Controls

@@ -16,7 +16,10 @@ class TimelineWidget(QTreeWidget):
     disabled_state_changed = pyqtSignal(object, bool) # frame_data, is_disabled
     enable_requested = pyqtSignal(bool) # True for Enable, False for Disable
     reverse_order_requested = pyqtSignal()
+    reverse_order_requested = pyqtSignal()
     integerize_offset_requested = pyqtSignal()
+    set_reference_requested = pyqtSignal()
+    clear_reference_requested = pyqtSignal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -62,7 +65,60 @@ class TimelineWidget(QTreeWidget):
         self.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.customContextMenuRequested.connect(self.show_context_menu)
         
+
+        
         self.itemSelectionChanged.connect(self.on_selection_changed)
+        
+        self.reference_frame_data = None
+        self.is_dark_theme = True # Default to dark
+
+    def set_theme_mode(self, is_dark):
+        self.is_dark_theme = is_dark
+        self.refresh_visuals()
+
+    def set_visual_reference_frame(self, frame_data):
+        self.reference_frame_data = frame_data
+        
+        root = self.invisibleRootItem()
+        for i in range(root.childCount()):
+            item = root.child(i)
+            data = item.data(0, Qt.ItemDataRole.UserRole)
+            
+            # Simple reference check
+            is_ref = (data is frame_data)
+            
+            # Update visual style (e.g. Background or Font)
+            if is_ref:
+                # Set background or font
+                font = item.font(1)
+                font.setBold(True)
+                item.setFont(1, font)
+                
+                # Optimized Colors for Light/Dark themes
+                if hasattr(self, 'is_dark_theme') and not self.is_dark_theme:
+                    # Light Theme: Light Green background
+                    color = QColor(200, 230, 200)
+                    color.setAlpha(255)
+                else:
+                    # Dark Theme (Default): Dark Green background
+                    color = QColor(30, 80, 40) 
+                    color.setAlpha(200)
+                
+                item.setBackground(1, color) 
+                if "[REF]" not in item.text(1):
+                    item.setText(1, f"[REF] {item.text(1)}")
+            else:
+                font = item.font(1)
+                font.setBold(False)
+                item.setFont(1, font)
+                item.setBackground(1, QColor(0, 0, 0, 0)) # Transparent
+                item.setText(1, item.text(1).replace("[REF] ", ""))
+
+    def refresh_visuals(self):
+        """Force refresh of visual elements (e.g. after theme change)."""
+        if self.reference_frame_data:
+            self.set_visual_reference_frame(self.reference_frame_data)
+
 
     def dragEnterEvent(self, event):
         if event.mimeData().hasUrls():
@@ -219,7 +275,21 @@ class TimelineWidget(QTreeWidget):
         menu.addAction(disable_action)
         menu.addAction(enable_action)
         menu.addAction(reverse_action)
+        menu.addAction(reverse_action)
         menu.addSeparator()
+        
+        # Reference Frame Actions
+        ref_action = QAction(i18n.t("action_set_reference"), self)
+        ref_action.triggered.connect(self.set_reference_requested.emit)
+        ref_action.setEnabled(len(selected_items) == 1)
+        
+        clear_ref_action = QAction(i18n.t("action_clear_reference"), self)
+        clear_ref_action.triggered.connect(self.clear_reference_requested.emit)
+        
+        menu.addAction(ref_action)
+        menu.addAction(clear_ref_action)
+        menu.addSeparator()
+        
         menu.addAction(dup_action)
         menu.addAction(rem_action)
         
