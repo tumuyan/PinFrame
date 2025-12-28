@@ -1,6 +1,6 @@
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
                              QDockWidget, QToolBar, QFileDialog, QSpinBox, 
-                             QLabel, QPushButton, QInputDialog, QTreeWidgetItem, QMenu)
+                             QLabel, QPushButton, QInputDialog, QTreeWidgetItem, QMenu, QStyle)
 from PyQt6.QtGui import QAction, QIcon, QKeySequence, QImage, QActionGroup
 from PyQt6.QtCore import Qt, QTimer, QSettings, QByteArray
 
@@ -11,11 +11,14 @@ from ui.property_panel import PropertyPanel
 from ui.settings_dialog import SettingsDialog
 from ui.export_dialog import ExportOptionsDialog
 from ui.onion_settings import OnionSettingsDialog
+from ui.utils.icon_generator import IconGenerator
+from PyQt6.QtGui import QAction, QIcon, QKeySequence, QImage, QActionGroup, QColor
 from i18n.manager import i18n
 import os
 
 class MainWindow(QMainWindow):
     def __init__(self):
+        QApplication.setAttribute(Qt.ApplicationAttribute.AA_DontShowIconsInMenus, True)
         super().__init__()
         
         # State
@@ -183,6 +186,16 @@ class MainWindow(QMainWindow):
                     spacing: 5px;
                     padding: 3px;
                 }
+                QToolButton {
+                    background-color: transparent;
+                    border: 1px solid transparent;
+                    border-radius: 3px;
+                    padding: 3px;
+                }
+                QToolButton:hover {
+                    background-color: rgba(255, 255, 255, 0.1);
+                    border: 1px solid rgba(255, 255, 255, 0.2);
+                }
                 QStatusBar {
                     background-color: #007ACC;
                     color: white;
@@ -291,6 +304,16 @@ class MainWindow(QMainWindow):
                     border: none;
                     padding: 3px;
                 }
+                QToolButton {
+                    background-color: transparent;
+                    border: 1px solid transparent;
+                    border-radius: 3px;
+                    padding: 3px;
+                }
+                QToolButton:hover {
+                    background-color: rgba(0, 0, 0, 0.05);
+                    border: 1px solid rgba(0, 0, 0, 0.1);
+                }
                 QStatusBar {
                     background-color: #007ACC;
                     color: white;
@@ -384,7 +407,10 @@ class MainWindow(QMainWindow):
             self.update_title()
 
     def create_actions(self):
+        style = self.style()
+        
         self.import_action = QAction(i18n.t("action_import"), self)
+        self.import_action.setIcon(style.standardIcon(QStyle.StandardPixmap.SP_DirOpenIcon))
         self.import_action.triggered.connect(self.import_images)
         self.import_action.setShortcut(QKeySequence.StandardKey.Open)
         
@@ -393,6 +419,7 @@ class MainWindow(QMainWindow):
         self.import_slice_action.setShortcut("Ctrl+Shift+I")
         
         self.save_action = QAction(i18n.t("action_save"), self)
+        self.save_action.setIcon(style.standardIcon(QStyle.StandardPixmap.SP_DialogSaveButton))
         self.save_action.triggered.connect(self.save_project)
         self.save_action.setShortcut(QKeySequence.StandardKey.Save)
 
@@ -401,6 +428,7 @@ class MainWindow(QMainWindow):
         self.save_as_action.setShortcut("Ctrl+Shift+S")
 
         self.load_action = QAction(i18n.t("action_load"), self)
+        self.load_action.setIcon(style.standardIcon(QStyle.StandardPixmap.SP_DialogOpenButton))
         self.load_action.triggered.connect(self.load_project)
         
         self.close_action = QAction(i18n.t("action_close"), self)
@@ -412,6 +440,7 @@ class MainWindow(QMainWindow):
         self.reload_action.setShortcut("Ctrl+R")
         
         self.export_action = QAction(i18n.t("action_export"), self)
+        self.export_action.setIcon(style.standardIcon(QStyle.StandardPixmap.SP_DialogApplyButton))
         self.export_action.triggered.connect(self.export_sequence)
 
         self.export_sheet_action = QAction(i18n.t("action_export_sheet"), self)
@@ -449,6 +478,7 @@ class MainWindow(QMainWindow):
         self.bg_actions["checkerboard"].setChecked(True)
         
         self.settings_action = QAction(i18n.t("action_settings"), self)
+        self.settings_action.setIcon(style.standardIcon(QStyle.StandardPixmap.SP_FileDialogDetailedView))
         self.settings_action.triggered.connect(self.open_settings)
 
         # View Reset Shortcut (Global)
@@ -468,6 +498,10 @@ class MainWindow(QMainWindow):
         
         # Toolbar Onion Action (Separate for dynamic text)
         self.onion_toolbar_action = QAction(i18n.t("toolbar_onion_off"), self)
+        onion_icon = QIcon()
+        onion_icon.addPixmap(IconGenerator.onion_skin_icon(QColor(150, 150, 150)).pixmap(32, 32), QIcon.Mode.Normal, QIcon.State.Off)
+        onion_icon.addPixmap(IconGenerator.onion_skin_icon(QColor(0, 122, 204)).pixmap(32, 32), QIcon.Mode.Normal, QIcon.State.On)
+        self.onion_toolbar_action.setIcon(onion_icon)
         self.onion_toolbar_action.setCheckable(True)
         self.onion_toolbar_action.triggered.connect(self.toggle_onion_skin)
         
@@ -489,11 +523,24 @@ class MainWindow(QMainWindow):
         self.play_pause_action.setShortcut("Space")
         self.play_pause_action.triggered.connect(self.handle_space_shortcut)
         self.addAction(self.play_pause_action)
+        
+        # Play Action for Toolbar
+        self.play_action = QAction(i18n.t("btn_play"), self)
+        self.play_action.setCheckable(True)
+        play_icon = QIcon()
+        play_icon.addPixmap(IconGenerator.play_icon(QColor(200, 200, 200)).pixmap(32, 32), QIcon.Mode.Normal, QIcon.State.Off)
+        play_icon.addPixmap(IconGenerator.pause_icon(QColor(255, 69, 58)).pixmap(32, 32), QIcon.Mode.Normal, QIcon.State.On) # Red for pause/stop
+        self.play_action.setIcon(play_icon)
+        self.play_action.toggled.connect(self.toggle_play)
 
-        self.reverse_play_action = QAction("Reverse Playback", self)
-        self.reverse_play_action.setCheckable(True)
-        self.reverse_play_action.triggered.connect(self.toggle_reverse_playback)
-        self.addAction(self.reverse_play_action)
+        # Reverse Play Action for Toolbar
+        self.rev_play_action = QAction(i18n.t("btn_backward"), self)
+        self.rev_play_action.setCheckable(True)
+        rev_icon = QIcon()
+        rev_icon.addPixmap(IconGenerator.reverse_play_icon(QColor(200, 200, 200)).pixmap(32, 32), QIcon.Mode.Normal, QIcon.State.Off)
+        rev_icon.addPixmap(IconGenerator.pause_icon(QColor(255, 69, 58)).pixmap(32, 32), QIcon.Mode.Normal, QIcon.State.On)
+        self.rev_play_action.setIcon(rev_icon)
+        self.rev_play_action.toggled.connect(lambda checked: self.toggle_reverse_playback(checked))
 
         self.theme_dark_action = QAction("Dark Theme", self)
         self.theme_dark_action.setCheckable(True)
@@ -620,7 +667,7 @@ class MainWindow(QMainWindow):
         # Playback Menu
         play_menu = menubar.addMenu(i18n.t("menu_playback"))
         play_menu.addAction(self.play_pause_action)
-        play_menu.addAction(self.reverse_play_action)
+        play_menu.addAction(self.rev_play_action)
         
         # View Menu
         view_menu = menubar.addMenu(i18n.t("menu_view"))
@@ -650,6 +697,7 @@ class MainWindow(QMainWindow):
     def create_toolbar(self):
         toolbar = QToolBar(i18n.t("toolbar_main"))
         toolbar.setObjectName("MainToolbar")
+        toolbar.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
         self.addToolBar(toolbar)
         
         toolbar.addAction(self.import_action)
@@ -662,39 +710,38 @@ class MainWindow(QMainWindow):
         
         toolbar.addSeparator()
         
-        # Onion/Reference Actions (Merged into Main Toolbar)
         toolbar.addAction(self.onion_toolbar_action)
         
         # Add "Set Reference" action (from selection)
         self.set_ref_action = QAction(i18n.t("action_set_reference"), self)
+        ref_icon = QIcon()
+        ref_icon.addPixmap(IconGenerator.reference_frame_icon(QColor(150, 150, 150)).pixmap(32, 32), QIcon.Mode.Normal, QIcon.State.Off)
+        ref_icon.addPixmap(IconGenerator.reference_frame_icon(QColor(0, 122, 204)).pixmap(32, 32), QIcon.Mode.Normal, QIcon.State.On)
+        self.set_ref_action.setIcon(ref_icon)
         self.set_ref_action.triggered.connect(self.set_reference_frame_from_selection)
         toolbar.addAction(self.set_ref_action)
         
         toolbar.addSeparator()
         
         # FPS Control
-        toolbar.addWidget(QLabel(i18n.t("label_fps")))
+        fps_label = QLabel(i18n.t("label_fps"))
+        fps_label.setStyleSheet("background: transparent;")
+        toolbar.addWidget(fps_label)
+        
         self.fps_spin = QSpinBox()
         self.fps_spin.setRange(1, 60)
         self.fps_spin.setValue(self.project.fps)
         self.fps_spin.valueChanged.connect(self.update_fps)
+        self.fps_spin.setStyleSheet("background: transparent;")
         toolbar.addWidget(self.fps_spin)
         
         toolbar.addSeparator()
         
         # Play/Pause
-        self.play_btn = QPushButton(i18n.t("btn_play"))
-        self.play_btn.setObjectName("playBtn")
-        self.play_btn.setCheckable(True)
-        self.play_btn.clicked.connect(self.toggle_play)
-        toolbar.addWidget(self.play_btn)
+        toolbar.addAction(self.play_action)
         
         toolbar.addSeparator()
-        self.rev_play_btn = QPushButton(i18n.t("btn_backward"))
-        self.rev_play_btn.setObjectName("revPlayBtn")
-        self.rev_play_btn.setCheckable(True)
-        self.rev_play_btn.clicked.connect(lambda: self.toggle_reverse_playback())
-        toolbar.addWidget(self.rev_play_btn)
+        toolbar.addAction(self.rev_play_action)
 
     def open_settings(self):
         dlg = SettingsDialog(self, self.project.width, self.project.height)
@@ -1361,11 +1408,14 @@ class MainWindow(QMainWindow):
     def stop_playback(self):
         self.is_playing = False
         self.timer.stop()
-        self.play_btn.setText("Play")
-        self.play_btn.setChecked(False)
-        self.rev_play_btn.setText(i18n.t("btn_backward"))
-        self.rev_play_btn.setChecked(False)
-        self.reverse_play_action.setChecked(False)
+        
+        from PyQt6.QtCore import QSignalBlocker
+        with QSignalBlocker(self.play_action), QSignalBlocker(self.rev_play_action):
+            self.play_action.setText(i18n.t("btn_play"))
+            self.play_action.setChecked(False)
+            self.rev_play_action.setText(i18n.t("btn_backward"))
+            self.rev_play_action.setChecked(False)
+            
         self.statusBar().showMessage(i18n.t("msg_playback_stopped"))
         
         # Restore selection
@@ -1379,7 +1429,7 @@ class MainWindow(QMainWindow):
         else:
             self.toggle_play()
 
-    def toggle_play(self):
+    def toggle_play(self, checked=False):
         # Forward Playback Toggle
         if self.is_playing and not self.playback_reverse:
             # Currently playing forward, so stop
@@ -1390,11 +1440,13 @@ class MainWindow(QMainWindow):
             self.playback_reverse = False
             
             # Update UI
-            self.play_btn.setText(i18n.t("btn_pause"))
-            self.play_btn.setChecked(True)
-            self.rev_play_btn.setText(i18n.t("btn_backward"))
-            self.rev_play_btn.setChecked(False)
-            self.reverse_play_action.setChecked(False)
+            # Update UI
+            from PyQt6.QtCore import QSignalBlocker
+            with QSignalBlocker(self.play_action), QSignalBlocker(self.rev_play_action):
+                self.play_action.setText(i18n.t("btn_pause"))
+                self.play_action.setChecked(True)
+                self.rev_play_action.setText(i18n.t("btn_backward"))
+                self.rev_play_action.setChecked(False)
             
             self.playlist = []
             self.play_index = 0
@@ -1402,12 +1454,14 @@ class MainWindow(QMainWindow):
                 
             if not self.playlist:
                 self.is_playing = False
-                self.play_btn.setText("Play")
+                with QSignalBlocker(self.play_action):
+                    self.play_action.setText(i18n.t("btn_play"))
+                    self.play_action.setChecked(False)
                 return
 
             self.timer.start(1000 // self.project.fps)
 
-    def toggle_reverse_playback(self):
+    def toggle_reverse_playback(self, checked=False):
         # Backward Playback Toggle
         # This can be triggered by button click or action trigger
         if self.is_playing and self.playback_reverse:
@@ -1419,11 +1473,13 @@ class MainWindow(QMainWindow):
             self.playback_reverse = True
             
             # Update UI
-            self.play_btn.setText(i18n.t("btn_play"))
-            self.play_btn.setChecked(False)
-            self.rev_play_btn.setText(i18n.t("btn_pause"))
-            self.rev_play_btn.setChecked(True)
-            self.reverse_play_action.setChecked(True)
+            # Update UI
+            from PyQt6.QtCore import QSignalBlocker
+            with QSignalBlocker(self.play_action), QSignalBlocker(self.rev_play_action):
+                self.play_action.setText(i18n.t("btn_play"))
+                self.play_action.setChecked(False)
+                self.rev_play_action.setText(i18n.t("btn_pause"))
+                self.rev_play_action.setChecked(True)
             
             self.playlist = []
             self.play_index = 0
@@ -1431,9 +1487,9 @@ class MainWindow(QMainWindow):
                 
             if not self.playlist:
                 self.is_playing = False
-                self.rev_play_btn.setText(i18n.t("btn_backward"))
-                self.rev_play_btn.setChecked(False)
-                self.reverse_play_action.setChecked(False)
+                with QSignalBlocker(self.rev_play_action):
+                    self.rev_play_action.setText(i18n.t("btn_backward"))
+                    self.rev_play_action.setChecked(False)
                 return
 
             self.timer.start(1000 // self.project.fps)
@@ -1760,14 +1816,14 @@ class MainWindow(QMainWindow):
         # Playback buttons (conditional)
         if self.is_playing:
             if self.playback_reverse:
-                self.rev_play_btn.setText(i18n.t("btn_pause"))
-                self.play_btn.setText(i18n.t("btn_play"))
+                self.rev_play_action.setText(i18n.t("btn_pause"))
+                self.play_action.setText(i18n.t("btn_play"))
             else:
-                self.play_btn.setText(i18n.t("btn_pause"))
-                self.rev_play_btn.setText(i18n.t("btn_backward"))
+                self.play_action.setText(i18n.t("btn_pause"))
+                self.rev_play_action.setText(i18n.t("btn_backward"))
         else:
-            self.play_btn.setText(i18n.t("btn_play"))
-            self.rev_play_btn.setText(i18n.t("btn_backward"))
+            self.play_action.setText(i18n.t("btn_play"))
+            self.rev_play_action.setText(i18n.t("btn_backward"))
             
         # Layouts
         self.layout_std_action.setText(i18n.t("preset_std"))
