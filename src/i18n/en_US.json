@@ -147,7 +147,12 @@
     "export_use_orig": "Use Original Filenames",
     "export_use_orig_tip": "If checked, exported files will keep their original filenames (with index if duplicate). Otherwise, they will be numbered sequentially.",
     "btn_browse": "Browse...",
-    "btn_ok": "OK",
     "btn_cancel": "Cancel",
-    "btn_export": "Export"
+    "btn_export": "Export",
+    "dlg_ref_settings": "Reference Frame Settings",
+    "ref_opacity": "Opacity:",
+    "ref_layer": "Layer:",
+    "ref_layer_top": "Top",
+    "ref_layer_bottom": "Bottom",
+    "ref_show_playback": "Show During Playback"
 }

@@ -45,7 +45,15 @@ class CanvasWidget(QWidget):
         
         self.checkerboard_color1 = QColor(200, 200, 200)
         self.checkerboard_color2 = QColor(160, 160, 160)
+        self.checkerboard_color1 = QColor(200, 200, 200)
+        self.checkerboard_color2 = QColor(160, 160, 160)
         self.background_mode = "checkerboard" # "checkerboard", "black", "white", "red", "green"
+        
+        # Reference Settings
+        self.ref_opacity = 0.5
+        self.ref_layer = "top" # "top", "bottom"
+        self.ref_show_on_playback = False
+        self.is_playing = False # Needs to be updated by MainWindow
 
     def set_background_mode(self, mode):
         self.background_mode = mode
@@ -158,20 +166,22 @@ class CanvasWidget(QWidget):
                 painter.restore()
 
         # 1. Draw Reference Frame (Bottom)
-        if self.reference_frame:
-            # Fixed 50% opacity or user configurable? User said "semi-transparent preview state".
-            draw_frame(self.reference_frame, 0.5, is_ref=True)
+        if self.reference_frame and self.ref_layer == "bottom":
+            if not self.is_playing or self.ref_show_on_playback:
+                draw_frame(self.reference_frame, self.ref_opacity, is_ref=True) 
 
         # 2. Draw Onion Skins
         for frame, opacity in self.onion_skin_frames:
             draw_frame(frame, opacity, is_ref=True) # Treat as ref to avoid outlines
 
         # 3. Draw Selected Images (Active)
-        # We should draw them in some order (preferably timeline order), but we only know selected ones here.
-        # User didn't specify Z-order of selection. We'll just draw all selected.
-        
         for frame_data in self.selected_frames_data:
             draw_frame(frame_data)
+            
+        # 4. Draw Reference Frame (Top)
+        if self.reference_frame and self.ref_layer == "top":
+            if not self.is_playing or self.ref_show_on_playback:
+                draw_frame(self.reference_frame, self.ref_opacity, is_ref=True)
 
     def refresh_resources(self):
         """Clear image cache and reload images for active frames."""
