@@ -1,6 +1,7 @@
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
                              QDockWidget, QToolBar, QFileDialog, QSpinBox, 
-                             QLabel, QPushButton, QInputDialog, QTreeWidgetItem, QMenu, QStyle)
+                             QLabel, QPushButton, QInputDialog, QTreeWidgetItem, QMenu, QStyle,
+                             QMessageBox)
 from PyQt6.QtGui import QAction, QIcon, QKeySequence, QImage, QActionGroup
 from PyQt6.QtCore import Qt, QTimer, QSettings, QByteArray
 
@@ -451,6 +452,10 @@ class MainWindow(QMainWindow):
         self.reload_action = QAction(i18n.t("action_reload"), self)
         self.reload_action.triggered.connect(self.reload_project)
         self.reload_action.setShortcut("Ctrl+R")
+
+        self.copy_assets_action = QAction(i18n.t("action_copy_assets"), self)
+        self.copy_assets_action.triggered.connect(self.copy_assets_to_local)
+
         
         self.export_action = QAction(i18n.t("action_export"), self)
         self.export_action.setIcon(style.standardIcon(QStyle.StandardPixmap.SP_DialogApplyButton))
@@ -667,6 +672,8 @@ class MainWindow(QMainWindow):
         file_menu.addSeparator()
         file_menu.addAction(self.close_action)
         file_menu.addAction(self.reload_action)
+        file_menu.addAction(self.copy_assets_action)
+
         
         self.reload_images_action = QAction(i18n.t("action_reload_images"), self)
         self.reload_images_action.triggered.connect(self.reload_image_resources)
@@ -2353,3 +2360,14 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(i18n.t("msg_export_complete"), 3000)
         except Exception as e:
             self.statusBar().showMessage(f"Export Error: {str(e)}", 5000)
+    def copy_assets_to_local(self):
+        if not self.current_project_path:
+            QMessageBox.warning(self, i18n.t("action_copy_assets"), i18n.t("msg_save_project_first"))
+            return
+            
+        from ui.copy_assets_dialog import CopyAssetsDialog
+        dlg = CopyAssetsDialog(self.project, self.current_project_path, self)
+        if dlg.exec():
+            self.mark_dirty()
+            self.timeline.refresh_current_items() # Filenames might have changed or just to be sure
+            self.canvas.update()

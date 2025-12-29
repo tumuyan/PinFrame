@@ -190,5 +190,18 @@
     "export_color_red": "Red",
     "export_color_black": "Black",
     "export_color_custom": "Custom...",
-    "label_color_info": "RGBA: {r}, {g}, {b}, {a}"
+    "label_color_info": "RGBA: {r}, {g}, {b}, {a}",
+    "action_copy_assets": "Copy Assets to Project Directory...",
+    "dlg_copy_assets_title": "Copy Assets to Project Directory",
+    "lbl_files_to_copy": "External files to be copied:",
+    "lbl_ready_to_copy": "Ready to copy: {count} external files.",
+    "lbl_no_external_files": "All assets are already in the project directory.",
+    "lbl_conflicts_found": "The following files already exist in the project directory:",
+    "btn_copy": "Copy",
+    "msg_copy_overwrite_warn": "Some file names already exist in the project directory. Do you want to overwrite them?",
+    "msg_overwrite_title": "Confirm Overwrite",
+    "msg_copying": "Copying: {file}",
+    "msg_copy_success": "Successfully copied {count} assets. Save the project to use relative paths.",
+    "msg_copy_error": "Error copying {file}: {error}",
+    "msg_save_project_first": "Please save the project first to define a project directory."
 }

@@ -17,10 +17,12 @@ class FrameData:
         path = self.file_path
         if base_dir and os.path.isabs(path):
             try:
-                # If path is within base_dir, make it relative
-                rel = os.path.relpath(path, base_dir)
-                if not rel.startswith('..'):
-                    path = rel
+                # Normalize both to ensure matching on Windows
+                norm_path = os.path.normpath(path)
+                norm_base = os.path.normpath(base_dir)
+                rel = os.path.relpath(norm_path, norm_base)
+                if not rel.startswith('..') and not os.path.isabs(rel):
+                    path = rel.replace('\\', '/') # Use forward slashes for cross-platform JSON
             except ValueError:
                 pass
                 
@@ -96,7 +98,7 @@ class ProjectData:
     export_custom_range: str = ""
 
     def to_json(self, project_file_path: Optional[str] = None):
-        base_dir = os.path.dirname(project_file_path) if project_file_path else None
+        base_dir = os.path.abspath(os.path.dirname(project_file_path)) if project_file_path else None
         return json.dumps({
             "fps": self.fps,
             "width": self.width,
@@ -114,7 +116,7 @@ class ProjectData:
 
     @classmethod
     def from_json(cls, json_str, project_file_path: Optional[str] = None):
-        base_dir = os.path.dirname(project_file_path) if project_file_path else None
+        base_dir = os.path.abspath(os.path.dirname(project_file_path)) if project_file_path else None
         data = json.loads(json_str)
         project = cls(
             fps=data.get("fps", 6),

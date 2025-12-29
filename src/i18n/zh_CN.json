@@ -190,5 +190,18 @@
     "ref_layer": "层级:",
     "ref_layer_top": "置顶 (Top)",
     "ref_layer_bottom": "置底 (Bottom)",
-    "ref_show_playback": "播放时显示"
+    "ref_show_playback": "播放时显示",
+    "action_copy_assets": "复制素材到工程目录...",
+    "dlg_copy_assets_title": "复制素材到工程目录",
+    "lbl_files_to_copy": "待复制的外部文件：",
+    "lbl_ready_to_copy": "待复制：{count} 个外部文件（无冲突）。",
+    "lbl_no_external_files": "所有素材已在工程目录下。",
+    "lbl_conflicts_found": "检测到工程目录下已存在以下同名文件：",
+    "btn_copy": "开始复制",
+    "msg_copy_overwrite_warn": "检测到工程目录下已有重名文件。是否确认覆盖它们？",
+    "msg_overwrite_title": "确认覆盖",
+    "msg_copying": "正在复制: {file}",
+    "msg_copy_success": "成功复制了 {count} 个素材。保存工程即可转为相对路径。",
+    "msg_copy_error": "复制 {file} 时出错: {error}",
+    "msg_save_project_first": "请先保存工程以确定工程目录。"
 }
