@@ -8,6 +8,7 @@
     "menu_layout": "Layout (&L)",
     "menu_playback": "Playback (&P)",
     "menu_view": "View (&V)",
+    "menu_recent_projects": "Recent Projects",
     "menu_onion": "Onion Skin",
     "action_import": "Import Images",
     "action_import_slice": "Import Sprite Sheet (Slice)",
@@ -203,5 +204,7 @@
     "msg_copying": "Copying: {file}",
     "msg_copy_success": "Successfully copied {count} assets. Save the project to use relative paths.",
     "msg_copy_error": "Error copying {file}: {error}",
-    "msg_save_project_first": "Please save the project first to define a project directory."
+    "msg_save_project_first": "Please save the project first to define a project directory.",
+    "action_clear_recent": "Clear Recent Projects",
+    "msg_recent_file_not_found": "File not found: {path}. Remove from list?"
 }

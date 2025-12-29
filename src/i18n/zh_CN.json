@@ -8,6 +8,7 @@
     "menu_layout": "布局 (&L)",
     "menu_playback": "播放 (&P)",
     "menu_view": "视图 (&V)",
+    "menu_recent_projects": "最近的项目",
     "menu_onion": "洋葱皮",
     "action_import": "导入图像",
     "action_import_slice": "切割导入精灵表",
@@ -203,5 +204,7 @@
     "msg_copying": "正在复制: {file}",
     "msg_copy_success": "成功复制了 {count} 个素材。保存工程即可转为相对路径。",
     "msg_copy_error": "复制 {file} 时出错: {error}",
-    "msg_save_project_first": "请先保存工程以确定工程目录。"
+    "msg_save_project_first": "请先保存工程以确定工程目录。",
+    "action_clear_recent": "清除最近项目",
+    "msg_recent_file_not_found": "文件未找到: {path}。是否将其从列表中移除？"
 }

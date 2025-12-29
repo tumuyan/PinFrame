@@ -2,7 +2,7 @@ from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QH
                              QDockWidget, QToolBar, QFileDialog, QSpinBox, 
                              QLabel, QPushButton, QInputDialog, QTreeWidgetItem, QMenu, QStyle,
                              QMessageBox)
-from PyQt6.QtGui import QAction, QIcon, QKeySequence, QImage, QActionGroup
+from PyQt6.QtGui import QAction, QIcon, QKeySequence, QImage, QActionGroup, QImageReader
 from PyQt6.QtCore import Qt, QTimer, QSettings, QByteArray
 
 from model.project_data import ProjectData, FrameData
@@ -30,6 +30,7 @@ class MainWindow(QMainWindow):
         self.current_theme = self.settings.value("theme", "dark")
         self.current_lang = self.settings.value("language", "zh_CN")
         i18n.load_language(self.current_lang)
+        self.recent_projects = self.settings.value("recent_projects", [], type=list)
         
         self.setWindowTitle(i18n.t("app_title") + " - " + i18n.t("new_project"))
         self.resize(1200, 800)
@@ -54,8 +55,6 @@ class MainWindow(QMainWindow):
         self.timeline.duplicate_requested.connect(self.duplicate_frame)
         self.timeline.remove_requested.connect(self.remove_frame)
         self.timeline.disabled_state_changed.connect(self.on_frame_disabled_state_changed)
-        self.timeline.enable_requested.connect(self.toggle_enable_disable)
-        self.timeline.reverse_order_requested.connect(self.reverse_selected_frames)
         self.timeline.enable_requested.connect(self.toggle_enable_disable)
         self.timeline.reverse_order_requested.connect(self.reverse_selected_frames)
         self.timeline.integerize_offset_requested.connect(self.integerize_selection_offset)
@@ -121,6 +120,9 @@ class MainWindow(QMainWindow):
         # Restore background mode
         bg_mode = self.settings.value("background_mode", "checkerboard")
         self.update_background_mode(bg_mode)
+
+        # Recent Projects
+        self.recent_projects = self.settings.value("recent_projects", [], type=list)
 
         # Onion Skin & Reference State
         self.onion_enabled = False
@@ -672,6 +674,10 @@ class MainWindow(QMainWindow):
         file_menu.addSeparator()
         file_menu.addAction(self.close_action)
         file_menu.addAction(self.reload_action)
+        
+        self.recent_menu = file_menu.addMenu(i18n.t("menu_recent_projects"))
+        self.update_recent_projects_menu()
+        
         file_menu.addAction(self.copy_assets_action)
 
         
@@ -1824,11 +1830,26 @@ class MainWindow(QMainWindow):
             return
         self._save_to_path(path)
 
+    def save_settings(self):
+        self.settings.setValue("recent_projects", self.recent_projects)
+        self.settings.setValue("theme", self.current_theme)
+        self.settings.setValue("language", self.current_lang)
+        self.settings.setValue("background_mode", self.current_background_mode)
+        self.settings.setValue("onion_prev", self.onion_prev)
+        self.settings.setValue("onion_next", self.onion_next)
+        self.settings.setValue("onion_opacity_step", self.onion_opacity_step)
+        self.settings.setValue("onion_exclusive", self.onion_ref_exclusive)
+        self.settings.setValue("ref_opacity", self.ref_opacity)
+        self.settings.setValue("ref_layer", self.ref_layer)
+        self.settings.setValue("ref_show_on_playback", self.ref_show_on_playback)
+        self.settings.setValue("repeat_interval", self.property_panel.repeat_interval)
+
     def _save_to_path(self, path):
         try:
             with open(path, 'w') as f:
                 f.write(self.project.to_json(path))
             self.current_project_path = path
+            self.add_recent_project(path)
             self.is_dirty = False
             self.update_title()
             self.statusBar().showMessage(i18n.t("msg_project_saved").format(path=path), 3000)
@@ -1844,38 +1865,47 @@ class MainWindow(QMainWindow):
         if not path:
             return
             
-        with open(path, 'r') as f:
-            json_str = f.read()
+        self._load_from_path(path)
+
+    def _load_from_path(self, path):
+        try:
+            with open(path, 'r') as f:
+                json_str = f.read()
+                
+            self.project = ProjectData.from_json(json_str, path)
+            self.current_project_path = path
+            self.add_recent_project(path)
             
-        self.project = ProjectData.from_json(json_str, path)
-        self.fps_spin.setValue(self.project.fps)
-        self.canvas.set_project_settings(self.project.width, self.project.height)
-        self.property_panel.set_project_info(self.project.width, self.project.height)
-        
-        self.timeline.clear()
-        for frame in self.project.frames:
-            w, h = 0, 0
-            if frame.crop_rect:
-                w, h = frame.crop_rect[2], frame.crop_rect[3]
-            elif os.path.exists(frame.file_path):
-                 try:
-                     from PIL import Image
-                     with Image.open(frame.file_path) as img:
-                         w, h = img.size
-                 except: 
-                     pass
+            # Update UI
+            self.fps_spin.setValue(self.project.fps)
+            self.canvas.set_project_settings(self.project.width, self.project.height)
+            self.property_panel.set_project_info(self.project.width, self.project.height)
             
-            self.timeline.add_frame(os.path.basename(frame.file_path), frame, w, h)
-            
-        if self.project.frames:
-             # Select first
-             if self.timeline.topLevelItemCount() > 0:
-                 self.timeline.setCurrentItem(self.timeline.topLevelItem(0))
-                 
-        self.current_project_path = path
-        self.is_dirty = False
-        self.update_title()
-        self.statusBar().showMessage(f"Project loaded: {os.path.basename(path)}")
+            self.timeline.clear()
+            for frame in self.project.frames:
+                w, h = 0, 0
+                if frame.crop_rect:
+                    w, h = frame.crop_rect[2], frame.crop_rect[3]
+                elif os.path.exists(frame.file_path):
+                    # Optimized: Read only metadata/size
+                    reader = QImageReader(frame.file_path)
+                    if reader.canRead():
+                        size = reader.size()
+                        w, h = size.width(), size.height()
+                
+                self.timeline.add_frame(os.path.basename(frame.file_path), frame, w, h)
+                
+            if self.project.frames:
+                # Select first by default
+                if self.timeline.topLevelItemCount() > 0:
+                    self.timeline.setCurrentItem(self.timeline.topLevelItem(0))
+                    
+            self.is_dirty = False
+            self.update_title()
+            self.update_onion_state()
+            self.statusBar().showMessage(i18n.t("msg_project_loaded").format(path=path), 3000)
+        except Exception as e:
+            QMessageBox.critical(self, i18n.t("dlg_load_title"), f"{i18n.t('msg_load_error')}: {str(e)}")
         
     def check_unsaved_changes(self):
         if self.is_dirty:
@@ -2190,6 +2220,7 @@ class MainWindow(QMainWindow):
             # Save settings
             self.settings.setValue("geometry", self.saveGeometry())
             self.settings.setValue("windowState", self.saveState())
+            self.settings.setValue("recent_projects", self.recent_projects)
             self.settings.setValue("theme", self.current_theme)
             self.settings.setValue("onion_exclusive", self.onion_ref_exclusive)
             self.settings.setValue("onion_prev", self.onion_prev)
@@ -2371,3 +2402,56 @@ class MainWindow(QMainWindow):
             self.mark_dirty()
             self.timeline.refresh_current_items() # Filenames might have changed or just to be sure
             self.canvas.update()
+
+    def add_recent_project(self, path):
+        path = os.path.abspath(path)
+        if path in self.recent_projects:
+            self.recent_projects.remove(path)
+        self.recent_projects.insert(0, path)
+        self.recent_projects = self.recent_projects[:10] # Limit to 10
+        self.save_settings()
+        self.update_recent_projects_menu()
+
+    def update_recent_projects_menu(self):
+        if not hasattr(self, 'recent_menu'):
+            return
+            
+        self.recent_menu.clear()
+        
+        if not self.recent_projects:
+            action = QAction(i18n.t("msg_no_selection"), self) # Use a generic "None" or similar
+            action.setEnabled(False)
+            self.recent_menu.addAction(action)
+            return
+
+        for path in self.recent_projects:
+            action = QAction(os.path.basename(path), self)
+            action.setToolTip(path)
+            action.triggered.connect(lambda checked, p=path: self.load_recent_project(p))
+            self.recent_menu.addAction(action)
+            
+        self.recent_menu.addSeparator()
+        clear_action = QAction(i18n.t("action_clear_recent"), self)
+        clear_action.triggered.connect(self.clear_recent_projects)
+        self.recent_menu.addAction(clear_action)
+
+    def load_recent_project(self, path):
+        if not os.path.exists(path):
+            res = QMessageBox.question(self, i18n.t("dlg_load_title"), 
+                                     i18n.t("msg_recent_file_not_found").format(path=path))
+            if res == QMessageBox.StandardButton.Yes:
+                if path in self.recent_projects:
+                    self.recent_projects.remove(path)
+                    self.save_settings()
+                    self.update_recent_projects_menu()
+            return
+
+        if not self.check_unsaved_changes():
+            return
+
+        self._load_from_path(path)
+
+    def clear_recent_projects(self):
+        self.recent_projects = []
+        self.save_settings()
+        self.update_recent_projects_menu()
