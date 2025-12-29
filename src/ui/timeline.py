@@ -23,8 +23,9 @@ class TimelineWidget(QTreeWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setColumnCount(5)
+        self.setColumnCount(6)
         self.setHeaderLabels([
+            i18n.t("col_index"),
             i18n.t("col_disabled"), 
             i18n.t("col_filename"), 
             i18n.t("col_scale"), 
@@ -36,20 +37,24 @@ class TimelineWidget(QTreeWidget):
         header.setStretchLastSection(False)
         header.setMinimumSectionSize(0)
         
-        # Column 0: Disable icon
-        header.setSectionResizeMode(0, QHeaderView.ResizeMode.Fixed)
-        header.resizeSection(0, 24) # Slightly smaller
+        # Column 0: Index
+        header.setSectionResizeMode(0, QHeaderView.ResizeMode.Interactive)
+        header.resizeSection(0, 40)
+
+        # Column 1: Disable icon
+        header.setSectionResizeMode(1, QHeaderView.ResizeMode.Fixed)
+        header.resizeSection(1, 24)
         
-        # Columns 2-4: Fixed/Interactive sizes
-        header.setSectionResizeMode(2, QHeaderView.ResizeMode.Interactive)
-        header.resizeSection(2, 80)
+        # Columns 3-5: Fixed/Interactive sizes
         header.setSectionResizeMode(3, QHeaderView.ResizeMode.Interactive)
-        header.resizeSection(3, 100)
+        header.resizeSection(3, 80)
         header.setSectionResizeMode(4, QHeaderView.ResizeMode.Interactive)
-        header.resizeSection(4, 150)
+        header.resizeSection(4, 100)
+        header.setSectionResizeMode(5, QHeaderView.ResizeMode.Interactive)
+        header.resizeSection(5, 150)
         
-        # Column 1: Filename - STRETCH
-        header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        # Column 2: Filename - STRETCH
+        header.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
         
         self.setDragDropMode(QAbstractItemView.DragDropMode.DragDrop)
         self.setAcceptDrops(True)
@@ -90,9 +95,9 @@ class TimelineWidget(QTreeWidget):
             # Update visual style (e.g. Background or Font)
             if is_ref:
                 # Set background or font
-                font = item.font(1)
+                font = item.font(2)
                 font.setBold(True)
-                item.setFont(1, font)
+                item.setFont(2, font)
                 
                 # Optimized Colors for Light/Dark themes
                 if hasattr(self, 'is_dark_theme') and not self.is_dark_theme:
@@ -104,15 +109,15 @@ class TimelineWidget(QTreeWidget):
                     color = QColor(30, 80, 40) 
                     color.setAlpha(200)
                 
-                item.setBackground(1, color) 
-                if i18n.t("label_ref_prefix") not in item.text(1):
-                    item.setText(1, f"{i18n.t('label_ref_prefix')}{item.text(1)}")
+                item.setBackground(2, color) 
+                if i18n.t("label_ref_prefix") not in item.text(2):
+                    item.setText(2, f"{i18n.t('label_ref_prefix')}{item.text(2)}")
             else:
-                font = item.font(1)
+                font = item.font(2)
                 font.setBold(False)
-                item.setFont(1, font)
-                item.setBackground(1, QColor(0, 0, 0, 0)) # Transparent
-                item.setText(1, item.text(1).replace(i18n.t("label_ref_prefix"), ""))
+                item.setFont(2, font)
+                item.setBackground(2, QColor(0, 0, 0, 0)) # Transparent
+                item.setText(2, item.text(2).replace(i18n.t("label_ref_prefix"), ""))
 
     def refresh_visuals(self):
         """Force refresh of visual elements (e.g. after theme change)."""
@@ -296,10 +301,10 @@ class TimelineWidget(QTreeWidget):
         menu.exec(self.viewport().mapToGlobal(position))
 
     def on_item_changed(self, item, column):
-        if column == 0:
+        if column == 1:
             frame_data = item.data(0, Qt.ItemDataRole.UserRole)
             # Checked means DISABLED
-            is_disabled = (item.checkState(0) == Qt.CheckState.Checked)
+            is_disabled = (item.checkState(1) == Qt.CheckState.Checked)
             if frame_data.is_disabled != is_disabled:
                 frame_data.is_disabled = is_disabled
                 self.disabled_state_changed.emit(frame_data, is_disabled)
@@ -312,13 +317,14 @@ class TimelineWidget(QTreeWidget):
         # Store original resolution for calculation
         item.setData(3, Qt.ItemDataRole.UserRole, (orig_width, orig_height))
         
-        item.setText(0, "") # Just the checkbox
-        item.setText(1, filename)
+        item.setText(0, str(self.topLevelItemCount())) # Initial Index
+        item.setText(1, "") # Just the checkbox
+        item.setText(2, filename)
         
         # Checkbox
         item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
         # Checked = Disabled, Unchecked = Enabled
-        item.setCheckState(0, Qt.CheckState.Checked if frame_data.is_disabled else Qt.CheckState.Unchecked)
+        item.setCheckState(1, Qt.CheckState.Checked if frame_data.is_disabled else Qt.CheckState.Unchecked)
         
         self.update_item_display(item, frame_data, orig_width, orig_height)
 
@@ -333,14 +339,14 @@ class TimelineWidget(QTreeWidget):
             col = x // w
             row = y // h
             fname += f" [{col},{row}]"
-        item.setText(1, fname)
+        item.setText(2, fname)
         
         # Scale
-        item.setText(2, f"{frame_data.scale:.4f}")
+        item.setText(3, f"{frame_data.scale:.4f}")
         
         # Position
         pos_str = f"({int(frame_data.position[0])}, {int(frame_data.position[1])})"
-        item.setText(3, pos_str)
+        item.setText(4, pos_str)
         
         # Orig Res and Calculated Res
         if orig_w > 0:
@@ -354,10 +360,11 @@ class TimelineWidget(QTreeWidget):
         else:
             res_str = "?x?"
         
-        item.setText(4, res_str)
+        item.setText(5, res_str)
 
     def refresh_ui_text(self):
         self.setHeaderLabels([
+            i18n.t("col_index"),
             i18n.t("col_disabled"), 
             i18n.t("col_filename"), 
             i18n.t("col_scale"), 
@@ -367,11 +374,11 @@ class TimelineWidget(QTreeWidget):
         self.refresh_current_items()
 
     def refresh_current_items(self):
-        items = self.findItems("*", Qt.MatchFlag.MatchWildcard | Qt.MatchFlag.MatchRecursive)
         # Actually standard iteration
         root = self.invisibleRootItem()
         for i in range(root.childCount()):
             item = root.child(i)
+            item.setText(0, str(i + 1)) # Update index
             frame_data = item.data(0, Qt.ItemDataRole.UserRole)
             orig_res = item.data(3, Qt.ItemDataRole.UserRole)
             if orig_res:

@@ -941,17 +941,19 @@ class MainWindow(QMainWindow):
                 item = QTreeWidgetItem()
                 item.setData(0, Qt.ItemDataRole.UserRole, data)
                 item.setData(3, Qt.ItemDataRole.UserRole, (w, h))
-                item.setText(1, name)
+                item.setText(0, "") # Updated by refresh
+                item.setText(2, name)
                 
                 # Checkbox flags
                 item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
                 # Checked = Disabled, Unchecked = Enabled
-                item.setCheckState(0, Qt.CheckState.Checked if data.is_disabled else Qt.CheckState.Unchecked)
+                item.setCheckState(1, Qt.CheckState.Checked if data.is_disabled else Qt.CheckState.Unchecked)
                 
                 self.timeline.update_item_display(item, data, w, h)
                 self.timeline.insertTopLevelItem(target_idx + i, item)
                 
         self.mark_dirty()
+        self.timeline.refresh_current_items()
 
     def copy_frame_properties(self):
         selected = self.timeline.selectedItems()
@@ -1045,14 +1047,16 @@ class MainWindow(QMainWindow):
             new_item = QTreeWidgetItem()
             new_item.setData(0, Qt.ItemDataRole.UserRole, new_data)
             new_item.setData(3, Qt.ItemDataRole.UserRole, (w, h))
-            new_item.setText(0, os.path.basename(new_data.file_path))
+            new_item.setText(0, "") # Will be updated by refresh_current_items
+            new_item.setText(2, os.path.basename(new_data.file_path))
             new_item.setFlags(new_item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
-            new_item.setCheckState(0, Qt.CheckState.Checked if new_data.is_disabled else Qt.CheckState.Unchecked)
+            new_item.setCheckState(1, Qt.CheckState.Checked if new_data.is_disabled else Qt.CheckState.Unchecked)
             
             self.timeline.update_item_display(new_item, new_data, w, h)
             self.timeline.insertTopLevelItem(insert_pos + i, new_item)
             
         self.mark_dirty()
+        self.timeline.refresh_current_items()
         self.statusBar().showMessage(i18n.t("msg_frames_duplicated").format(count=len(duplicates)), 3000)
 
     def remove_frame(self):
@@ -1075,6 +1079,7 @@ class MainWindow(QMainWindow):
             self.timeline.takeTopLevelItem(idx)
             
         self.mark_dirty()
+        self.timeline.refresh_current_items() # Update numbers after removal
         self.canvas.set_selected_frames([])
         self.property_panel.set_selection([]) # Clear selection in property panel
         self.statusBar().showMessage(i18n.t("msg_frames_removed").format(count=len(indices)), 3000)
@@ -1640,6 +1645,7 @@ class MainWindow(QMainWindow):
             item = self.timeline.topLevelItem(i)
             new_frames.append(item.data(0, Qt.ItemDataRole.UserRole))
         self.project.frames = new_frames
+        self.timeline.refresh_current_items() # Update numbers after drag&drop
         self.mark_dirty()
 
     def reverse_selected_frames(self):
@@ -2235,12 +2241,14 @@ class MainWindow(QMainWindow):
         # Update Sub-widgets
         self.property_panel.refresh_ui_text()
         self.timeline.setHeaderLabels([
+            i18n.t("col_index"),
             i18n.t("col_disabled"), 
             i18n.t("col_filename"), 
             i18n.t("col_scale"), 
             i18n.t("col_position"), 
-            i18n.t("col_orig_res")
+            i18n.t("col_res_combined")
         ])
+        self.timeline.refresh_current_items()
         
         # This is enough for now. A restart is always safer.
         self.update_title()
@@ -2320,6 +2328,7 @@ class MainWindow(QMainWindow):
                 self.timeline.add_frame(os.path.basename(out_path), frame, w, h)
                 
         self.mark_dirty()
+        self.timeline.refresh_current_items()
         self.statusBar().showMessage(i18n.t("msg_imported_slices").format(count=len(crops)), 3000)
 
     def import_gif(self):
@@ -2351,6 +2360,7 @@ class MainWindow(QMainWindow):
                 count += 1
                 
             self.mark_dirty()
+            self.timeline.refresh_current_items()
             self.statusBar().showMessage(i18n.t("msg_imported_gif").format(count=count), 3000)
             
         except Exception as e:

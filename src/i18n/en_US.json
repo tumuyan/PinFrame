@@ -51,6 +51,7 @@
     "bg_green": "Green",
     "dock_timeline": "Timeline",
     "dock_properties": "Properties",
+    "col_index": "#",
     "col_disabled": "🚫",
     "col_filename": "Filename",
     "col_scale": "Scale",

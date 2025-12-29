@@ -51,6 +51,7 @@
     "bg_green": "绿色",
     "dock_timeline": "时间轴 (Timeline)",
     "dock_properties": "属性 (Properties)",
+    "col_index": "#",
     "col_disabled": "🚫",
     "col_filename": "文件名",
     "col_scale": "缩放",
