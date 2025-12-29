@@ -496,8 +496,7 @@ class MainWindow(QMainWindow):
 
         # View Reset Shortcut (Global)
         self.reset_view_action = QAction(i18n.t("action_reset_view"), self)
-        self.reset_view_action.setShortcut("Ctrl+0")
-        self.reset_view_action.setShortcut("Ctrl+0")
+        self.reset_view_action.setShortcut("Ctrl+1")
         self.reset_view_action.triggered.connect(self.canvas.reset_view)
         
         # Onion Skin Actions
@@ -532,15 +531,15 @@ class MainWindow(QMainWindow):
         
         self.zoom_fit_action = QAction(i18n.t("action_zoom_fit"), self)
         self.zoom_fit_action.setShortcut("Ctrl+0")
-        self.zoom_fit_action.triggered.connect(self.canvas.reset_view)
+        self.zoom_fit_action.triggered.connect(self.canvas.fit_to_view)
 
         # Scale Actions (Selection)
-        self.scale_up_action = QAction("Scale Up", self)
+        self.scale_up_action = QAction(i18n.t("action_scale_up"), self)
         self.scale_up_action.setShortcuts([QKeySequence("Ctrl+="), QKeySequence("Ctrl++")])
         self.scale_up_action.triggered.connect(lambda: self.adjust_selection_scale(1.1))
         self.addAction(self.scale_up_action)
 
-        self.scale_down_action = QAction("Scale Down", self)
+        self.scale_down_action = QAction(i18n.t("action_scale_down"), self)
         self.scale_down_action.setShortcut("Ctrl+-")
         self.scale_down_action.triggered.connect(lambda: self.adjust_selection_scale(0.9))
         self.addAction(self.scale_down_action)
@@ -560,7 +559,7 @@ class MainWindow(QMainWindow):
         self.clear_ref_action.triggered.connect(self.clear_reference_frame)
 
         # Play/Pause Shortcut (Global Space)
-        self.play_pause_action = QAction("Play/Pause", self)
+        self.play_pause_action = QAction(i18n.t("action_play_pause"), self)
         self.play_pause_action.setShortcut("Space")
         self.play_pause_action.triggered.connect(self.handle_space_shortcut)
         self.addAction(self.play_pause_action)
@@ -583,12 +582,12 @@ class MainWindow(QMainWindow):
         self.rev_play_action.setIcon(rev_icon)
         self.rev_play_action.toggled.connect(lambda checked: self.toggle_reverse_playback(checked))
 
-        self.theme_dark_action = QAction("Dark Theme", self)
+        self.theme_dark_action = QAction(i18n.t("theme_dark"), self)
         self.theme_dark_action.setCheckable(True)
         self.theme_dark_action.setChecked(True)
         self.theme_dark_action.triggered.connect(lambda: self.apply_theme("dark"))
 
-        self.theme_light_action = QAction("Light Theme", self)
+        self.theme_light_action = QAction(i18n.t("theme_light"), self)
         self.theme_light_action.setCheckable(True)
         self.theme_light_action.triggered.connect(lambda: self.apply_theme("light"))
         
@@ -744,7 +743,7 @@ class MainWindow(QMainWindow):
         theme_menu.addAction(self.theme_dark_action)
         theme_menu.addAction(self.theme_light_action)
         
-        lang_menu = view_menu.addMenu("Language (语言)")
+        lang_menu = view_menu.addMenu(i18n.t("menu_lang"))
         lang_menu.addAction(self.lang_zh_action)
         lang_menu.addAction(self.lang_en_action)
 
@@ -1807,7 +1806,7 @@ class MainWindow(QMainWindow):
             self.save_project_as()
 
     def save_project_as(self):
-        path, _ = QFileDialog.getSaveFileName(self, "Save Project", "", "JSON (*.json)")
+        path, _ = QFileDialog.getSaveFileName(self, i18n.t("dlg_save_title"), "", i18n.t("dlg_filter_json"))
         if not path:
             return
         self._save_to_path(path)
@@ -1819,7 +1818,7 @@ class MainWindow(QMainWindow):
             self.current_project_path = path
             self.is_dirty = False
             self.update_title()
-            self.statusBar().showMessage(f"Project saved to {path}", 3000)
+            self.statusBar().showMessage(i18n.t("msg_project_saved").format(path=path), 3000)
         except Exception as e:
             print(f"Error saving: {e}")
             self.statusBar().showMessage(f"Error saving: {e}", 5000)
@@ -1828,7 +1827,7 @@ class MainWindow(QMainWindow):
         if not self.check_unsaved_changes():
             return
 
-        path, _ = QFileDialog.getOpenFileName(self, "Load Project", "", "JSON (*.json)")
+        path, _ = QFileDialog.getOpenFileName(self, i18n.t("dlg_load_title"), "", i18n.t("dlg_filter_json"))
         if not path:
             return
             
@@ -2091,6 +2090,11 @@ class MainWindow(QMainWindow):
         self.reverse_order_action.setText(i18n.t("action_reverse_order"))
         self.settings_action.setText(i18n.t("action_settings"))
         self.reset_view_action.setText(i18n.t("action_reset_view"))
+        self.zoom_in_action.setText(i18n.t("action_zoom_in"))
+        self.zoom_out_action.setText(i18n.t("action_zoom_out"))
+        self.zoom_fit_action.setText(i18n.t("action_zoom_fit"))
+        self.scale_up_action.setText(i18n.t("action_scale_up"))
+        self.scale_down_action.setText(i18n.t("action_scale_down"))
         
         # Background Actions
         for mode, action in self.bg_actions.items():
@@ -2246,7 +2250,7 @@ class MainWindow(QMainWindow):
                 self.timeline.add_frame(os.path.basename(out_path), frame, w, h)
                 
         self.mark_dirty()
-        self.statusBar().showMessage(f"Imported {len(crops)} slices", 3000)
+        self.statusBar().showMessage(i18n.t("msg_imported_slices").format(count=len(crops)), 3000)
 
     def export_sprite_sheet(self):
         from ui.export_dialog import SpriteSheetExportDialog
@@ -2261,7 +2265,7 @@ class MainWindow(QMainWindow):
         self.project.export_sheet_padding = dlg.padding_spin.value()
         self.mark_dirty()
         
-        file, _ = QFileDialog.getSaveFileName(self, i18n.t("action_export_sheet"), "", "Image (*.png)")
+        file, _ = QFileDialog.getSaveFileName(self, i18n.t("action_export_sheet"), "", i18n.t("dlg_filter_images"))
         if not file:
             return
             
@@ -2270,7 +2274,7 @@ class MainWindow(QMainWindow):
             Exporter.export_sprite_sheet(self.project, file)
             self.statusBar().showMessage(i18n.t("msg_export_complete"), 3000)
         except Exception as e:
-            self.statusBar().showMessage(f"Export Error: {str(e)}", 5000)
+            self.statusBar().showMessage(f"{i18n.t('msg_save_error').format(error=str(e))}", 5000)
 
 
     def export_sequence(self):

@@ -24,7 +24,7 @@ class PropertyPanel(QWidget):
         layout = QVBoxLayout(self)
         
         # Preview
-        self.preview_label = QLabel("No Selection")
+        self.preview_label = QLabel(i18n.t("msg_no_selection"))
         self.preview_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.preview_label.setMinimumHeight(200)
         layout.addWidget(self.preview_label)
@@ -223,7 +223,7 @@ class PropertyPanel(QWidget):
             
         # Preview label if no selection
         if not self.selected_frames:
-            self.preview_label.setText(i18n.t("ready")) # Or "No Selection" but ready is localized
+            self.preview_label.setText(i18n.t("msg_no_selection")) # Or "No Selection" but ready is localized
             
         self.update_ui_from_selection()
 
@@ -240,7 +240,7 @@ class PropertyPanel(QWidget):
         self.updating_ui = True
         if not self.selected_frames:
             self.setEnabled(False)
-            self.preview_label.setText("No Selection")
+            self.preview_label.setText(i18n.t("msg_no_selection"))
             self.t_w_spin.setValue(0) # None
             self.t_h_spin.setValue(0)
         else:
@@ -420,7 +420,7 @@ class PropertyPanel(QWidget):
     def update_preview(self):
         if not self.selected_frames:
             self.preview_label.setPixmap(QPixmap())
-            self.preview_label.setText("No Selection")
+            self.preview_label.setText(i18n.t("msg_no_selection"))
             return
             
         w, h = 200, 200

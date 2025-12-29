@@ -92,6 +92,28 @@ class CanvasWidget(QWidget):
         self.view_scale = 1.0
         self.update()
 
+    def fit_to_view(self):
+        if self.project_width <= 0 or self.project_height <= 0:
+            return
+            
+        # Add some padding to ensure it's not sticking to edges
+        padding = 40
+        available_w = self.width() - padding
+        available_h = self.height() - padding
+        
+        if available_w <= 0 or available_h <= 0:
+            # Fallback to reset if widget size is too small or invalid
+            self.reset_view()
+            return
+            
+        scale_w = available_w / self.project_width
+        scale_h = available_h / self.project_height
+        
+        # Use the smaller scale so that both dimensions are visible
+        self.view_scale = min(scale_w, scale_h)
+        self.view_offset = QPointF(0, 0)
+        self.update()
+
     def paintEvent(self, event):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)

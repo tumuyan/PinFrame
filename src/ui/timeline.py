@@ -105,14 +105,14 @@ class TimelineWidget(QTreeWidget):
                     color.setAlpha(200)
                 
                 item.setBackground(1, color) 
-                if "[REF]" not in item.text(1):
-                    item.setText(1, f"[REF] {item.text(1)}")
+                if i18n.t("label_ref_prefix") not in item.text(1):
+                    item.setText(1, f"{i18n.t('label_ref_prefix')}{item.text(1)}")
             else:
                 font = item.font(1)
                 font.setBold(False)
                 item.setFont(1, font)
                 item.setBackground(1, QColor(0, 0, 0, 0)) # Transparent
-                item.setText(1, item.text(1).replace("[REF] ", ""))
+                item.setText(1, item.text(1).replace(i18n.t("label_ref_prefix"), ""))
 
     def refresh_visuals(self):
         """Force refresh of visual elements (e.g. after theme change)."""
