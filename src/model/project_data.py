@@ -1,4 +1,5 @@
 import json
+import os
 from dataclasses import dataclass, field
 from typing import List, Tuple, Optional
 
@@ -12,9 +13,19 @@ class FrameData:
     is_disabled: bool = False
     crop_rect: Optional[Tuple[int, int, int, int]] = None # (x, y, w, h)
     
-    def to_dict(self):
+    def to_dict(self, base_dir: Optional[str] = None):
+        path = self.file_path
+        if base_dir and os.path.isabs(path):
+            try:
+                # If path is within base_dir, make it relative
+                rel = os.path.relpath(path, base_dir)
+                if not rel.startswith('..'):
+                    path = rel
+            except ValueError:
+                pass
+                
         return {
-            "file_path": self.file_path,
+            "file_path": path,
             "scale": self.scale,
             "position": self.position,
             "rotation": self.rotation,
@@ -24,7 +35,33 @@ class FrameData:
         }
 
     @classmethod
-    def from_dict(cls, data):
+    def from_dict(cls, data, base_dir: Optional[str] = None):
+        file_path = data["file_path"]
+        
+        # Resolution logic:
+        # 1. If absolute and exists -> OK
+        # 2. If relative and base_dir provided -> join and check
+        # 3. If absolute and NOT exists, try to treat as if it were relative to base_dir
+        
+        if not os.path.isabs(file_path):
+            if base_dir:
+                abs_path = os.path.abspath(os.path.join(base_dir, file_path))
+                if os.path.exists(abs_path):
+                    file_path = abs_path
+        else:
+            if not os.path.exists(file_path) and base_dir:
+                # Try to find it relative to project dir even if stored as absolute
+                # e.g. D:/old/img.png -> project_dir/old/img.png or just project_dir/img.png?
+                # Usually users want "if I move the folder, it finds it".
+                # Let's try joining the tail.
+                tail = os.path.basename(file_path)
+                test_path = os.path.abspath(os.path.join(base_dir, tail))
+                if os.path.exists(test_path):
+                    file_path = test_path
+                else:
+                    # Also try preserving the relative structure if possible? 
+                    # Complex, but let's stick to basics for now.
+                    pass
         data_target_res = data.get("target_resolution", None)
         target_res = tuple(data_target_res) if data_target_res else None
         
@@ -32,7 +69,7 @@ class FrameData:
         crop_rect = tuple(data_crop_rect) if data_crop_rect else None
         
         return cls(
-            file_path=data["file_path"],
+            file_path=file_path,
             scale=data.get("scale", 1.0),
             position=tuple(data.get("position", (0, 0))),
             rotation=data.get("rotation", 0.0),
@@ -58,13 +95,14 @@ class ProjectData:
     export_range_mode: str = "all" # "all", "selected", "custom"
     export_custom_range: str = ""
 
-    def to_json(self):
+    def to_json(self, project_file_path: Optional[str] = None):
+        base_dir = os.path.dirname(project_file_path) if project_file_path else None
         return json.dumps({
             "fps": self.fps,
             "width": self.width,
             "height": self.height,
             "background_color": self.background_color,
-            "frames": [f.to_dict() for f in self.frames],
+            "frames": [f.to_dict(base_dir) for f in self.frames],
             "last_export_path": self.last_export_path,
             "export_use_orig_names": self.export_use_orig_names,
             "export_sheet_cols": self.export_sheet_cols,
@@ -75,7 +113,8 @@ class ProjectData:
         }, indent=4)
 
     @classmethod
-    def from_json(cls, json_str):
+    def from_json(cls, json_str, project_file_path: Optional[str] = None):
+        base_dir = os.path.dirname(project_file_path) if project_file_path else None
         data = json.loads(json_str)
         project = cls(
             fps=data.get("fps", 6),
@@ -84,7 +123,7 @@ class ProjectData:
             background_color=data.get("background_color", "#000000")
         )
         if "frames" in data:
-            project.frames = [FrameData.from_dict(f) for f in data["frames"]]
+            project.frames = [FrameData.from_dict(f, base_dir) for f in data["frames"]]
             
         project.last_export_path = data.get("last_export_path", "")
         project.export_use_orig_names = data.get("export_use_orig_names", True)

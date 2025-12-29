@@ -1820,7 +1820,7 @@ class MainWindow(QMainWindow):
     def _save_to_path(self, path):
         try:
             with open(path, 'w') as f:
-                f.write(self.project.to_json())
+                f.write(self.project.to_json(path))
             self.current_project_path = path
             self.is_dirty = False
             self.update_title()
@@ -1840,7 +1840,7 @@ class MainWindow(QMainWindow):
         with open(path, 'r') as f:
             json_str = f.read()
             
-        self.project = ProjectData.from_json(json_str)
+        self.project = ProjectData.from_json(json_str, path)
         self.fps_spin.setValue(self.project.fps)
         self.canvas.set_project_settings(self.project.width, self.project.height)
         self.property_panel.set_project_info(self.project.width, self.project.height)
