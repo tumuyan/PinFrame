@@ -748,6 +748,12 @@ class MainWindow(QMainWindow):
         lang_menu.addAction(self.lang_en_action)
 
     def create_toolbar(self):
+        # Remove and delete existing toolbar(s) to avoid duplication on language change
+        for old_toolbar in self.findChildren(QToolBar, "MainToolbar"):
+            self.removeToolBar(old_toolbar)
+            old_toolbar.deleteLater()
+            old_toolbar.setObjectName("DeletedToolbar") # Prevent re-finding in same loop
+            
         toolbar = QToolBar(i18n.t("toolbar_main"))
         toolbar.setObjectName("MainToolbar")
         toolbar.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon)
@@ -2156,11 +2162,6 @@ class MainWindow(QMainWindow):
                 self.bg_actions[bg_mode].setChecked(True)
         
         # Update Toolbar
-        # Find which toolbar to update or just re-init text for existing ones?
-        # Re-creating toolbar is messy. Let's just update the FPS label if we held a reference.
-        # Wait, I didn't hold a reference to all labels.
-        # Simple approach: Re-create toolbar.
-        self.removeToolBar(self.findChild(QToolBar, "MainToolbar"))
         self.create_toolbar()
 
         # Update Sub-widgets
