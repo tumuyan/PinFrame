@@ -137,14 +137,18 @@ class CopyAssetsDialog(QDialog):
 
     def start_copy(self):
         if self.conflicts:
-            reply = QMessageBox.warning(
-                self, 
-                i18n.t("msg_overwrite_title"),
-                i18n.t("msg_copy_overwrite_warn"),
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                QMessageBox.StandardButton.No
-            )
-            if reply == QMessageBox.StandardButton.No:
+            msg_box = QMessageBox(self)
+            msg_box.setWindowTitle(i18n.t("msg_overwrite_title"))
+            msg_box.setText(i18n.t("msg_copy_overwrite_warn"))
+            msg_box.setIcon(QMessageBox.Icon.Warning)
+            
+            yes_btn = msg_box.addButton(i18n.t("btn_yes"), QMessageBox.ButtonRole.YesRole)
+            no_btn = msg_box.addButton(i18n.t("btn_no"), QMessageBox.ButtonRole.NoRole)
+            
+            msg_box.setDefaultButton(no_btn)
+            msg_box.exec()
+            
+            if msg_box.clickedButton() == no_btn:
                 return
 
         self.copy_btn.setEnabled(False)
@@ -172,12 +176,20 @@ class CopyAssetsDialog(QDialog):
                 if norm_frame_path in mapping:
                     frame.file_path = mapping[norm_frame_path]
             
-            QMessageBox.information(self, i18n.t("dlg_copy_assets_title"), 
-                                    i18n.t("msg_copy_success").format(count=len(self.copy_tasks)))
+            msg_box = QMessageBox(self)
+            msg_box.setWindowTitle(i18n.t("dlg_copy_assets_title"))
+            msg_box.setText(i18n.t("msg_copy_success").format(count=len(self.copy_tasks)))
+            msg_box.setIcon(QMessageBox.Icon.Information)
+            msg_box.addButton(i18n.t("btn_ok"), QMessageBox.ButtonRole.AcceptRole)
+            msg_box.exec()
             self.accept()
         else:
-            QMessageBox.critical(self, i18n.t("dlg_copy_assets_title"), 
-                                 i18n.t("msg_copy_error").format(file="...", error=error_msg))
+            msg_box = QMessageBox(self)
+            msg_box.setWindowTitle(i18n.t("dlg_copy_assets_title"))
+            msg_box.setText(i18n.t("msg_copy_error").format(file="...", error=error_msg))
+            msg_box.setIcon(QMessageBox.Icon.Critical)
+            msg_box.addButton(i18n.t("btn_ok"), QMessageBox.ButtonRole.AcceptRole)
+            msg_box.exec()
             self.copy_btn.setEnabled(True)
             self.cancel_btn.setEnabled(True)
             self.progress_bar.setVisible(False)

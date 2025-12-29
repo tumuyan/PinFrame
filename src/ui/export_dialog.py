@@ -161,6 +161,8 @@ class ExportOptionsDialog(QDialog):
         self.setWindowTitle(i18n.t("dialog_export_title"))
         self.setMinimumWidth(350)
         
+        self.export_type = None  # "sequence" or "gif"
+        
         layout = QVBoxLayout(self)
         
         self.common = CommonExportSettings(self)
@@ -174,15 +176,23 @@ class ExportOptionsDialog(QDialog):
         btn_layout = QHBoxLayout()
         btn_layout.addStretch()
         
-        self.ok_btn = QPushButton(i18n.t("btn_export"))
-        self.ok_btn.clicked.connect(self.accept)
-        btn_layout.addWidget(self.ok_btn)
+        self.seq_btn = QPushButton(i18n.t("btn_export_sequence"))
+        self.seq_btn.clicked.connect(lambda: self.on_export_clicked("sequence"))
+        btn_layout.addWidget(self.seq_btn)
+        
+        self.gif_btn = QPushButton(i18n.t("btn_export_gif"))
+        self.gif_btn.clicked.connect(lambda: self.on_export_clicked("gif"))
+        btn_layout.addWidget(self.gif_btn)
         
         self.cancel_btn = QPushButton(i18n.t("btn_cancel"))
         self.cancel_btn.clicked.connect(self.reject)
         btn_layout.addWidget(self.cancel_btn)
         
         layout.addLayout(btn_layout)
+
+    def on_export_clicked(self, export_type):
+        self.export_type = export_type
+        self.accept()
 
 class SpriteSheetExportDialog(QDialog):
     def __init__(self, parent=None):

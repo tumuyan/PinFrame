@@ -443,6 +443,10 @@ class MainWindow(QMainWindow):
         self.import_slice_action = QAction(i18n.t("action_import_slice"), self)
         self.import_slice_action.triggered.connect(self.import_sprite_sheet)
         self.import_slice_action.setShortcut("Ctrl+Shift+I")
+
+        self.import_gif_action = QAction(i18n.t("action_import_gif"), self)
+        self.import_gif_action.triggered.connect(self.import_gif)
+        self.import_gif_action.setShortcut("Ctrl+G")
         
         self.save_action = QAction(i18n.t("action_save"), self)
         self.save_action.setIcon(style.standardIcon(QStyle.StandardPixmap.SP_DialogSaveButton))
@@ -677,6 +681,7 @@ class MainWindow(QMainWindow):
         file_menu = menubar.addMenu(i18n.t("menu_file"))
         file_menu.addAction(self.import_action)
         file_menu.addAction(self.import_slice_action)
+        file_menu.addAction(self.import_gif_action)
         file_menu.addSeparator()
         file_menu.addAction(self.load_action)
         file_menu.addAction(self.save_action)
@@ -1915,19 +1920,34 @@ class MainWindow(QMainWindow):
             self.update_onion_state()
             self.statusBar().showMessage(i18n.t("msg_project_loaded").format(path=path), 3000)
         except Exception as e:
-            QMessageBox.critical(self, i18n.t("dlg_load_title"), f"{i18n.t('msg_load_error')}: {str(e)}")
+            msg_box = QMessageBox(self)
+            msg_box.setWindowTitle(i18n.t("dlg_load_title"))
+            msg_box.setText(f"{i18n.t('msg_load_error')}: {str(e)}")
+            msg_box.setIcon(QMessageBox.Icon.Critical)
+            msg_box.addButton(i18n.t("btn_ok"), QMessageBox.ButtonRole.AcceptRole)
+            msg_box.exec()
         
     def check_unsaved_changes(self):
         if self.is_dirty:
             from PyQt6.QtWidgets import QMessageBox
-            reply = QMessageBox.question(self, i18n.t("dlg_unsaved_title"), 
-                                        i18n.t("msg_unsaved_changes"),
-                                        QMessageBox.StandardButton.Save | QMessageBox.StandardButton.Discard | QMessageBox.StandardButton.Cancel)
+            msg_box = QMessageBox(self)
+            msg_box.setWindowTitle(i18n.t("dlg_unsaved_title"))
+            msg_box.setText(i18n.t("msg_unsaved_changes"))
+            msg_box.setIcon(QMessageBox.Icon.Question)
             
-            if reply == QMessageBox.StandardButton.Save:
+            save_btn = msg_box.addButton(i18n.t("btn_save"), QMessageBox.ButtonRole.AcceptRole)
+            discard_btn = msg_box.addButton(i18n.t("btn_discard"), QMessageBox.ButtonRole.DestructiveRole)
+            cancel_btn = msg_box.addButton(i18n.t("btn_cancel"), QMessageBox.ButtonRole.RejectRole)
+            
+            msg_box.setDefaultButton(save_btn)
+            msg_box.exec()
+            
+            clicked_btn = msg_box.clickedButton()
+            
+            if clicked_btn == save_btn:
                 self.save_project()
                 return not self.is_dirty # If save failed/cancelled, return False
-            elif reply == QMessageBox.StandardButton.Cancel:
+            elif clicked_btn == cancel_btn:
                 return False
             
         return True
@@ -2129,6 +2149,7 @@ class MainWindow(QMainWindow):
         # Refresh Actions
         self.import_action.setText(i18n.t("action_import"))
         self.import_slice_action.setText(i18n.t("action_import_slice"))
+        self.import_gif_action.setText(i18n.t("action_import_gif"))
         self.save_action.setText(i18n.t("action_save"))
         self.save_as_action.setText(i18n.t("action_save_as"))
         self.load_action.setText(i18n.t("action_load"))
@@ -2301,6 +2322,45 @@ class MainWindow(QMainWindow):
         self.mark_dirty()
         self.statusBar().showMessage(i18n.t("msg_imported_slices").format(count=len(crops)), 3000)
 
+    def import_gif(self):
+        file, _ = QFileDialog.getOpenFileName(self, i18n.t("dlg_import_gif_title"), "", i18n.t("dlg_filter_gif"))
+        if not file:
+            return
+            
+        try:
+            from PIL import Image, ImageSequence
+            gif = Image.open(file)
+            
+            base_dir = os.path.dirname(file)
+            base_name = os.path.splitext(os.path.basename(file))[0]
+            frames_dir = os.path.join(base_dir, f"{base_name}_gif_frames")
+            if not os.path.exists(frames_dir):
+                os.makedirs(frames_dir)
+                
+            count = 0
+            for i, frame in enumerate(ImageSequence.Iterator(gif)):
+                # Convert to RGBA to ensure PNG compatibility and transparency
+                png_frame = frame.convert("RGBA")
+                out_path = os.path.join(frames_dir, f"{base_name}_{i:03d}.png")
+                png_frame.save(out_path)
+                
+                # Add to project
+                f_data = FrameData(file_path=out_path)
+                self.project.frames.append(f_data)
+                self.timeline.add_frame(os.path.basename(out_path), f_data, png_frame.width, png_frame.height)
+                count += 1
+                
+            self.mark_dirty()
+            self.statusBar().showMessage(i18n.t("msg_imported_gif").format(count=count), 3000)
+            
+        except Exception as e:
+            msg_box = QMessageBox(self)
+            msg_box.setWindowTitle(i18n.t("dlg_load_error"))
+            msg_box.setText(f"Error importing GIF: {str(e)}")
+            msg_box.setIcon(QMessageBox.Icon.Critical)
+            msg_box.addButton(i18n.t("btn_ok"), QMessageBox.ButtonRole.AcceptRole)
+            msg_box.exec()
+
     def _get_export_indices(self, range_mode, custom_range):
         """Helper to get list of indices based on mode."""
         if range_mode == "selected":
@@ -2368,42 +2428,82 @@ class MainWindow(QMainWindow):
             
         settings = dlg.common.get_settings()
         use_orig_names = dlg.use_original_names.isChecked()
-        self.project.export_use_orig_names = use_orig_names # Default update
+        export_type = dlg.export_type  # "sequence" or "gif"
+        
+        # Save settings back to project
+        self.project.export_use_orig_names = use_orig_names
         self.project.export_range_mode = settings["range_mode"]
         self.project.export_custom_range = settings["custom_range"]
         self.project.export_bg_color = settings["bg_color"]
-        
-        # Directory
-        from utils.exporter import Exporter 
-        from PyQt6.QtWidgets import QApplication
-        
-        start_dir = self.project.last_export_path if self.project.last_export_path else ""
-        out_dir = QFileDialog.getExistingDirectory(self, i18n.t("dlg_save_title"), start_dir)
-        if not out_dir:
-            return
-            
-        self.project.last_export_path = out_dir
-        self.mark_dirty() # Settings changed
-        
+        self.mark_dirty() 
+
         indices = self._get_export_indices(settings["range_mode"], settings["custom_range"])
         if not indices:
              self.statusBar().showMessage(i18n.t("msg_no_frames_to_export"), 3000)
              return
 
-        # Export Loop
-        total_to_export = len(indices)
-        self.statusBar().showMessage(i18n.t("msg_exporting").format(index=0, total=total_to_export))
-        try:
-            for current, total in Exporter.export_iter(self.project, out_dir, use_orig_names, 
-                                                    frame_indices=indices, bg_color=self.project.export_bg_color):
-                self.statusBar().showMessage(i18n.t("msg_exporting").format(index=current, total=total))
-                QApplication.processEvents()
-            self.statusBar().showMessage(i18n.t("msg_export_complete"), 3000)
-        except Exception as e:
-            self.statusBar().showMessage(f"Export Error: {str(e)}", 5000)
+        from utils.exporter import Exporter 
+        from PyQt6.QtWidgets import QApplication
+
+        if export_type == "sequence":
+            start_dir = self.project.last_export_path if self.project.last_export_path else ""
+            out_dir = QFileDialog.getExistingDirectory(self, i18n.t("dlg_save_title"), start_dir)
+            if not out_dir:
+                return
+                
+            self.project.last_export_path = out_dir
+            
+            # Export Loop
+            total = len(indices)
+            try:
+                for current, total_cnt in Exporter.export_iter(self.project, out_dir, use_orig_names, 
+                                                            frame_indices=indices, bg_color=self.project.export_bg_color):
+                    self.statusBar().showMessage(i18n.t("msg_exporting").format(index=current, total=total_cnt))
+                    QApplication.processEvents()
+                self.statusBar().showMessage(i18n.t("msg_export_complete"), 3000)
+            except Exception as e:
+                self.statusBar().showMessage(f"Export Error: {str(e)}", 5000)
+
+        elif export_type == "gif":
+            # Determine default filename and directory
+            default_dir = ""
+            default_filename = ""
+            
+            if self.project.last_gif_export_path:
+                default_dir = os.path.dirname(self.project.last_gif_export_path)
+                default_filename = os.path.basename(self.project.last_gif_export_path)
+            elif self.current_project_path:
+                default_dir = os.path.dirname(self.current_project_path)
+                default_filename = os.path.splitext(os.path.basename(self.current_project_path))[0] + ".gif"
+            else:
+                default_filename = "animation.gif"
+
+            out_path, _ = QFileDialog.getSaveFileName(
+                self, 
+                i18n.t("dlg_export_gif_save_title"), 
+                os.path.join(default_dir, default_filename),
+                i18n.t("dlg_filter_gif")
+            )
+            
+            if not out_path:
+                return
+                
+            self.project.last_gif_export_path = out_path
+            
+            self.statusBar().showMessage(i18n.t("msg_exporting").format(index="...", total="..."))
+            try:
+                Exporter.export_gif(self.project, out_path, frame_indices=indices, bg_color=self.project.export_bg_color)
+                self.statusBar().showMessage(i18n.t("msg_export_complete"), 3000)
+            except Exception as e:
+                self.statusBar().showMessage(f"GIF Export Error: {str(e)}", 5000)
     def copy_assets_to_local(self):
         if not self.current_project_path:
-            QMessageBox.warning(self, i18n.t("action_copy_assets"), i18n.t("msg_save_project_first"))
+            msg_box = QMessageBox(self)
+            msg_box.setWindowTitle(i18n.t("action_copy_assets"))
+            msg_box.setText(i18n.t("msg_save_project_first"))
+            msg_box.setIcon(QMessageBox.Icon.Warning)
+            msg_box.addButton(i18n.t("btn_ok"), QMessageBox.ButtonRole.AcceptRole)
+            msg_box.exec()
             return
             
         from ui.copy_assets_dialog import CopyAssetsDialog
@@ -2447,9 +2547,18 @@ class MainWindow(QMainWindow):
 
     def load_recent_project(self, path):
         if not os.path.exists(path):
-            res = QMessageBox.question(self, i18n.t("dlg_load_title"), 
-                                     i18n.t("msg_recent_file_not_found").format(path=path))
-            if res == QMessageBox.StandardButton.Yes:
+            msg_box = QMessageBox(self)
+            msg_box.setWindowTitle(i18n.t("dlg_load_title"))
+            msg_box.setText(i18n.t("msg_recent_file_not_found").format(path=path))
+            msg_box.setIcon(QMessageBox.Icon.Question)
+            
+            yes_btn = msg_box.addButton(i18n.t("btn_yes"), QMessageBox.ButtonRole.YesRole)
+            no_btn = msg_box.addButton(i18n.t("btn_no"), QMessageBox.ButtonRole.NoRole)
+            
+            msg_box.setDefaultButton(no_btn)
+            msg_box.exec()
+            
+            if msg_box.clickedButton() == yes_btn:
                 if path in self.recent_projects:
                     self.recent_projects.remove(path)
                     self.save_settings()

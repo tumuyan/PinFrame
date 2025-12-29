@@ -170,3 +170,59 @@ class Exporter:
                 print(f"Error merging frame {i}: {e}")
                 
         sheet.save(output_path)
+
+    @staticmethod
+    def export_gif(project: ProjectData, output_path: str, 
+                   frame_indices: Optional[List[int]] = None, bg_color: Tuple[int, int, int, int] = (0, 0, 0, 0)):
+        
+        if frame_indices is None:
+            frames_to_export = [f for f in project.frames if not f.is_disabled]
+        else:
+            frames_to_export = [project.frames[i] for i in frame_indices if i < len(project.frames)]
+            
+        if not frames_to_export:
+            return
+            
+        pil_frames = []
+        duration = int(1000 / project.fps) if project.fps > 0 else 100
+        
+        for frame in frames_to_export:
+            canvas = Image.new('RGBA', (project.width, project.height), bg_color)
+            
+            try:
+                if os.path.exists(frame.file_path):
+                    src_img = Image.open(frame.file_path).convert("RGBA")
+                    
+                    if frame.crop_rect:
+                        x, y, w, h = frame.crop_rect
+                        src_img = src_img.crop((x, y, x + w, y + h))
+                        
+                    if frame.scale != 1.0:
+                        new_w = int(src_img.width * frame.scale)
+                        new_h = int(src_img.height * frame.scale)
+                        src_img = src_img.resize((new_w, new_h), Image.Resampling.LANCZOS)
+                        
+                    cx, cy = project.width / 2, project.height / 2
+                    dest_x = int((cx + frame.position[0]) - src_img.width / 2)
+                    dest_y = int((cy + frame.position[1]) - src_img.height / 2)
+                    canvas.alpha_composite(src_img, (dest_x, dest_y))
+                
+                # Convert to RGB or keep RGBA? 
+                # GIF doesn't support full alpha, but PIL can handle it with trans index.
+                # To be safe and simple, let's keep it in RGBA and let PIL handle it, 
+                # or convert if necessary.
+                pil_frames.append(canvas)
+                
+            except Exception as e:
+                print(f"Error rendering gif frame: {e}")
+                
+        if pil_frames:
+            # save_all=True will save the first image followed by all others in pil_frames[1:]
+            pil_frames[0].save(
+                output_path, 
+                save_all=True, 
+                append_images=pil_frames[1:], 
+                duration=duration, 
+                loop=0,
+                disposal=2 # Help with transparency artifacts
+            )
