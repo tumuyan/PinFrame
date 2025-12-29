@@ -1,56 +1,94 @@
 import os
+from typing import List, Tuple, Optional
 from PIL import Image
 from model.project_data import ProjectData
 
 class Exporter:
     @staticmethod
-    def export_iter(project: ProjectData, output_dir: str, use_original_filenames: bool = True):
+    def parse_range_string(range_str: str, total_count: int) -> List[int]:
+        """
+        Parses a range string like '1,3,5-7,10-' into a list of 0-based indices.
+        """
+        if not range_str or not range_str.strip():
+            return []
+            
+        indices = set()
+        parts = range_str.replace('，', ',').split(',')
+        
+        for part in parts:
+            part = part.strip()
+            if not part: continue
+            
+            if '-' in part:
+                sub_parts = part.split('-')
+                try:
+                    start = int(sub_parts[0]) - 1
+                    if sub_parts[1].strip():
+                        end = int(sub_parts[1]) - 1
+                        # Clamp
+                        start = max(0, min(start, total_count - 1))
+                        end = max(0, min(end, total_count - 1))
+                        for i in range(min(start, end), max(start, end) + 1):
+                            indices.add(i)
+                    else:
+                        # Open range like '10-'
+                        start = max(0, min(start, total_count - 1))
+                        for i in range(start, total_count):
+                            indices.add(i)
+                except ValueError:
+                    continue
+            else:
+                try:
+                    idx = int(part) - 1
+                    if 0 <= idx < total_count:
+                        indices.add(idx)
+                except ValueError:
+                    continue
+                    
+        return sorted(list(indices))
+
+    @staticmethod
+    def export_iter(project: ProjectData, output_dir: str, use_original_filenames: bool = True, 
+                    frame_indices: Optional[List[int]] = None, bg_color: Tuple[int, int, int, int] = (0, 0, 0, 0)):
         if not os.path.exists(output_dir):
             os.makedirs(output_dir)
             
         used_filenames = set()
-        enabled_frames = [f for f in project.frames if not f.is_disabled]
-        total_frames = len(enabled_frames)
+        
+        # If no indices provided, export all active frames
+        if frame_indices is None:
+            # We must map indices from the original project.frames
+            frames_to_export = [(i, f) for i, f in enumerate(project.frames) if not f.is_disabled]
+        else:
+            frames_to_export = [(i, project.frames[i]) for i in frame_indices if i < len(project.frames)]
             
-        for i, frame in enumerate(enabled_frames):
-            yield i + 1, total_frames # Progress
+        total_frames = len(frames_to_export)
+        if total_frames == 0:
+            return
             
-            # Create a blank canvas
-            # PIL uses (width, height)
-            canvas = Image.new('RGBA', (project.width, project.height), (0, 0, 0, 0))
+        for progress_idx, (orig_idx, frame) in enumerate(frames_to_export):
+            yield progress_idx + 1, total_frames # Progress bar info
+            
+            # Create a blank canvas with BG color
+            canvas = Image.new('RGBA', (project.width, project.height), bg_color)
             
             try:
                 if os.path.exists(frame.file_path):
                     src_img = Image.open(frame.file_path).convert("RGBA")
                     
-                    # Apply Crop (Virtual Slice)
                     if frame.crop_rect:
                         x, y, w, h = frame.crop_rect
                         src_img = src_img.crop((x, y, x + w, y + h))
                     
-                    # Apply Scale
                     if frame.scale != 1.0:
                         new_w = int(src_img.width * frame.scale)
                         new_h = int(src_img.height * frame.scale)
                         src_img = src_img.resize((new_w, new_h), Image.Resampling.LANCZOS)
                     
-                    # Calculate position
-                    # Frame position is center-relative to canvas center (assuming (0,0) is center)
-                    # PIL paste needs top-left coordinates.
-                    
-                    # Canvas Center
                     cx, cy = project.width / 2, project.height / 2
-                    
-                    # Image Center
-                    # src_img center should be at (cx + frame.x, cy + frame.y)
-                    # So top-left is:
-                    # x = (cx + frame.x) - src_w/2
-                    # y = (cy + frame.y) - src_h/2
-                    
                     dest_x = int((cx + frame.position[0]) - src_img.width / 2)
                     dest_y = int((cy + frame.position[1]) - src_img.height / 2)
                     
-                    # Paste
                     canvas.alpha_composite(src_img, (dest_x, dest_y))
                 
                 # Save
@@ -59,7 +97,6 @@ class Exporter:
                     name, ext = os.path.splitext(base_name)
                     filename = base_name
                     
-                    # Handle duplicates
                     dup_count = 1
                     while filename in used_filenames:
                         filename = f"{name}_{dup_count}{ext}"
@@ -67,35 +104,41 @@ class Exporter:
                     
                     used_filenames.add(filename)
                 else:
-                    filename = f"frame_{i:04d}.png"
+                    filename = f"frame_{progress_idx:04d}.png"
                     
                 canvas.save(os.path.join(output_dir, filename))
                 
             except Exception as e:
-                print(f"Error exporting frame {i}: {e}")
+                print(f"Error exporting frame {orig_idx}: {e}")
                 
     @staticmethod
-    def export_sprite_sheet(project: ProjectData, output_path: str):
-        enabled_frames = [f for f in project.frames if not f.is_disabled]
-        if not enabled_frames:
+    def export_sprite_sheet(project: ProjectData, output_path: str, 
+                           frame_indices: Optional[List[int]] = None, bg_color: Tuple[int, int, int, int] = (0, 0, 0, 0)):
+        
+        if frame_indices is None:
+            frames_to_export = [f for f in project.frames if not f.is_disabled]
+        else:
+            frames_to_export = [project.frames[i] for i in frame_indices if i < len(project.frames)]
+            
+        if not frames_to_export:
             return
             
         cols = project.export_sheet_cols
         padding = project.export_sheet_padding
-        rows = (len(enabled_frames) + cols - 1) // cols
+        rows = (len(frames_to_export) + cols - 1) // cols
         
-        # Canvas size for each frame
         fw, fh = project.width, project.height
-        
-        # Total Sheet size
         total_w = cols * fw + (cols + 1) * padding
         total_h = rows * fh + (rows + 1) * padding
         
+        # The main sheet can also have transparency or a default. 
+        # Usually sprite sheets are saved with transparent BG unless specified.
+        # However, the individual cells should respect bg_color.
         sheet = Image.new('RGBA', (total_w, total_h), (0, 0, 0, 0))
         
-        for i, frame in enumerate(enabled_frames):
-            # Render individual frame to a temporary canvas
-            canvas = Image.new('RGBA', (fw, fh), (0, 0, 0, 0))
+        for i, frame in enumerate(frames_to_export):
+            # Render individual frame to a temporary canvas with bg_color
+            canvas = Image.new('RGBA', (fw, fh), bg_color)
             
             try:
                 if os.path.exists(frame.file_path):
@@ -115,7 +158,6 @@ class Exporter:
                     dest_y = int((cy + frame.position[1]) - src_img.height / 2)
                     canvas.alpha_composite(src_img, (dest_x, dest_y))
                 
-                # Position on sheet
                 row_idx = i // cols
                 col_idx = i % cols
                 

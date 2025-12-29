@@ -176,5 +176,19 @@
     "label_ref_prefix": "[REF] ",
     "msg_project_saved": "Project saved to {path}",
     "msg_no_selection": "No Selection",
-    "msg_imported_slices": "Imported {count} slices"
+    "msg_imported_slices": "Imported {count} slices",
+    "export_range_title": "Export Range:",
+    "export_range_all": "All Frames",
+    "export_range_selected": "Selected Frames",
+    "export_range_custom": "Custom Range:",
+    "export_bg_color": "Background Color:",
+    "btn_pick": "Pick...",
+    "dlg_pick_color": "Pick Background Color",
+    "export_color_trans": "Transparent",
+    "export_color_white": "White",
+    "export_color_green": "Green",
+    "export_color_red": "Red",
+    "export_color_black": "Black",
+    "export_color_custom": "Custom...",
+    "label_color_info": "RGBA: {r}, {g}, {b}, {a}"
 }

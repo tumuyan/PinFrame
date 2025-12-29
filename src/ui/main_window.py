@@ -2253,26 +2253,51 @@ class MainWindow(QMainWindow):
         self.mark_dirty()
         self.statusBar().showMessage(i18n.t("msg_imported_slices").format(count=len(crops)), 3000)
 
+    def _get_export_indices(self, range_mode, custom_range):
+        """Helper to get list of indices based on mode."""
+        if range_mode == "selected":
+            selected = self.timeline.selectedItems()
+            indices = []
+            for item in selected:
+                indices.append(self.timeline.indexOfTopLevelItem(item))
+            return sorted(indices)
+        elif range_mode == "custom":
+            from utils.exporter import Exporter
+            return Exporter.parse_range_string(custom_range, len(self.project.frames))
+        else: # "all"
+            # Return all non-disabled frames' indices
+            return [i for i, f in enumerate(self.project.frames) if not f.is_disabled]
+
     def export_sprite_sheet(self):
         from ui.export_dialog import SpriteSheetExportDialog
         dlg = SpriteSheetExportDialog(self)
         dlg.cols_spin.setValue(self.project.export_sheet_cols)
         dlg.padding_spin.setValue(self.project.export_sheet_padding)
+        dlg.common.set_settings(self.project.export_range_mode, self.project.export_custom_range, self.project.export_bg_color)
         
         if not dlg.exec():
             return
             
+        settings = dlg.common.get_settings()
         self.project.export_sheet_cols = dlg.cols_spin.value()
         self.project.export_sheet_padding = dlg.padding_spin.value()
+        self.project.export_range_mode = settings["range_mode"]
+        self.project.export_custom_range = settings["custom_range"]
+        self.project.export_bg_color = settings["bg_color"]
         self.mark_dirty()
         
         file, _ = QFileDialog.getSaveFileName(self, i18n.t("action_export_sheet"), "", i18n.t("dlg_filter_images"))
         if not file:
             return
             
+        indices = self._get_export_indices(settings["range_mode"], settings["custom_range"])
+        if not indices:
+            self.statusBar().showMessage(i18n.t("msg_no_frames_to_export", "No frames to export"), 3000)
+            return
+
         from utils.exporter import Exporter
         try:
-            Exporter.export_sprite_sheet(self.project, file)
+            Exporter.export_sprite_sheet(self.project, file, frame_indices=indices, bg_color=self.project.export_bg_color)
             self.statusBar().showMessage(i18n.t("msg_export_complete"), 3000)
         except Exception as e:
             self.statusBar().showMessage(f"{i18n.t('msg_save_error').format(error=str(e))}", 5000)
@@ -2284,15 +2309,21 @@ class MainWindow(QMainWindow):
             self.stop_playback()
         
         # Options
+        from ui.export_dialog import ExportOptionsDialog
         dlg = ExportOptionsDialog(self)
         # Load persistent options
         dlg.use_original_names.setChecked(self.project.export_use_orig_names)
+        dlg.common.set_settings(self.project.export_range_mode, self.project.export_custom_range, self.project.export_bg_color)
         
         if not dlg.exec():
             return
             
+        settings = dlg.common.get_settings()
         use_orig_names = dlg.use_original_names.isChecked()
         self.project.export_use_orig_names = use_orig_names # Default update
+        self.project.export_range_mode = settings["range_mode"]
+        self.project.export_custom_range = settings["custom_range"]
+        self.project.export_bg_color = settings["bg_color"]
         
         # Directory
         from utils.exporter import Exporter 
@@ -2306,10 +2337,17 @@ class MainWindow(QMainWindow):
         self.project.last_export_path = out_dir
         self.mark_dirty() # Settings changed
         
+        indices = self._get_export_indices(settings["range_mode"], settings["custom_range"])
+        if not indices:
+             self.statusBar().showMessage(i18n.t("msg_no_frames_to_export"), 3000)
+             return
+
         # Export Loop
-        self.statusBar().showMessage(i18n.t("msg_exporting").format(index=0, total=len(self.project.frames)))
+        total_to_export = len(indices)
+        self.statusBar().showMessage(i18n.t("msg_exporting").format(index=0, total=total_to_export))
         try:
-            for current, total in Exporter.export_iter(self.project, out_dir, use_orig_names):
+            for current, total in Exporter.export_iter(self.project, out_dir, use_orig_names, 
+                                                    frame_indices=indices, bg_color=self.project.export_bg_color):
                 self.statusBar().showMessage(i18n.t("msg_exporting").format(index=current, total=total))
                 QApplication.processEvents()
             self.statusBar().showMessage(i18n.t("msg_export_complete"), 3000)

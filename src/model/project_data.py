@@ -54,6 +54,9 @@ class ProjectData:
     export_use_orig_names: bool = True
     export_sheet_cols: int = 4
     export_sheet_padding: int = 0
+    export_bg_color: Tuple[int, int, int, int] = (0, 0, 0, 0)
+    export_range_mode: str = "all" # "all", "selected", "custom"
+    export_custom_range: str = ""
 
     def to_json(self):
         return json.dumps({
@@ -65,7 +68,10 @@ class ProjectData:
             "last_export_path": self.last_export_path,
             "export_use_orig_names": self.export_use_orig_names,
             "export_sheet_cols": self.export_sheet_cols,
-            "export_sheet_padding": self.export_sheet_padding
+            "export_sheet_padding": self.export_sheet_padding,
+            "export_bg_color": self.export_bg_color,
+            "export_range_mode": self.export_range_mode,
+            "export_custom_range": self.export_custom_range
         }, indent=4)
 
     @classmethod
@@ -84,4 +90,7 @@ class ProjectData:
         project.export_use_orig_names = data.get("export_use_orig_names", True)
         project.export_sheet_cols = data.get("export_sheet_cols", 4)
         project.export_sheet_padding = data.get("export_sheet_padding", 0)
+        project.export_bg_color = tuple(data.get("export_bg_color", (0, 0, 0, 0)))
+        project.export_range_mode = data.get("export_range_mode", "all")
+        project.export_custom_range = data.get("export_custom_range", "")
         return project
