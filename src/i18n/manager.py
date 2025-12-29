@@ -19,8 +19,16 @@ class I18nManager:
         
     def load_language(self, lang_code):
         self.current_lang = lang_code
-        # Local path to i18n folder
-        base_path = os.path.dirname(__file__)
+        
+        # Resolve the base path for resources (supports both dev and PyInstaller)
+        import sys
+        if getattr(sys, 'frozen', False):
+            # PyInstaller bundle root
+            base_path = os.path.join(sys._MEIPASS, "src", "i18n")
+        else:
+            # Normal python environment
+            base_path = os.path.dirname(os.path.abspath(__file__))
+            
         file_path = os.path.join(base_path, f"{lang_code}.json")
         if os.path.exists(file_path):
             try:

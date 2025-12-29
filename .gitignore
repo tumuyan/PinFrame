@@ -1,3 +1,5 @@
 test/*
-src/*/__pycache__/*
-src/ui/utils/__pycache__/*
+**/__pycache__/
+*.py[cod]
+build/
+dist/

@@ -26,11 +26,21 @@ class MainWindow(QMainWindow):
         # State
         self.current_project_path = None
         self.is_dirty = False
-        self.settings = QSettings("Yazii", "Image2Frame")
+        self.settings = QSettings("tumuyan", "PinFrame")
         self.current_theme = self.settings.value("theme", "dark")
         self.current_lang = self.settings.value("language", "zh_CN")
         i18n.load_language(self.current_lang)
         self.recent_projects = self.settings.value("recent_projects", [], type=list)
+        
+        # Set Window Icon
+        import sys
+        if getattr(sys, 'frozen', False):
+            icon_path = os.path.join(sys._MEIPASS, "src", "resources", "icon.ico")
+        else:
+            icon_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "resources", "icon.ico")
+        
+        if os.path.exists(icon_path):
+            self.setWindowIcon(QIcon(icon_path))
         
         self.setWindowTitle(i18n.t("app_title") + " - " + i18n.t("new_project"))
         self.resize(1200, 800)
