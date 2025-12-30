@@ -2,6 +2,9 @@ from PyQt6.QtGui import QIcon, QPixmap, QPainter, QColor, QPalette, QPen, QBrush
 from PyQt6.QtCore import Qt, QPoint, QPointF, QSize
 
 class IconGenerator:
+    PEN_WIDTH = 2
+    BORDER_WIDTH = 1
+
     @staticmethod
     def play_icon(color: QColor, size: int = 32) -> QIcon:
         pixmap = QPixmap(size, size)
@@ -10,8 +13,8 @@ class IconGenerator:
         painter = QPainter(pixmap)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         
-        # Draw right-pointing triangle
-        painter.setPen(Qt.PenStyle.NoPen)
+        # Draw right-pointing triangle with black stroke
+        painter.setPen(QPen(Qt.GlobalColor.black, IconGenerator.BORDER_WIDTH))
         painter.setBrush(QBrush(color))
         
         points = [
@@ -31,8 +34,8 @@ class IconGenerator:
         painter = QPainter(pixmap)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         
-        # Draw left-pointing triangle
-        painter.setPen(Qt.PenStyle.NoPen)
+        # Draw left-pointing triangle with black stroke
+        painter.setPen(QPen(Qt.GlobalColor.black, IconGenerator.BORDER_WIDTH))
         painter.setBrush(QBrush(color))
         
         points = [
@@ -90,7 +93,7 @@ class IconGenerator:
         painter.drawRect(int(size * 0.35), int(size * 0.35), int(size * 0.5), int(size * 0.5))
         
         # Layer 3 (Front - outline only or stronger fill)
-        painter.setPen(QPen(base_color, 2))
+        painter.setPen(QPen(base_color, IconGenerator.PEN_WIDTH))
         painter.setBrush(Qt.BrushStyle.NoBrush)
         painter.drawRect(int(size * 0.5), int(size * 0.5), int(size * 0.4), int(size * 0.4))
         
@@ -105,7 +108,7 @@ class IconGenerator:
         painter = QPainter(pixmap)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         
-        pen = QPen(color, 2)
+        pen = QPen(color, IconGenerator.PEN_WIDTH)
         painter.setPen(pen)
         painter.setBrush(Qt.BrushStyle.NoBrush)
         

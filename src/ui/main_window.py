@@ -234,6 +234,23 @@ class MainWindow(QMainWindow):
                     border-radius: 3px;
                     min-width: 60px;
                 }
+                QRadioButton, QCheckBox {
+                    spacing: 8px;
+                    color: #CCCCCC;
+                }
+                QRadioButton::indicator, QCheckBox::indicator {
+                    width: 16px;
+                    height: 16px;
+                    border: 1px solid #454545;
+                    border-radius: 9px;
+                    background-color: #333333;
+                }
+                QRadioButton::indicator:checked, QCheckBox::indicator:checked {
+                    background-color: #007ACC;
+                    border: 3px solid #454545;
+                    width: 12px;
+                    height: 12px;
+                }
                 QPushButton:hover {
                     background-color: #4E4E52;
                     border: 1px solid #007ACC;
@@ -350,6 +367,23 @@ class MainWindow(QMainWindow):
                     border: 1px solid #CCCCCC;
                     padding: 4px 8px;
                     border-radius: 3px;
+                }
+                QRadioButton, QCheckBox {
+                    spacing: 8px;
+                    color: #333333;
+                }
+                QRadioButton::indicator, QCheckBox::indicator {
+                    width: 16px;
+                    height: 16px;
+                    border: 1px solid #CCCCCC;
+                    border-radius: 9px;
+                    background-color: #FFFFFF;
+                }
+                QRadioButton::indicator:checked, QCheckBox::indicator:checked {
+                    background-color: #007ACC;
+                    border: 3px solid #CCCCCC;
+                    width: 12px;
+                    height: 12px;
                 }
                 QPushButton:hover {
                     background-color: #F0F7FF;
