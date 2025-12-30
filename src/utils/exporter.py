@@ -80,9 +80,9 @@ class Exporter:
                         x, y, w, h = frame.crop_rect
                         src_img = src_img.crop((x, y, x + w, y + h))
                     
-                    if frame.scale != 1.0:
+                    if frame.scale != 1.0 or frame.aspect_ratio != 1.0:
                         new_w = int(src_img.width * frame.scale)
-                        new_h = int(src_img.height * frame.scale)
+                        new_h = int(src_img.height * (frame.scale / frame.aspect_ratio))
                         src_img = src_img.resize((new_w, new_h), Image.Resampling.LANCZOS)
                     
                     cx, cy = project.width / 2, project.height / 2
@@ -148,9 +148,9 @@ class Exporter:
                         x, y, w, h = frame.crop_rect
                         src_img = src_img.crop((x, y, x + w, y + h))
                         
-                    if frame.scale != 1.0:
+                    if frame.scale != 1.0 or frame.aspect_ratio != 1.0:
                         new_w = int(src_img.width * frame.scale)
-                        new_h = int(src_img.height * frame.scale)
+                        new_h = int(src_img.height * (frame.scale / frame.aspect_ratio))
                         src_img = src_img.resize((new_w, new_h), Image.Resampling.LANCZOS)
                         
                     cx, cy = fw / 2, fh / 2
@@ -197,9 +197,9 @@ class Exporter:
                         x, y, w, h = frame.crop_rect
                         src_img = src_img.crop((x, y, x + w, y + h))
                         
-                    if frame.scale != 1.0:
+                    if frame.scale != 1.0 or frame.aspect_ratio != 1.0:
                         new_w = int(src_img.width * frame.scale)
-                        new_h = int(src_img.height * frame.scale)
+                        new_h = int(src_img.height * (frame.scale / frame.aspect_ratio))
                         src_img = src_img.resize((new_w, new_h), Image.Resampling.LANCZOS)
                         
                     cx, cy = project.width / 2, project.height / 2

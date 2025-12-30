@@ -64,6 +64,8 @@
     "prop_pos": "坐标 (X, Y)",
     "prop_size_resolution": "尺寸与分辨率",
     "prop_target_res": "目标分辨率:",
+    "prop_res_lock": "锁定比例",
+    "prop_res_reset": "重置比例",
     "prop_res_none": "无",
     "prop_quick_size": "快速尺寸",
     "btn_fit_width": "适配宽度",

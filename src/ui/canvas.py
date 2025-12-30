@@ -156,7 +156,7 @@ class CanvasWidget(QWidget):
                 scale = frame_data.scale
                 
                 painter.translate(x, y)
-                painter.scale(scale, scale)
+                painter.scale(scale, scale / frame_data.aspect_ratio)
                 
                 w = img.width()
                 h = img.height()
@@ -174,11 +174,6 @@ class CanvasWidget(QWidget):
                 else:
                     target_rect = QRectF(-w/2, -h/2, w, h)
                     painter.drawImage(target_rect, img)
-                    
-                # Reference Outline (Different color)
-                # But user said Reference frame is "preview" state.
-                # Usually references don't have outlines unless selected.
-                # We can skip outline for reference/onion.
                 
                 if not is_ref and opacity == 1.0: # Active Selection Outline
                     painter.setPen(QPen(Qt.GlobalColor.cyan, 2))

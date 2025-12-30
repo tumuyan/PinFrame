@@ -1,6 +1,6 @@
 import os
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, 
-                             QDoubleSpinBox, QGroupBox, QSpinBox, QPushButton, QGridLayout)
+                             QDoubleSpinBox, QGroupBox, QSpinBox, QPushButton, QGridLayout, QCheckBox)
 from PyQt6.QtCore import Qt, pyqtSignal, QRect, QTimer
 from PyQt6.QtGui import QImage, QPixmap, QPainter, QColor
 from i18n.manager import i18n
@@ -87,17 +87,28 @@ class PropertyPanel(QWidget):
         self.t_w_spin = QSpinBox()
         self.t_w_spin.setRange(0, 9999)
         self.t_w_spin.setSpecialValueText(i18n.t("prop_res_none"))
-        self.t_w_spin.valueChanged.connect(self.on_target_res_changed)
+        self.t_w_spin.valueChanged.connect(self.on_t_w_changed)
         
         self.t_h_spin = QSpinBox()
         self.t_h_spin.setRange(0, 9999)
         self.t_h_spin.setSpecialValueText(i18n.t("prop_res_none"))
-        self.t_h_spin.valueChanged.connect(self.on_target_res_changed)
+        self.t_h_spin.valueChanged.connect(self.on_t_h_changed)
         
         t_res_layout.addWidget(self.t_w_spin)
         self.label_x_sep = QLabel("x")
         t_res_layout.addWidget(self.label_x_sep)
         t_res_layout.addWidget(self.t_h_spin)
+        
+        # AR Lock
+        self.t_res_lock = QCheckBox(i18n.t("prop_res_lock"))
+        self.t_res_lock.setChecked(True)
+        t_res_layout.addWidget(self.t_res_lock)
+        
+        # Reset AR Button
+        self.btn_reset_ar = QPushButton(i18n.t("prop_res_reset"))
+        self.btn_reset_ar.clicked.connect(self.reset_aspect_ratio)
+        t_res_layout.addWidget(self.btn_reset_ar)
+        
         size_layout.addLayout(t_res_layout)
         
         layout.addWidget(self.size_group)
@@ -203,6 +214,8 @@ class PropertyPanel(QWidget):
         # Labels
         self.label_scale.setText(i18n.t("prop_scale_label"))
         self.label_target_res.setText(i18n.t("prop_target_res"))
+        self.t_res_lock.setText(i18n.t("prop_res_lock"))
+        self.btn_reset_ar.setText(i18n.t("prop_res_reset"))
         self.label_dx.setText(i18n.t("prop_dx"))
         self.label_dy.setText(i18n.t("prop_dy"))
         
@@ -251,9 +264,21 @@ class PropertyPanel(QWidget):
             self.x_spin.setValue(first.position[0])
             self.y_spin.setValue(first.position[1])
             
-            if first.target_resolution:
-                self.t_w_spin.setValue(first.target_resolution[0])
-                self.t_h_spin.setValue(first.target_resolution[1])
+            # Calculate target resolution from scale and aspect_ratio
+            if os.path.exists(first.file_path):
+                img = QImage(first.file_path)
+                if not img.isNull():
+                    orig_w = first.crop_rect[2] if first.crop_rect else img.width()
+                    orig_h = first.crop_rect[3] if first.crop_rect else img.height()
+                    if orig_w > 0 and orig_h > 0:
+                        self.t_w_spin.setValue(int(orig_w * first.scale))
+                        self.t_h_spin.setValue(int(orig_h * (first.scale / first.aspect_ratio)))
+                    else:
+                        self.t_w_spin.setValue(0)
+                        self.t_h_spin.setValue(0)
+                else:
+                    self.t_w_spin.setValue(0)
+                    self.t_h_spin.setValue(0)
             else:
                 self.t_w_spin.setValue(0)
                 self.t_h_spin.setValue(0)
@@ -271,54 +296,123 @@ class PropertyPanel(QWidget):
         for f in self.selected_frames:
             f.scale = new_scale
             f.position = (new_x, new_y)
-            # Clear target res if manually scaled? 
-            # Or recalculate? User requested "Target resolution sets scale".
-            # If user changes scale manually, target res is likely invalid unless we update it.
-            # But "Target Resolution" is a goal. If scale changes, target res changes.
-            # We'll calculate it if original image is available. 
-            # For now, if manual scale, we might want to unset target res or update it. 
-            # Let's unset it to avoid confusion or forcing values.
-            # Actually, user said: "保存时使用目标分辨率" (Use target resolution when saving). 
-            # If scale is changed, target resolution might result in a scale that matches it.
-            # Let's keep logic simple: manual scale invalidates fixed target res numbers unless they match.
-            # We will just leave it.
+            
+        # Update ephemeral W/H inputs
+        self.updating_ui = True
+        first = self.selected_frames[0]
+        if os.path.exists(first.file_path):
+            img = QImage(first.file_path)
+            if not img.isNull():
+                orig_w = first.crop_rect[2] if first.crop_rect else img.width()
+                orig_h = first.crop_rect[3] if first.crop_rect else img.height()
+                if orig_w > 0 and orig_h > 0:
+                    self.t_w_spin.setValue(int(orig_w * first.scale))
+                    self.t_h_spin.setValue(int(orig_h * (first.scale / first.aspect_ratio)))
+        self.updating_ui = False
             
         self.frame_data_changed.emit(new_scale, new_x, new_y)
 
-    def on_target_res_changed(self):
+    def on_t_w_changed(self):
         if self.updating_ui or not self.selected_frames:
             return
             
         w = self.t_w_spin.value()
-        h = self.t_h_spin.value()
-        
-        if w <= 0 or h <= 0:
-            for f in self.selected_frames:
-                f.target_resolution = None
-            return
+        if w <= 0: return
 
         for f in self.selected_frames:
-            f.target_resolution = (w, h)
-            if os.path.exists(f.file_path):
-                try:
-                    img = QImage(f.file_path)
-                    if not img.isNull():
-                        orig_w = f.crop_rect[2] if f.crop_rect else img.width()
-                        if orig_w > 0:
-                            scale = w / orig_w
-                            f.scale = scale
-                except:
-                    pass
-        
-        # Update UI scale spin
-        if self.selected_frames:
-            self.updating_ui = True
-            self.scale_spin.setValue(self.selected_frames[0].scale)
-            self.updating_ui = False
+            if not os.path.exists(f.file_path): continue
+            img = QImage(f.file_path)
+            if img.isNull(): continue
             
+            orig_w = f.crop_rect[2] if f.crop_rect else img.width()
+            orig_h = f.crop_rect[3] if f.crop_rect else img.height()
+            if orig_w <= 0 or orig_h <= 0: continue
+            
+            if self.t_res_lock.isChecked():
+                if abs(f.aspect_ratio - 1.0) < 0.001:
+                    # 锁定 + 比例为1：改 W 时，H 同步变化（保持原图比例）
+                    f.scale = w / orig_w
+                    f.aspect_ratio = 1.0
+                else:
+                    # 锁定 + 比例不为1：改 W 时，保持 aspect_ratio 不变
+                    # target_w = orig_w * scale，直接更新 scale
+                    f.scale = w / orig_w
+            else:
+                # 不锁定：改 W 时，H 保持不变（调整 aspect_ratio）
+                current_h = int(orig_h * (f.scale / f.aspect_ratio))
+                f.scale = w / orig_w
+                if current_h > 0:
+                    f.aspect_ratio = (orig_h * f.scale) / current_h
+            
+        self.refresh_t_res_ui()
+
+    def on_t_h_changed(self):
+        if self.updating_ui or not self.selected_frames:
+            return
+            
+        h = self.t_h_spin.value()
+        if h <= 0: return
+
+        for f in self.selected_frames:
+            if not os.path.exists(f.file_path): continue
+            img = QImage(f.file_path)
+            if img.isNull(): continue
+            
+            orig_w = f.crop_rect[2] if f.crop_rect else img.width()
+            orig_h = f.crop_rect[3] if f.crop_rect else img.height()
+            if orig_w <= 0 or orig_h <= 0: continue
+            
+            if self.t_res_lock.isChecked():
+                if abs(f.aspect_ratio - 1.0) < 0.001:
+                    # 锁定 + 比例为1：改 H 时，W 同步变化（保持原图比例）
+                    f.scale = h / orig_h
+                    f.aspect_ratio = 1.0
+                else:
+                    # 锁定 + 比例不为1：改 H 时，保持 aspect_ratio 不变
+                    # target_h = orig_h * (scale / aspect_ratio)
+                    # scale = (target_h * aspect_ratio) / orig_h
+                    f.scale = (h * f.aspect_ratio) / orig_h
+            else:
+                # 不锁定：改 H 时，W 保持不变（调整 aspect_ratio）
+                if h > 0:
+                    f.aspect_ratio = (orig_h * f.scale) / h
+
+        self.refresh_t_res_ui()
+
+    def refresh_t_res_ui(self):
+        """Update scale spin and canvas after any target res change."""
+        if not self.selected_frames: return
+        
+        self.updating_ui = True
+        self.scale_spin.setValue(self.selected_frames[0].scale)
+        
+        # Update H spin if W changed (locked) or vice versa
+        first = self.selected_frames[0]
+        if os.path.exists(first.file_path):
+            img = QImage(first.file_path)
+            if not img.isNull():
+                orig_w = first.crop_rect[2] if first.crop_rect else img.width()
+                orig_h = first.crop_rect[3] if first.crop_rect else img.height()
+                if orig_w > 0 and orig_h > 0:
+                    self.t_w_spin.setValue(int(orig_w * first.scale))
+                    self.t_h_spin.setValue(int(orig_h * (first.scale / first.aspect_ratio)))
+        
+        self.updating_ui = False
+        
         self.frame_data_changed.emit(self.selected_frames[0].scale, 
                                      self.selected_frames[0].position[0], 
                                      self.selected_frames[0].position[1])
+
+    def reset_aspect_ratio(self):
+        """Reset aspect_ratio to 1.0 for all selected frames."""
+        if not self.selected_frames:
+            return
+        
+        for f in self.selected_frames:
+            f.aspect_ratio = 1.0
+        
+        self.update_ui_from_selection()
+        self.frame_data_changed.emit(0, 0, 0)
 
     def fit_to_canvas(self, mode):
         if not self.selected_frames:

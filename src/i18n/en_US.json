@@ -64,6 +64,8 @@
     "prop_pos": "Position (X, Y)",
     "prop_size_resolution": "Size & Resolution",
     "prop_target_res": "Target Res:",
+    "prop_res_lock": "Lock Aspect Ratio",
+    "prop_res_reset": "Reset Ratio",
     "prop_res_none": "None",
     "prop_quick_size": "Quick Size",
     "btn_fit_width": "Fit Width",

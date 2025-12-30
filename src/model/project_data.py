@@ -9,7 +9,8 @@ class FrameData:
     scale: float = 1.0
     position: Tuple[int, int] = (0, 0)
     rotation: float = 0.0
-    target_resolution: Optional[Tuple[int, int]] = None
+    aspect_ratio: float = 1.0 # distortion factor: X_scale / Y_scale
+    target_resolution: Optional[Tuple[int, int]] = None # Ephemeral
     is_disabled: bool = False
     crop_rect: Optional[Tuple[int, int, int, int]] = None # (x, y, w, h)
     
@@ -31,7 +32,7 @@ class FrameData:
             "scale": self.scale,
             "position": self.position,
             "rotation": self.rotation,
-            "target_resolution": self.target_resolution,
+            "aspect_ratio": self.aspect_ratio,
             "is_disabled": self.is_disabled,
             "crop_rect": self.crop_rect
         }
@@ -75,7 +76,7 @@ class FrameData:
             scale=data.get("scale", 1.0),
             position=tuple(data.get("position", (0, 0))),
             rotation=data.get("rotation", 0.0),
-            target_resolution=target_res,
+            aspect_ratio=data.get("aspect_ratio", 1.0),
             is_disabled=data.get("is_disabled", data.get("is_active", False)),
             crop_rect=crop_rect
         )
