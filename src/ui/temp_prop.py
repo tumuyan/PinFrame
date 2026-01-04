@@ -62,7 +62,7 @@ class PropertyPanel(QWidget):
         form.addWidget(self.rotation_spin, 1, 1)
         
         # Position X
-        self.label_x = QLabel(i18n.t("prop_pos_x"))
+        self.label_x = QLabel("X:")
         form.addWidget(self.label_x, 2, 0)
         self.x_spin = QDoubleSpinBox()
         self.x_spin.setRange(-9999, 9999)
@@ -70,7 +70,7 @@ class PropertyPanel(QWidget):
         form.addWidget(self.x_spin, 2, 1)
         
         # Position Y
-        self.label_y = QLabel(i18n.t("prop_pos_y"))
+        self.label_y = QLabel("Y:")
         form.addWidget(self.label_y, 3, 0)
         self.y_spin = QDoubleSpinBox()
         self.y_spin.setRange(-9999, 9999)
@@ -162,16 +162,17 @@ class PropertyPanel(QWidget):
         anchor_layout.addWidget(self.rb_anchor_custom)
         layout.addWidget(self.anchor_group)
         
-        # Custom Anchor Inputs
+        # Custom Anchor Inputs (Hidden/Shown based on selection? Or just disabled)
+        # Putting inside separate widget for cleaner layout.
         self.custom_anchor_widget = QWidget()
         ca_layout = QHBoxLayout(self.custom_anchor_widget)
         ca_layout.setContentsMargins(10, 0, 10, 5)
-        ca_layout.addWidget(QLabel(i18n.t("prop_anchor_x")))
+        ca_layout.addWidget(QLabel("Anchor X:"))
         self.ca_x_spin = QDoubleSpinBox()
         self.ca_x_spin.setRange(-9999, 9999)
         self.ca_x_spin.valueChanged.connect(self.on_custom_anchor_ui_changed)
         ca_layout.addWidget(self.ca_x_spin)
-        ca_layout.addWidget(QLabel(i18n.t("prop_anchor_y")))
+        ca_layout.addWidget(QLabel("Anchor Y:"))
         self.ca_y_spin = QDoubleSpinBox()
         self.ca_y_spin.setRange(-9999, 9999)
         self.ca_y_spin.valueChanged.connect(self.on_custom_anchor_ui_changed)
@@ -183,65 +184,82 @@ class PropertyPanel(QWidget):
         self.rel_trans_group = QGroupBox(i18n.t("prop_rel_trans"))
         rel_layout = QVBoxLayout(self.rel_trans_group)
         
-        # Grid for Move, Scale, Rotate
+
+        
+
+        
+        # REPLACED GRID
         op_grid = QGridLayout()
         
         # Row 0: Move
-        # [Step] [Left] [Right] [Up] [Down]
+        # [Step] [X-] [X+] [Y-] [Y+]
+        op_grid.addWidget(QLabel(i18n.t("prop_dx")), 0, 0)
+        self.dx_spin = QDoubleSpinBox()
+        self.dx_spin.setRange(-9999, 9999)
+        self.dx_spin.setValue(10.0)
+        op_grid.addWidget(self.dx_spin, 0, 1)
         
-        op_grid.addWidget(QLabel(i18n.t("prop_move_step", "Step:")), 0, 0)
-        
-        self.step_move_spin = QDoubleSpinBox()
-        self.step_move_spin.setRange(0, 9999)
-        self.step_move_spin.setValue(10.0)
-        op_grid.addWidget(self.step_move_spin, 0, 1)
-        
-        self.btn_move_left = QPushButton("←")
-        self.btn_move_left.clicked.connect(lambda: self.apply_rel_move(-self.step_move_spin.value(), 0))
+        self.btn_move_left = QPushButton("X-")
+        self.btn_move_left.clicked.connect(lambda: self.apply_rel_move(-self.dx_spin.value(), 0))
         op_grid.addWidget(self.btn_move_left, 0, 2)
         
-        self.btn_move_right = QPushButton("→")
-        self.btn_move_right.clicked.connect(lambda: self.apply_rel_move(self.step_move_spin.value(), 0))
+        self.btn_move_right = QPushButton("X+")
+        self.btn_move_right.clicked.connect(lambda: self.apply_rel_move(self.dx_spin.value(), 0))
         op_grid.addWidget(self.btn_move_right, 0, 3)
         
-        self.btn_move_up = QPushButton("↑")
-        self.btn_move_up.clicked.connect(lambda: self.apply_rel_move(0, -self.step_move_spin.value()))
-        op_grid.addWidget(self.btn_move_up, 0, 4)
+        # Combine Y onto existing lines or new line? Let's use 2nd line for Y to save width?
+        # Or combine dx/dy into one 'step' spinbox for simplification?
+        # User requested: "移动× 移动Y 重复... 改为 x- x+ y- y+, 增加数值缩放系数..."
+        # Let's keep one step value for move X and one for Y? Or shared?
+        # "增加数值缩放系数... 增加数值旋转系数..." implies separate steps.
+        # Let's use separate X/Y steps or shared? Shared 'Move Step' is cleaner. 
+        # But previously we had dx and dy. I'll keep dx and dy logic but maybe simplify UI.
+        # Let's put Y on same row if possible, or new row.
         
-        self.btn_move_down = QPushButton("↓")
-        self.btn_move_down.clicked.connect(lambda: self.apply_rel_move(0, self.step_move_spin.value()))
-        op_grid.addWidget(self.btn_move_down, 0, 5)
+        op_grid.addWidget(QLabel(i18n.t("prop_dy")), 1, 0)
+        self.dy_spin = QDoubleSpinBox()
+        self.dy_spin.setRange(-9999, 9999)
+        self.dy_spin.setValue(10.0)
+        op_grid.addWidget(self.dy_spin, 1, 1)
+        
+        self.btn_move_up = QPushButton("Y-")
+        self.btn_move_up.clicked.connect(lambda: self.apply_rel_move(0, -self.dy_spin.value()))
+        op_grid.addWidget(self.btn_move_up, 1, 2)
+        
+        self.btn_move_down = QPushButton("Y+")
+        self.btn_move_down.clicked.connect(lambda: self.apply_rel_move(0, self.dy_spin.value()))
+        op_grid.addWidget(self.btn_move_down, 1, 3)
 
-        # Row 1: Scale
-        op_grid.addWidget(QLabel(i18n.t("prop_scale_step")), 1, 0)
+        # Row 2: Scale
+        op_grid.addWidget(QLabel(i18n.t("prop_scale_step")), 2, 0)
         self.step_scale_spin = QDoubleSpinBox()
         self.step_scale_spin.setRange(1.01, 10.0)
         self.step_scale_spin.setSingleStep(0.1)
         self.step_scale_spin.setValue(1.1)
-        op_grid.addWidget(self.step_scale_spin, 1, 1)
+        op_grid.addWidget(self.step_scale_spin, 2, 1)
         
         self.btn_scale_up = QPushButton(i18n.t("btn_scale_up"))
         self.btn_scale_up.clicked.connect(lambda: self.apply_rel_scale(self.step_scale_spin.value()))
-        op_grid.addWidget(self.btn_scale_up, 1, 2, 1, 2)
+        op_grid.addWidget(self.btn_scale_up, 2, 2)
         
         self.btn_scale_down = QPushButton(i18n.t("btn_scale_down"))
         self.btn_scale_down.clicked.connect(lambda: self.apply_rel_scale(1.0 / self.step_scale_spin.value()))
-        op_grid.addWidget(self.btn_scale_down, 1, 4, 1, 2)
+        op_grid.addWidget(self.btn_scale_down, 2, 3)
         
-        # Row 2: Rotate
-        op_grid.addWidget(QLabel(i18n.t("prop_rotate_step")), 2, 0)
+        # Row 3: Rotate
+        op_grid.addWidget(QLabel(i18n.t("prop_rotate_step")), 3, 0)
         self.step_rotate_spin = QDoubleSpinBox()
         self.step_rotate_spin.setRange(1, 180)
         self.step_rotate_spin.setValue(15)
-        op_grid.addWidget(self.step_rotate_spin, 2, 1)
+        op_grid.addWidget(self.step_rotate_spin, 3, 1)
         
         self.btn_rotate_ccw = QPushButton(i18n.t("btn_rotate_ccw"))
         self.btn_rotate_ccw.clicked.connect(lambda: self.apply_rel_rotate(-self.step_rotate_spin.value()))
-        op_grid.addWidget(self.btn_rotate_ccw, 2, 2, 1, 2)
+        op_grid.addWidget(self.btn_rotate_ccw, 3, 2)
         
         self.btn_rotate_cw = QPushButton(i18n.t("btn_rotate_cw"))
         self.btn_rotate_cw.clicked.connect(lambda: self.apply_rel_rotate(self.step_rotate_spin.value()))
-        op_grid.addWidget(self.btn_rotate_cw, 2, 4, 1, 2)
+        op_grid.addWidget(self.btn_rotate_cw, 3, 3)
         
         rel_layout.addLayout(op_grid)
         layout.addWidget(self.rel_trans_group)

@@ -5,6 +5,7 @@ from PyQt6.QtGui import QPainter, QColor, QPen, QBrush, QImage, QTransform
 class CanvasWidget(QWidget):
     # Signals to notify changes
     transform_changed = pyqtSignal(object) # data_changed
+    anchor_pos_changed = pyqtSignal(float, float) # x, y
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -53,7 +54,14 @@ class CanvasWidget(QWidget):
         self.ref_opacity = 0.5
         self.ref_layer = "top" # "top", "bottom"
         self.ref_show_on_playback = False
+        self.ref_show_on_playback = False
         self.is_playing = False # Needs to be updated by MainWindow
+        
+        # Custom Anchor
+        self.show_custom_anchor = False
+        self.custom_anchor_pos = QPointF(0, 0)
+        self.is_dragging_anchor = False
+        self.anchor_handle_radius = 6.0
 
     def set_background_mode(self, mode):
         self.background_mode = mode
@@ -62,6 +70,14 @@ class CanvasWidget(QWidget):
     def set_project_settings(self, width, height):
         self.project_width = width
         self.project_height = height
+        self.update()
+
+    def set_show_custom_anchor(self, show):
+        self.show_custom_anchor = show
+        self.update()
+
+    def set_custom_anchor_pos(self, x, y):
+        self.custom_anchor_pos = QPointF(x, y)
         self.update()
 
     def set_selected_frames(self, frames_data):
@@ -156,6 +172,7 @@ class CanvasWidget(QWidget):
                 scale = frame_data.scale
                 
                 painter.translate(x, y)
+                painter.rotate(frame_data.rotation)
                 painter.scale(scale, scale / frame_data.aspect_ratio)
                 
                 w = img.width()
@@ -199,6 +216,25 @@ class CanvasWidget(QWidget):
         if self.reference_frame and self.ref_layer == "top":
             if not self.is_playing or self.ref_show_on_playback:
                 draw_frame(self.reference_frame, self.ref_opacity, is_ref=True)
+
+        # 5. Draw Custom Anchor
+        if self.show_custom_anchor:
+            # Anchor is in Project Coordinates (0,0 is center)
+            # We need to map it to View Coordinates to check for mouse hits easily if we did separate logic
+            # But here we just draw it in the transformed painter context.
+            
+            painter.setPen(QPen(Qt.GlobalColor.yellow, 2))
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            
+            ax, ay = self.custom_anchor_pos.x(), self.custom_anchor_pos.y()
+            r = self.anchor_handle_radius
+            
+            # Crosshair
+            painter.drawLine(QPointF(ax - r*2, ay), QPointF(ax + r*2, ay))
+            painter.drawLine(QPointF(ax, ay - r*2), QPointF(ax, ay + r*2))
+            
+            # Circle
+            painter.drawEllipse(self.custom_anchor_pos, r, r)
 
     def refresh_resources(self):
         """Clear image cache and reload images for active frames."""
@@ -268,6 +304,22 @@ class CanvasWidget(QWidget):
             self.is_panning = True
             self.last_mouse_pos = event.position()
         elif event.button() == Qt.MouseButton.LeftButton:
+            # Check for Anchor Hit FIRST if enabled
+            if self.show_custom_anchor:
+                # Map mouse pos to World Coords
+                # View Transform: Translate(W/2, H/2) -> Translate(ViewOffset) -> Scale(ViewScale)
+                # Reverse:
+                center_offset = QPointF(self.width() / 2, self.height() / 2)
+                local_pos = event.position() - center_offset - self.view_offset
+                world_pos = local_pos / self.view_scale
+                
+                # Check distance
+                dist = (world_pos - self.custom_anchor_pos).manhattanLength() # aprox
+                if dist < self.anchor_handle_radius * 2 / self.view_scale + 5: # Tolerance
+                    self.is_dragging_anchor = True
+                    self.last_mouse_pos = event.position()
+                    return
+
             if self.selected_frames_data:
                 self.is_dragging_image = True
                 self.last_mouse_pos = event.position()
@@ -280,6 +332,12 @@ class CanvasWidget(QWidget):
             self.view_offset += delta
             self.update()
         
+        elif self.is_dragging_anchor:
+            world_delta = delta / self.view_scale
+            self.custom_anchor_pos += world_delta
+            self.anchor_pos_changed.emit(self.custom_anchor_pos.x(), self.custom_anchor_pos.y())
+            self.update()
+
         elif self.is_dragging_image and self.selected_frames_data:
             world_delta = delta / self.view_scale
             
@@ -293,6 +351,7 @@ class CanvasWidget(QWidget):
     def mouseReleaseEvent(self, event):
         self.is_panning = False
         self.is_dragging_image = False
+        self.is_dragging_anchor = False
 
     def wheelEvent(self, event):
         # Alt + Scroll to scale image?

@@ -1,9 +1,10 @@
+
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
                              QDockWidget, QToolBar, QFileDialog, QSpinBox, 
                              QLabel, QPushButton, QInputDialog, QTreeWidgetItem, QMenu, QStyle,
                              QMessageBox)
-from PyQt6.QtGui import QAction, QIcon, QKeySequence, QImage, QActionGroup, QImageReader
-from PyQt6.QtCore import Qt, QTimer, QSettings, QByteArray
+from PyQt6.QtGui import QAction, QIcon, QKeySequence, QImage, QActionGroup, QImageReader, QDesktopServices, QColor
+from PyQt6.QtCore import Qt, QTimer, QSettings, QByteArray, QUrl
 
 from model.project_data import ProjectData, FrameData
 from ui.canvas import CanvasWidget
@@ -14,7 +15,6 @@ from ui.export_dialog import ExportOptionsDialog
 from ui.onion_settings import OnionSettingsDialog
 from ui.reference_settings import ReferenceSettingsDialog
 from ui.utils.icon_generator import IconGenerator
-from PyQt6.QtGui import QAction, QIcon, QKeySequence, QImage, QActionGroup, QColor
 from i18n.manager import i18n
 import os
 
@@ -85,10 +85,10 @@ class MainWindow(QMainWindow):
         self.property_dock.setWidget(self.property_panel)
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.property_dock)
 
-        # Connect relative move
-        self.property_panel.relative_move_requested.connect(self.apply_relative_move)
-        self.property_panel.repeat_requested.connect(self.repeat_last_move)
-        self.property_panel.rev_repeat_requested.connect(self.reverse_repeat_last_move)
+        # Connect Anchor Sync
+        self.property_panel.custom_anchor_changed.connect(self.canvas.set_custom_anchor_pos)
+        self.property_panel.show_anchor_changed.connect(self.canvas.set_show_custom_anchor)
+        self.canvas.anchor_pos_changed.connect(self.property_panel.set_custom_anchor_pos)
         
         self.last_relative_offset = (0.0, 0.0)
 
@@ -112,6 +112,7 @@ class MainWindow(QMainWindow):
         # (Already loaded in ProjectData, but dialog defaults need setting)
         
         self.update_title()
+        self.update_menu_state()
         self.apply_theme(self.current_theme)
         
         # Restore window state
@@ -495,6 +496,9 @@ class MainWindow(QMainWindow):
         self.load_action.setIcon(style.standardIcon(QStyle.StandardPixmap.SP_DialogOpenButton))
         self.load_action.triggered.connect(self.load_project)
         
+        self.action_open_dir = QAction(i18n.t("action_open_dir"), self)
+        self.action_open_dir.triggered.connect(self.open_project_directory)
+        
         self.close_action = QAction(i18n.t("action_close"), self)
         self.close_action.triggered.connect(self.close_project)
         self.close_action.setShortcut("Ctrl+W")
@@ -728,7 +732,9 @@ class MainWindow(QMainWindow):
         self.update_recent_projects_menu()
         
         file_menu.addAction(self.copy_assets_action)
-
+        file_menu.addSeparator()
+        file_menu.addAction(self.action_open_dir)
+        file_menu.addSeparator()
         
         self.reload_images_action = QAction(i18n.t("action_reload_images"), self)
         self.reload_images_action.triggered.connect(self.reload_image_resources)
@@ -1958,6 +1964,7 @@ class MainWindow(QMainWindow):
             self.is_dirty = False
             self.update_title()
             self.update_onion_state()
+            self.update_menu_state()
             self.statusBar().showMessage(i18n.t("msg_project_loaded").format(path=path), 3000)
         except Exception as e:
             msg_box = QMessageBox(self)
@@ -2015,7 +2022,18 @@ class MainWindow(QMainWindow):
         
         # Update UI
         self.update_title()
+        self.update_menu_state()
         self.statusBar().showMessage(i18n.t("msg_project_closed"), 3000)
+
+    def update_menu_state(self):
+        """Enable/Disable menu items based on project state."""
+        has_project = self.current_project_path is not None
+        self.action_open_dir.setEnabled(has_project)
+        self.copy_assets_action.setEnabled(has_project)
+        self.save_action.setEnabled(has_project)
+        self.reload_action.setEnabled(has_project)
+        # self.action_export.setEnabled(has_project) # Maybe?
+
     
     def reload_project(self):
         """Reload current project from disk."""
@@ -2023,48 +2041,25 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(i18n.t("msg_no_project_reload"), 3000)
             return
         
-        if not self.check_unsaved_changes():
-            return
+        if self.is_dirty:
+            if not self.check_unsaved_changes():
+                return
         
-        # Reload from the current path
         try:
-            with open(self.current_project_path, 'r') as f:
-                json_str = f.read()
-                
-            self.project = ProjectData.from_json(json_str)
-            self.fps_spin.setValue(self.project.fps)
-            self.canvas.set_project_settings(self.project.width, self.project.height)
-            self.property_panel.set_project_info(self.project.width, self.project.height)
-            
-            self.timeline.clear()
-            for frame in self.project.frames:
-                w, h = 0, 0
-                if frame.crop_rect:
-                    w, h = frame.crop_rect[2], frame.crop_rect[3]
-                elif os.path.exists(frame.file_path):
-                     try:
-                         from PIL import Image
-                         with Image.open(frame.file_path) as img:
-                             w, h = img.size
-                     except: 
-                         pass
-                
-                self.timeline.add_frame(os.path.basename(frame.file_path), frame, w, h)
-                
-            if self.project.frames:
-                 # Select first
-                 if self.timeline.topLevelItemCount() > 0:
-                     self.timeline.setCurrentItem(self.timeline.topLevelItem(0))
-                     
-            self.is_dirty = False
-            self.update_title()
-            
-            # Ensure resources are refreshed
-            self.reload_image_resources()
-            
+            self._load_from_path(self.current_project_path)
             self.statusBar().showMessage(i18n.t("msg_project_reloaded").format(name=os.path.basename(self.current_project_path)), 3000)
         except Exception as e:
             self.statusBar().showMessage(i18n.t("msg_load_error").format(error=str(e)), 5000)
+
+    def open_project_directory(self):
+        folder_path = ""
+        if self.current_project_path:
+            folder_path = os.path.dirname(self.current_project_path)
+        else:
+            folder_path = os.getcwd()
+            
+        if folder_path and os.path.isdir(folder_path):
+            QDesktopServices.openUrl(QUrl.fromLocalFile(folder_path))
 
     def reload_image_resources(self):
         """Force reload of all image resources in the canvas."""
@@ -2248,8 +2243,12 @@ class MainWindow(QMainWindow):
         # Update Docks
         self.timeline_dock.setWindowTitle(i18n.t("dock_timeline"))
         self.property_dock.setWindowTitle(i18n.t("dock_properties"))
-        self.timeline.refresh_ui_text()
-        self.property_panel.refresh_ui_text()
+        # Assuming t_state and p_state are defined elsewhere or this is a partial snippet
+        # self.timeline.restoreState(QByteArray.fromHex(t_state.encode()))
+        # self.property_panel.restoreState(QByteArray.fromHex(p_state.encode()))
+        
+        self.update_menu_state()
+
         
         menubar = self.menuBar()
         menubar.clear()
