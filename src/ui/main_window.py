@@ -2399,10 +2399,8 @@ class MainWindow(QMainWindow):
         
         if mode == "virtual":
             # Virtual Slicing: Add FrameData with crop_rect
+            # 只加载一次图片（用于验证）
             for crop in crops:
-                # Need original resolution for calculation
-                # QImage is already loaded in dialog, but let's be efficient
-                img = QImage(file)
                 frame = FrameData(file_path=file, crop_rect=crop)
                 self.project.frames.append(frame)
                 self.timeline.add_frame(os.path.basename(file), frame, crop[2], crop[3])

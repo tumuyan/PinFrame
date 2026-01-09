@@ -639,9 +639,9 @@ class PropertyPanel(QWidget):
         if w <= 0: return
 
         for f in self.selected_frames:
-            if not os.path.exists(f.file_path): continue
-            img = QImage(f.file_path)
-            if img.isNull(): continue
+            # 使用全局缓存获取图片
+            img = image_cache.get(f.file_path)
+            if not img: continue
             
             orig_w = f.crop_rect[2] if f.crop_rect else img.width()
             orig_h = f.crop_rect[3] if f.crop_rect else img.height()
@@ -673,9 +673,9 @@ class PropertyPanel(QWidget):
         if h <= 0: return
 
         for f in self.selected_frames:
-            if not os.path.exists(f.file_path): continue
-            img = QImage(f.file_path)
-            if img.isNull(): continue
+            # 使用全局缓存获取图片
+            img = image_cache.get(f.file_path)
+            if not img: continue
             
             orig_w = f.crop_rect[2] if f.crop_rect else img.width()
             orig_h = f.crop_rect[3] if f.crop_rect else img.height()
@@ -703,14 +703,14 @@ class PropertyPanel(QWidget):
         
         # Update H spin if W changed (locked) or vice versa
         first = self.selected_frames[0]
-        if os.path.exists(first.file_path):
-            img = QImage(first.file_path)
-            if not img.isNull():
-                orig_w = first.crop_rect[2] if first.crop_rect else img.width()
-                orig_h = first.crop_rect[3] if first.crop_rect else img.height()
-                if orig_w > 0 and orig_h > 0:
-                    self.t_w_spin.setValue(int(abs(orig_w * first.scale)))
-                    self.t_h_spin.setValue(int(abs(orig_h * (first.scale / first.aspect_ratio))))
+        # 使用全局缓存获取图片
+        img = image_cache.get(first.file_path)
+        if img:
+            orig_w = first.crop_rect[2] if first.crop_rect else img.width()
+            orig_h = first.crop_rect[3] if first.crop_rect else img.height()
+            if orig_w > 0 and orig_h > 0:
+                self.t_w_spin.setValue(int(abs(orig_w * first.scale)))
+                self.t_h_spin.setValue(int(abs(orig_h * (first.scale / first.aspect_ratio))))
         
         self.updating_ui = False
         
@@ -734,20 +734,17 @@ class PropertyPanel(QWidget):
             return
             
         for f in self.selected_frames:
-            if os.path.exists(f.file_path):
-                try:
-                    img = QImage(f.file_path)
-                    if not img.isNull():
-                        # Use sliced dimensions if available
-                        cur_w = f.crop_rect[2] if f.crop_rect else img.width()
-                        cur_h = f.crop_rect[3] if f.crop_rect else img.height()
-                        
-                        if mode == "width" and cur_w > 0:
-                            f.scale = self.project_width / cur_w
-                        elif mode == "height" and cur_h > 0:
-                            f.scale = self.project_height / cur_h
-                except:
-                    pass
+            # 使用全局缓存获取图片
+            img = image_cache.get(f.file_path)
+            if img:
+                # Use sliced dimensions if available
+                cur_w = f.crop_rect[2] if f.crop_rect else img.width()
+                cur_h = f.crop_rect[3] if f.crop_rect else img.height()
+                
+                if mode == "width" and cur_w > 0:
+                    f.scale = self.project_width / cur_w
+                elif mode == "height" and cur_h > 0:
+                    f.scale = self.project_height / cur_h
         
         self.update_ui_from_selection()
         if self.anchor_mode == self.ANCHOR_CUSTOM_IMAGE:
@@ -774,8 +771,9 @@ class PropertyPanel(QWidget):
         canvas_b = self.project_height / 2
         
         for f in self.selected_frames:
-            if os.path.exists(f.file_path):
-                img = QImage(f.file_path)
+            # 使用全局缓存获取图片
+            img = image_cache.get(f.file_path)
+            if img:
                 # Scaled dimensions (sliced or full)
                 if f.crop_rect:
                     _, _, cw, ch = f.crop_rect
