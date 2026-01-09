@@ -1,6 +1,6 @@
 from PyQt6.QtWidgets import (QTreeWidget, QTreeWidgetItem, QAbstractItemView, 
                              QHeaderView)
-from PyQt6.QtCore import Qt, pyqtSignal, QSize
+from PyQt6.QtCore import Qt, pyqtSignal, QSize, QTimer
 from PyQt6.QtGui import QColor, QFont
 from i18n.manager import i18n
 import os
@@ -70,12 +70,46 @@ class TimelineWidget(QTreeWidget):
         self.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.customContextMenuRequested.connect(self.show_context_menu)
         
-
+        # 防抖定时器：避免快速连续的选择变化触发过多更新
+        self._selection_debounce_timer = QTimer(self)
+        self._selection_debounce_timer.setSingleShot(True)
+        self._selection_debounce_timer.setInterval(50)  # 50ms 防抖延迟
+        self._selection_debounce_timer.timeout.connect(self._emit_selection_changed)
+        
+        # 信号阻塞标志：用于批量操作时阻塞选择信号
+        self._selection_blocked = False
         
         self.itemSelectionChanged.connect(self.on_selection_changed)
         
         self.reference_frame_data = None
         self.is_dark_theme = True # Default to dark
+
+    def block_selection_signals(self, block: bool):
+        """
+        阻塞或恢复选择信号
+        用于批量选择操作（如全选）时阻止频繁的信号触发
+        """
+        self._selection_blocked = block
+        if not block:
+            # 解除阻塞时，立即触发一次选择变化
+            self._emit_selection_changed()
+
+    def select_all_optimized(self):
+        """
+        优化的全选方法：阻塞信号后批量选择，最后只触发一次更新
+        """
+        self._selection_blocked = True
+        self.selectAll()
+        self._selection_blocked = False
+        self._emit_selection_changed()
+
+    def _emit_selection_changed(self):
+        """实际发射选择变化信号"""
+        if self._selection_blocked:
+            return
+        selected_items = self.selectedItems()
+        frames = [item.data(0, Qt.ItemDataRole.UserRole) for item in selected_items]
+        self.selection_changed.emit(frames)
 
     def set_theme_mode(self, is_dark):
         self.is_dark_theme = is_dark
@@ -388,6 +422,8 @@ class TimelineWidget(QTreeWidget):
                 self.update_item_display(item, frame_data, 0, 0)
 
     def on_selection_changed(self):
-        selected_items = self.selectedItems()
-        frames = [item.data(0, Qt.ItemDataRole.UserRole) for item in selected_items]
-        self.selection_changed.emit(frames)
+        """选择变化时启动防抖定时器，避免频繁触发"""
+        if self._selection_blocked:
+            return
+        # 重启防抖定时器
+        self._selection_debounce_timer.start()

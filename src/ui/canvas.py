@@ -1,6 +1,7 @@
 from PyQt6.QtWidgets import QWidget
 from PyQt6.QtCore import Qt, pyqtSignal, QPointF, QRectF
 from PyQt6.QtGui import QPainter, QColor, QPen, QBrush, QImage, QTransform
+from src.core.image_cache import image_cache
 
 class CanvasWidget(QWidget):
     # Signals to notify changes
@@ -34,7 +35,7 @@ class CanvasWidget(QWidget):
         self.selected_frames_data = [] # List of FrameData
         self.onion_skin_frames = [] # List of (FrameData, opacity)
         self.reference_frame = None # FrameData or None
-        self.image_cache = {} # path -> QImage
+        # 使用全局共享缓存 image_cache，不再维护本地缓存
 
         # Project Settings
         self.project_width = 512
@@ -92,25 +93,23 @@ class CanvasWidget(QWidget):
 
     def set_selected_frames(self, frames_data):
         self.selected_frames_data = frames_data
-        # Preload images for these frames
-        for f in frames_data:
-            if f.file_path not in self.image_cache:
-                self.image_cache[f.file_path] = QImage(f.file_path)
+        # 使用全局缓存预加载图片
+        paths = [f.file_path for f in frames_data if f.file_path]
+        image_cache.preload(paths)
         self.update()
 
     def set_onion_skins(self, skins):
         """Set onion skin frames. skins is a list of (FrameData, opacity)."""
         self.onion_skin_frames = skins
-        for f, _ in skins:
-            if f.file_path not in self.image_cache:
-                self.image_cache[f.file_path] = QImage(f.file_path)
+        paths = [f.file_path for f, _ in skins if f.file_path]
+        image_cache.preload(paths)
         self.update()
 
     def set_reference_frame(self, frame_data):
         """Set a single reference frame."""
         self.reference_frame = frame_data
-        if frame_data and frame_data.file_path not in self.image_cache:
-            self.image_cache[frame_data.file_path] = QImage(frame_data.file_path)
+        if frame_data and frame_data.file_path:
+            image_cache.get(frame_data.file_path)
         self.update()
 
     def reset_view(self):
@@ -173,8 +172,8 @@ class CanvasWidget(QWidget):
 
         # Draw Frame Helper
         def draw_frame(frame_data, opacity=1.0, is_ref=False):
-            if frame_data.file_path in self.image_cache:
-                img = self.image_cache[frame_data.file_path]
+            img = image_cache.get(frame_data.file_path)
+            if img:
                 
                 painter.save()
                 
@@ -248,22 +247,15 @@ class CanvasWidget(QWidget):
 
     def refresh_resources(self):
         """Clear image cache and reload images for active frames."""
-        self.image_cache.clear()
+        image_cache.clear()
         
-        # Reload selected frames
-        self.set_selected_frames(self.selected_frames_data)
+        # 重新加载所有活动帧的图片
+        paths = [f.file_path for f in self.selected_frames_data if f.file_path]
+        paths += [f.file_path for f, _ in self.onion_skin_frames if f.file_path]
+        if self.reference_frame and self.reference_frame.file_path:
+            paths.append(self.reference_frame.file_path)
         
-        # Reload onion skins
-        frames_list = [f for f, _ in self.onion_skin_frames]
-        for f in frames_list:
-             if f.file_path not in self.image_cache:
-                self.image_cache[f.file_path] = QImage(f.file_path)
-        
-        # Reload reference frame
-        if self.reference_frame:
-            if self.reference_frame.file_path not in self.image_cache:
-                self.image_cache[self.reference_frame.file_path] = QImage(self.reference_frame.file_path)
-                
+        image_cache.preload(paths)
         self.update()
 
     def keyPressEvent(self, event):

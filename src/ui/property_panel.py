@@ -7,6 +7,7 @@ from PyQt6.QtCore import Qt, pyqtSignal, QRect, QTimer, QPointF
 from PyQt6.QtCore import Qt, pyqtSignal, QRect, QTimer, QPointF, QRectF
 from PyQt6.QtGui import QImage, QPixmap, QPainter, QColor, QTransform
 from i18n.manager import i18n
+from src.core.image_cache import image_cache
 
 class PropertyPanel(QWidget):
     # Anchor Modes
@@ -390,17 +391,14 @@ class PropertyPanel(QWidget):
                 self.custom_anchor_changed.emit(self.get_anchor_pos())
             
             # Calculate target resolution from scale and aspect_ratio
-            if os.path.exists(first.file_path):
-                img = QImage(first.file_path)
-                if not img.isNull():
-                    orig_w = first.crop_rect[2] if first.crop_rect else img.width()
-                    orig_h = first.crop_rect[3] if first.crop_rect else img.height()
-                    if orig_w > 0 and orig_h > 0:
-                        self.t_w_spin.setValue(int(abs(orig_w * first.scale)))
-                        self.t_h_spin.setValue(int(abs(orig_h * (first.scale / first.aspect_ratio))))
-                    else:
-                        self.t_w_spin.setValue(0)
-                        self.t_h_spin.setValue(0)
+            # 使用全局缓存获取图片
+            img = image_cache.get(first.file_path)
+            if img:
+                orig_w = first.crop_rect[2] if first.crop_rect else img.width()
+                orig_h = first.crop_rect[3] if first.crop_rect else img.height()
+                if orig_w > 0 and orig_h > 0:
+                    self.t_w_spin.setValue(int(abs(orig_w * first.scale)))
+                    self.t_h_spin.setValue(int(abs(orig_h * (first.scale / first.aspect_ratio))))
                 else:
                     self.t_w_spin.setValue(0)
                     self.t_h_spin.setValue(0)
@@ -837,33 +835,41 @@ class PropertyPanel(QWidget):
             self.preview_label.setPixmap(QPixmap())
             self.preview_label.setText(i18n.t("msg_no_selection"))
             return
+        
+        # 大量选择时简化预览，避免性能问题
+        MAX_PREVIEW_FRAMES = 20
+        frames_to_preview = self.selected_frames[:MAX_PREVIEW_FRAMES]
+        show_simplified = len(self.selected_frames) > MAX_PREVIEW_FRAMES
             
         w, h = 200, 200
         preview_img = QImage(w, h, QImage.Format.Format_ARGB32)
         preview_img.fill(Qt.GlobalColor.transparent)
         
-        # Collect imagery and calculate bounding box
+        # Collect imagery and calculate bounding box - 使用全局缓存
         valid_frames = [] # list of (QImage, FrameData)
         min_x, min_y = float('inf'), float('inf')
         max_x, max_y = float('-inf'), float('-inf')
         
-        for f in self.selected_frames:
-            if f.file_path and os.path.exists(f.file_path):
-                img = QImage(f.file_path)
-                if not img.isNull():
-                    valid_frames.append((img, f))
-                    # Calculate corners
-                    fw = img.width() * f.scale
-                    fh = img.height() * f.scale
-                    cx, cy = f.position
-                    
-                    min_x = min(min_x, cx - fw/2)
-                    max_x = max(max_x, cx + fw/2)
-                    min_y = min(min_y, cy - fh/2)
-                    max_y = max(max_y, cy + fh/2)
+        for f in frames_to_preview:
+            img = image_cache.get(f.file_path)
+            if img:
+                valid_frames.append((img, f))
+                # Calculate corners
+                fw = img.width() * f.scale
+                fh = img.height() * f.scale
+                cx, cy = f.position
+                
+                min_x = min(min_x, cx - fw/2)
+                max_x = max(max_x, cx + fw/2)
+                min_y = min(min_y, cy - fh/2)
+                max_y = max(max_y, cy + fh/2)
         
         if not valid_frames:
-            self.preview_label.setPixmap(QPixmap.fromImage(preview_img))
+            if show_simplified:
+                # 显示简化信息
+                self.preview_label.setText(f"{len(self.selected_frames)} frames selected")
+            else:
+                self.preview_label.setPixmap(QPixmap.fromImage(preview_img))
             return
 
         painter = QPainter(preview_img)
