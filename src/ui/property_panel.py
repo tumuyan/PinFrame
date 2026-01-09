@@ -4,22 +4,34 @@ from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel,
                              QDoubleSpinBox, QGroupBox, QSpinBox, QPushButton, 
                              QGridLayout, QCheckBox, QRadioButton, QButtonGroup)
 from PyQt6.QtCore import Qt, pyqtSignal, QRect, QTimer, QPointF
+from PyQt6.QtCore import Qt, pyqtSignal, QRect, QTimer, QPointF, QRectF
 from PyQt6.QtGui import QImage, QPixmap, QPainter, QColor, QTransform
 from i18n.manager import i18n
 
 class PropertyPanel(QWidget):
+    # Anchor Modes
+    ANCHOR_CANVAS = 0
+    ANCHOR_IMAGE = 1
+    ANCHOR_CUSTOM_CANVAS = 2
+    ANCHOR_CUSTOM_IMAGE = 3
+    
     # Signals
-    frame_data_changed = pyqtSignal(object, object, object) # scale, x, y
+    frame_data_changed = pyqtSignal(object) # Emits the first selected frame object
     relative_move_requested = pyqtSignal(float, float) # dx, dy
     # New signals for anchor sync
-    custom_anchor_changed = pyqtSignal(float, float) # x, y
+    custom_anchor_changed = pyqtSignal(QPointF) # x, y
     show_anchor_changed = pyqtSignal(bool)
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.selected_frames = []
+        self.frame_data = None # Reference to the first selected frame for anchor calculations
         self.project_width = 512 # Set externally
         self.project_height = 512
+        
+        self.anchor_mode = self.ANCHOR_CANVAS # Default anchor mode
+        self.custom_anchor_pos = QPointF(0, 0) # For ANCHOR_CUSTOM_CANVAS and ANCHOR_CUSTOM_IMAGE (absolute)
+        self.custom_image_relative_offset = QPointF(0, 0) # For ANCHOR_CUSTOM_IMAGE (relative to image center)
         
         self.repeat_timer = QTimer(self)
         self.repeat_timer.timeout.connect(self.on_repeat_timer_timeout)
@@ -148,18 +160,25 @@ class PropertyPanel(QWidget):
         
         self.rb_anchor_canvas = QRadioButton(i18n.t("prop_anchor_canvas"))
         self.rb_anchor_image = QRadioButton(i18n.t("prop_anchor_image"))
-        self.rb_anchor_custom = QRadioButton(i18n.t("prop_anchor_custom"))
+        self.rb_anchor_custom_canvas = QRadioButton(i18n.t("prop_anchor_custom_canvas"))
+        self.rb_anchor_custom_image = QRadioButton(i18n.t("prop_anchor_custom_image"))
         
-        self.anchor_bg.addButton(self.rb_anchor_canvas, 0)
-        self.anchor_bg.addButton(self.rb_anchor_image, 1)
-        self.anchor_bg.addButton(self.rb_anchor_custom, 2)
+        self.anchor_bg.addButton(self.rb_anchor_canvas, self.ANCHOR_CANVAS)
+        self.anchor_bg.addButton(self.rb_anchor_image, self.ANCHOR_IMAGE)
+        self.anchor_bg.addButton(self.rb_anchor_custom_canvas, self.ANCHOR_CUSTOM_CANVAS)
+        self.anchor_bg.addButton(self.rb_anchor_custom_image, self.ANCHOR_CUSTOM_IMAGE)
         self.rb_anchor_canvas.setChecked(True) # Default
         
         self.anchor_bg.idToggled.connect(self.on_anchor_mode_changed)
         
-        anchor_layout.addWidget(self.rb_anchor_canvas)
-        anchor_layout.addWidget(self.rb_anchor_image)
-        anchor_layout.addWidget(self.rb_anchor_custom)
+        # 2 rows for anchors
+        anchor_grid_layout = QGridLayout()
+        anchor_grid_layout.addWidget(self.rb_anchor_canvas, 0, 0)
+        anchor_grid_layout.addWidget(self.rb_anchor_image, 0, 1)
+        anchor_grid_layout.addWidget(self.rb_anchor_custom_canvas, 1, 0)
+        anchor_grid_layout.addWidget(self.rb_anchor_custom_image, 1, 1)
+        
+        anchor_layout.addLayout(anchor_grid_layout)
         layout.addWidget(self.anchor_group)
         
         # Custom Anchor Inputs
@@ -314,7 +333,8 @@ class PropertyPanel(QWidget):
         # Anchor
         self.rb_anchor_canvas.setText(i18n.t("prop_anchor_canvas"))
         self.rb_anchor_image.setText(i18n.t("prop_anchor_image"))
-        self.rb_anchor_custom.setText(i18n.t("prop_anchor_custom"))
+        self.rb_anchor_custom_canvas.setText(i18n.t("prop_anchor_custom_canvas"))
+        self.rb_anchor_custom_image.setText(i18n.t("prop_anchor_custom_image"))
         
         # Special value text
         self.t_w_spin.setSpecialValueText(i18n.t("prop_res_none"))
@@ -329,9 +349,13 @@ class PropertyPanel(QWidget):
     def set_project_info(self, w, h):
         self.project_width = w
         self.project_height = h
+        self.custom_anchor_pos = QPointF(0, 0)
+        self.custom_image_relative_offset = QPointF(0, 0) # Init
+        self.update_custom_anchor_ui()
 
     def set_selection(self, frames):
         self.selected_frames = frames
+        self.frame_data = frames[0] if frames else None
         self.update_ui_from_selection()
         self.update_preview()
 
@@ -350,6 +374,20 @@ class PropertyPanel(QWidget):
             self.x_spin.setValue(first.position[0])
             self.y_spin.setValue(first.position[1])
             self.rotation_spin.setValue(first.rotation)
+            
+            # Sync visual anchor to canvas
+            if self.anchor_mode == self.ANCHOR_CUSTOM_IMAGE:
+                # Follow image translation
+                if first:
+                    frame_pos = QPointF(first.position[0], first.position[1])
+                    self.custom_anchor_pos = frame_pos + self.custom_image_relative_offset
+                    self.update_custom_anchor_ui()
+                    self.custom_anchor_changed.emit(self.custom_anchor_pos)
+            elif self.anchor_mode == self.ANCHOR_CUSTOM_CANVAS:
+                self.update_custom_anchor_ui()
+                self.custom_anchor_changed.emit(self.custom_anchor_pos)
+            else:
+                self.custom_anchor_changed.emit(self.get_anchor_pos())
             
             # Calculate target resolution from scale and aspect_ratio
             if os.path.exists(first.file_path):
@@ -372,6 +410,12 @@ class PropertyPanel(QWidget):
             
         self.updating_ui = False
 
+    def normalize_rotation(self, angle):
+        angle = angle % 360
+        if angle > 180: angle -= 360
+        elif angle < -180: angle += 360
+        return angle
+
     def on_value_changed(self):
         if self.updating_ui or not self.selected_frames:
             return
@@ -379,113 +423,192 @@ class PropertyPanel(QWidget):
         new_scale = self.scale_spin.value()
         new_x = self.x_spin.value()
         new_y = self.y_spin.value()
-        new_rot = self.rotation_spin.value()
+        new_rot = self.normalize_rotation(self.rotation_spin.value())
         
+        # Update UI if normalized
+        if abs(new_rot - self.rotation_spin.value()) > 0.01:
+            self.updating_ui = True
+            self.rotation_spin.setValue(new_rot)
+            self.updating_ui = False
+
         for f in self.selected_frames:
             f.scale = new_scale
             f.position = (new_x, new_y)
             f.rotation = new_rot
             
+        if self.anchor_mode == self.ANCHOR_CUSTOM_IMAGE:
+            self.update_image_anchor_offset()
+
         self.refresh_t_res_ui() # Updates T-Res UI as well
             
-        self.frame_data_changed.emit(new_scale, new_x, new_y)
+        self.frame_data_changed.emit(self.frame_data)
 
-    def on_anchor_mode_changed(self, id):
-        is_custom = (id == 2)
-        self.custom_anchor_widget.setEnabled(is_custom)
-        self.show_anchor_changed.emit(is_custom)
+    def update_custom_anchor_ui(self):
+        self.updating_ui = True
+        self.ca_x_spin.setValue(self.custom_anchor_pos.x())
+        self.ca_y_spin.setValue(self.custom_anchor_pos.y())
+        self.updating_ui = False
+
+    def get_anchor_pos(self, frame=None):
+        # Returns global anchor pos (in Canvas space)
+        target_frame = frame if frame else self.frame_data
+        if not target_frame:
+            return QPointF(0, 0)
+
+        if self.anchor_mode == self.ANCHOR_CANVAS: # Canvas Center
+            return QPointF(0, 0)
+        elif self.anchor_mode == self.ANCHOR_IMAGE: # Image Center
+            return QPointF(target_frame.position[0], target_frame.position[1])
+        else:
+            # Custom Canvas and Custom Image SHARE the same absolute pivot point 
+            # during the transformation itself. 
+            return self.custom_anchor_pos
+
+    def update_image_anchor_offset(self):
+        # Update the local offset based on current anchor and frame position
+        if self.anchor_mode == self.ANCHOR_CUSTOM_IMAGE and self.frame_data:
+            frame_pos = QPointF(self.frame_data.position[0], self.frame_data.position[1])
+            self.custom_image_relative_offset = self.custom_anchor_pos - frame_pos
+
+    def on_anchor_mode_changed(self, id, checked):
+        if not checked: return
+        
+        mode = id
+        old_mode = self.anchor_mode
+        self.anchor_mode = mode
+        
+        self.custom_anchor_widget.setEnabled(mode == self.ANCHOR_CUSTOM_CANVAS or mode == self.ANCHOR_CUSTOM_IMAGE)
+        self.show_anchor_changed.emit(mode == self.ANCHOR_CUSTOM_CANVAS or mode == self.ANCHOR_CUSTOM_IMAGE)
+        
+        # Sync Logic
+        self.anchor_mode = old_mode
+        old_visual_pos = self.get_anchor_pos()
+        self.anchor_mode = mode
+        
+        if mode == self.ANCHOR_CUSTOM_CANVAS:
+            self.custom_anchor_pos = old_visual_pos
+            self.update_custom_anchor_ui()
+            self.custom_anchor_changed.emit(self.custom_anchor_pos)
+            
+        elif mode == self.ANCHOR_CUSTOM_IMAGE:
+            self.custom_anchor_pos = old_visual_pos
+            self.update_image_anchor_offset()
+            self.update_custom_anchor_ui()
+            self.custom_anchor_changed.emit(self.custom_anchor_pos)
+
+        elif mode == self.ANCHOR_CANVAS or mode == self.ANCHOR_IMAGE:
+             self.custom_anchor_changed.emit(self.get_anchor_pos())
 
     def on_custom_anchor_ui_changed(self):
         if self.updating_ui: return
         x = self.ca_x_spin.value()
         y = self.ca_y_spin.value()
-        self.custom_anchor_changed.emit(x, y)
+        new_pos = QPointF(x, y)
+        self.custom_anchor_pos = new_pos
+        
+        if self.anchor_mode == self.ANCHOR_CUSTOM_IMAGE and self.frame_data:
+             frame_pos = QPointF(self.frame_data.position[0], self.frame_data.position[1])
+             global_offset = new_pos - frame_pos
+             # local offset
+             rad = math.radians(-self.frame_data.rotation)
+             cos_a = math.cos(rad)
+             sin_a = math.sin(rad)
+             lx = global_offset.x() * cos_a - global_offset.y() * sin_a
+             ly = global_offset.x() * sin_a + global_offset.y() * cos_a
+             self.custom_image_relative_offset = QPointF(lx, ly)
+             
+        self.custom_anchor_changed.emit(new_pos)
 
     def set_custom_anchor_pos(self, x, y):
-        # Called by MainWindow when Canvas updates anchor
         self.updating_ui = True
         self.ca_x_spin.setValue(x)
         self.ca_y_spin.setValue(y)
+        self.custom_anchor_pos = QPointF(x, y)
+        
+        if self.anchor_mode == self.ANCHOR_CUSTOM_IMAGE and self.frame_data:
+             frame_pos = QPointF(self.frame_data.position[0], self.frame_data.position[1])
+             global_offset = self.custom_anchor_pos - frame_pos
+             # local offset
+             rad = math.radians(-self.frame_data.rotation)
+             cos_a = math.cos(rad)
+             sin_a = math.sin(rad)
+             lx = global_offset.x() * cos_a - global_offset.y() * sin_a
+             ly = global_offset.x() * sin_a + global_offset.y() * cos_a
+             self.custom_image_relative_offset = QPointF(lx, ly)
+             
         self.updating_ui = False
-
-    def get_anchor_pos(self, f):
-        # Returns global anchor pos for the frame operation
-        mode = self.anchor_bg.checkedId()
-        if mode == 0: # Canvas Center
-            return QPointF(0, 0)
-        elif mode == 1: # Image Center
-            return QPointF(f.position[0], f.position[1])
-        else: # Custom
-            return QPointF(self.ca_x_spin.value(), self.ca_y_spin.value())
 
     def apply_mirror(self, axis):
         if not self.selected_frames: return
         
-        center_mode = self.anchor_bg.checkedId()
-        
+        # 1. Choose Pivot
+        pivot = self.get_anchor_pos() 
+
+        # 2. Mirror Anchor handle itself if in custom mode and not mirroring around itself
+        if self.anchor_mode == self.ANCHOR_CUSTOM_CANVAS or self.anchor_mode == self.ANCHOR_CUSTOM_IMAGE:
+             ax, ay = self.custom_anchor_pos.x(), self.custom_anchor_pos.y()
+             if axis == "h":
+                 self.custom_anchor_pos = QPointF(pivot.x() - (ax - pivot.x()), ay)
+             else:
+                 self.custom_anchor_pos = QPointF(ax, pivot.y() - (ay - pivot.y()))
+
+        # 3. Mirror Frames
         for f in self.selected_frames:
-            # 1. Logic for flipping scale/AR
-            # Flip H: scale *= -1
-            # Flip V: aspect_ratio *= -1
-            
+            # Mirror scaling and rotation
             if axis == "h":
                 f.scale *= -1
                 f.aspect_ratio *= -1
             else:
                 f.aspect_ratio *= -1
             
-            # 2. Logic for position mirror around Anchor
-            # If Image Center, position doesn't change relative to itself? 
-            # Wait. If I flip an image horizontally around its center, it stays in place.
-            # If I flip around Canvas Center (0,0), and image is at (100,0), it should go to (-100, 0).
+            # Content Mirror Rule: Negate rotation to keep content at anchor visually aligned
+            f.rotation = self.normalize_rotation(-f.rotation)
             
-            anchor = self.get_anchor_pos(f)
+            # Position reflection around pivot
+            vx = f.position[0] - pivot.x()
+            vy = f.position[1] - pivot.y()
+            if axis == "h": vx = -vx
+            else: vy = -vy
+            f.position = (pivot.x() + vx, pivot.y() + vy)
             
-            # Vector from anchor to images pos
-            vx = f.position[0] - anchor.x()
-            vy = f.position[1] - anchor.y()
-            
-            if axis == "h":
-                # Reflect X
-                vx = -vx
-            else:
-                # Reflect Y
-                vy = -vy
-                
-            f.position = (anchor.x() + vx, anchor.y() + vy)
-            
+        # 4. Sync Offset for Custom Image
+        if self.anchor_mode == self.ANCHOR_CUSTOM_IMAGE:
+             # Anchor handle moved (or stayed), image center moved.
+             # Re-bind for correct translation following later.
+             self.update_image_anchor_offset()
+
         self.update_ui_from_selection()
-        self.frame_data_changed.emit(0,0,0)
+        # Emit signal for first frame or all? Logic uses first frame for panel signals.
+        self.frame_data_changed.emit(self.frame_data)
 
     def apply_rel_move(self, dx, dy):
         if not self.selected_frames: return
         for f in self.selected_frames:
             f.position = (f.position[0] + dx, f.position[1] + dy)
         self.update_ui_from_selection()
-        self.frame_data_changed.emit(0,0,0)
-
+        # Note: If in CUSTOM_IMAGE, update_ui_from_selection will move self.custom_anchor_pos
+        # using the existing offset. This is exactly what we want for translation.
+        self.frame_data_changed.emit(self.frame_data)
+        
     def apply_rel_scale(self, factor):
         if not self.selected_frames: return
         
+        # Share code: Both use self.custom_anchor_pos as pivot
+        anchor = self.get_anchor_pos()
+        
         for f in self.selected_frames:
-            # Scale Factor applies to Frame.scale
-            # And also scales distance from Anchor
-            
-            anchor = self.get_anchor_pos(f)
-            
-            # Update Scale
             f.scale *= factor
-            
-            # Update Position relative to anchor
-            # P_new = Anchor + (P_old - Anchor) * factor
             vx = f.position[0] - anchor.x()
             vy = f.position[1] - anchor.y()
-            
             f.position = (anchor.x() + vx * factor, anchor.y() + vy * factor)
             
+        if self.anchor_mode == self.ANCHOR_CUSTOM_IMAGE:
+            # Pivot stayed, image moved, so offset must update
+            self.update_image_anchor_offset()
+            
         self.update_ui_from_selection()
-        self.frame_data_changed.emit(0,0,0)
-
+        self.frame_data_changed.emit(self.frame_data)
+        
     def apply_rel_rotate(self, angle_deg):
         if not self.selected_frames: return
         
@@ -493,24 +616,22 @@ class PropertyPanel(QWidget):
         cos_a = math.cos(rad)
         sin_a = math.sin(rad)
         
+        # Share code: Both use self.custom_anchor_pos as pivot
+        anchor = self.get_anchor_pos()
+        
         for f in self.selected_frames:
-            f.rotation += angle_deg
-            
-            anchor = self.get_anchor_pos(f)
-            
-            # Rotate position around anchor
-            # P_new = Anchor + Rotate(P_old - Anchor)
+            f.rotation = self.normalize_rotation(f.rotation + angle_deg)
             vx = f.position[0] - anchor.x()
             vy = f.position[1] - anchor.y()
-            
-            # Rotate vector (vx, vy)
             rx = vx * cos_a - vy * sin_a
             ry = vx * sin_a + vy * cos_a
-            
             f.position = (anchor.x() + rx, anchor.y() + ry)
+
+        if self.anchor_mode == self.ANCHOR_CUSTOM_IMAGE:
+            self.update_image_anchor_offset()
             
         self.update_ui_from_selection()
-        self.frame_data_changed.emit(0,0,0)
+        self.frame_data_changed.emit(self.frame_data)
 
     def on_t_w_changed(self):
         if self.updating_ui or not self.selected_frames:
@@ -595,9 +716,7 @@ class PropertyPanel(QWidget):
         
         self.updating_ui = False
         
-        self.frame_data_changed.emit(self.selected_frames[0].scale, 
-                                     self.selected_frames[0].position[0], 
-                                     self.selected_frames[0].position[1])
+        self.frame_data_changed.emit(self.frame_data)
 
     def reset_aspect_ratio(self):
         """Reset aspect_ratio to 1.0 for all selected frames."""
@@ -608,7 +727,9 @@ class PropertyPanel(QWidget):
             f.aspect_ratio = 1.0
         
         self.update_ui_from_selection()
-        self.frame_data_changed.emit(0, 0, 0)
+        if self.anchor_mode == self.ANCHOR_CUSTOM_IMAGE:
+            self.update_image_anchor_offset()
+        self.frame_data_changed.emit(self.frame_data)
 
     def fit_to_canvas(self, mode):
         if not self.selected_frames:
@@ -631,7 +752,9 @@ class PropertyPanel(QWidget):
                     pass
         
         self.update_ui_from_selection()
-        self.frame_data_changed.emit(0,0,0) # dummy emit to force redraw
+        if self.anchor_mode == self.ANCHOR_CUSTOM_IMAGE:
+            self.update_image_anchor_offset()
+        self.frame_data_changed.emit(self.frame_data)
 
     def quick_align(self, align_x_factor, align_y_factor):
         # align_factor: 0.0 (Left/Top), 0.5 (Center), 1.0 (Right/Bottom)
@@ -705,7 +828,9 @@ class PropertyPanel(QWidget):
                 f.position = (target_x - files_w_offset, target_y - files_h_offset)
 
         self.update_ui_from_selection()
-        self.frame_data_changed.emit(0,0,0)
+        if self.anchor_mode == self.ANCHOR_CUSTOM_IMAGE:
+            self.update_image_anchor_offset()
+        self.frame_data_changed.emit(self.frame_data)
 
     def update_preview(self):
         if not self.selected_frames:

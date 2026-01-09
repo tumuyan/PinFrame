@@ -1,5 +1,5 @@
 from PyQt6.QtGui import QIcon, QPixmap, QPainter, QColor, QPalette, QPen, QBrush, QPolygon, QPolygonF
-from PyQt6.QtCore import Qt, QPoint, QPointF, QSize
+from PyQt6.QtCore import Qt, QPoint, QPointF, QSize, QRect
 
 class IconGenerator:
     PEN_WIDTH = 2
@@ -122,3 +122,38 @@ class IconGenerator:
         
         painter.end()
         return QIcon(pixmap)
+
+    @staticmethod
+    def create_pixmap(name: str, color: QColor, size: int = 32) -> QPixmap:
+        pixmap = QPixmap(size, size)
+        pixmap.fill(Qt.GlobalColor.transparent)
+        
+        painter = QPainter(pixmap)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        
+        pen = QPen(color, IconGenerator.PEN_WIDTH)
+        painter.setPen(pen)
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        
+        if name == "arrow_expand":
+            # Zoom Icon (Magnifying Glass)
+            # Circle
+            cx, cy = int(size*0.45), int(size*0.45)
+            r = int(size*0.25)
+            painter.drawEllipse(QPoint(cx, cy), r, r)
+            # Handle
+            painter.drawLine(int(size*0.65), int(size*0.65), int(size*0.85), int(size*0.85))
+            
+        elif name == "image":
+            # Image Icon (Scale)
+            # Rect
+            rect = QRect(int(size*0.15), int(size*0.25), int(size*0.7), int(size*0.5))
+            painter.drawRect(rect)
+            # Mountain/Sun hints
+            painter.drawLine(int(size*0.15), int(size*0.65), int(size*0.35), int(size*0.4))
+            painter.drawLine(int(size*0.35), int(size*0.4), int(size*0.55), int(size*0.65))
+            # Small sun
+            painter.drawEllipse(QPoint(int(size*0.7), int(size*0.35)), 2, 2)
+        
+        painter.end()
+        return pixmap

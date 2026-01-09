@@ -6,6 +6,7 @@ class CanvasWidget(QWidget):
     # Signals to notify changes
     transform_changed = pyqtSignal(object) # data_changed
     anchor_pos_changed = pyqtSignal(float, float) # x, y
+    scale_change_requested = pyqtSignal(float) # factor
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -59,9 +60,18 @@ class CanvasWidget(QWidget):
         
         # Custom Anchor
         self.show_custom_anchor = False
-        self.custom_anchor_pos = QPointF(0, 0)
+        self.custom_anchor_pos = QPointF(256, 256)
         self.is_dragging_anchor = False
-        self.anchor_handle_radius = 6.0
+        self.anchor_handle_radius = 6
+        
+        # Wheel Mode
+        self.WHEEL_ZOOM = 0
+        self.WHEEL_SCALE = 1
+        self.wheel_mode = self.WHEEL_ZOOM
+        
+    def set_wheel_mode(self, mode):
+        self.wheel_mode = mode
+        self.update()
 
     def set_background_mode(self, mode):
         self.background_mode = mode
@@ -76,8 +86,8 @@ class CanvasWidget(QWidget):
         self.show_custom_anchor = show
         self.update()
 
-    def set_custom_anchor_pos(self, x, y):
-        self.custom_anchor_pos = QPointF(x, y)
+    def set_custom_anchor_pos(self, pos):
+        self.custom_anchor_pos = pos
         self.update()
 
     def set_selected_frames(self, frames_data):
@@ -354,17 +364,23 @@ class CanvasWidget(QWidget):
         self.is_dragging_anchor = False
 
     def wheelEvent(self, event):
-        # Alt + Scroll to scale image?
-        if event.modifiers() & Qt.KeyboardModifier.AltModifier and self.selected_frames_data:
-             zoom_in = event.angleDelta().y() > 0
-             factor = 1.05 if zoom_in else 0.95
-             for f in self.selected_frames_data:
-                 f.scale *= factor
-             self.transform_changed.emit(self.selected_frames_data[0])
-             self.update()
-        else:
+        if self.wheel_mode == self.WHEEL_ZOOM:
             # Zoom View
-            zoom_in = event.angleDelta().y() > 0
-            factor = 1.1 if zoom_in else 0.9
-            self.view_scale *= factor
+            delta = event.angleDelta().y()
+            if delta > 0:
+                self.view_scale *= 1.1
+            else:
+                self.view_scale /= 1.1
             self.update()
+        elif self.wheel_mode == self.WHEEL_SCALE:
+            # Scale Image(s)
+            if not self.selected_frames_data:
+                return
+                
+            delta = event.angleDelta().y()
+            factor = 1.05 if delta > 0 else 0.95
+            
+            # Emit signal for MainWindow to handle scaling
+            self.scale_change_requested.emit(factor)
+            # MainWindow will update the frame data and call set_selected_frames,
+            # which will trigger an update()

@@ -52,6 +52,7 @@ class MainWindow(QMainWindow):
         self.canvas = CanvasWidget()
         self.setCentralWidget(self.canvas)
         self.canvas.transform_changed.connect(self.on_canvas_transform_changed)
+        self.canvas.scale_change_requested.connect(self.on_canvas_scale_requested)
 
         # Dock Widget (Timeline)
         self.timeline_dock = QDockWidget(i18n.t("dock_timeline"), self)
@@ -709,6 +710,46 @@ class MainWindow(QMainWindow):
             action.triggered.connect(lambda checked, m=ms: self.update_repeat_interval(m))
             self.repeat_group.addAction(action)
             self.repeat_actions[ms] = action
+            
+        # Wheel Mode Actions
+        self.wheel_mode_group = QActionGroup(self)
+        
+        self.action_wheel_zoom_view = QAction(i18n.t("action_wheel_zoom_view"), self)
+        self.action_wheel_zoom_view.setCheckable(True)
+        self.action_wheel_zoom_view.triggered.connect(lambda: self.set_wheel_mode_actual(self.canvas.WHEEL_ZOOM))
+        self.wheel_mode_group.addAction(self.action_wheel_zoom_view)
+        
+        self.action_wheel_scale_image = QAction(i18n.t("action_wheel_scale_image"), self)
+        self.action_wheel_scale_image.setCheckable(True)
+        self.action_wheel_scale_image.triggered.connect(lambda: self.set_wheel_mode_actual(self.canvas.WHEEL_SCALE))
+        self.wheel_mode_group.addAction(self.action_wheel_scale_image)
+
+        # Master toggle for toolbar
+        self.action_toggle_wheel_mode = QAction("", self) # Text set dynamically
+        self.action_toggle_wheel_mode.setCheckable(True)
+        self.action_toggle_wheel_mode.triggered.connect(self.toggle_wheel_mode)
+        
+        # Initial State
+        self.action_wheel_zoom_view.setChecked(True)
+        self.update_wheel_toggle_ui()
+
+    def update_wheel_toggle_ui(self):
+        # Sync the master toggle in toolbar based on current canvas mode
+        mode = self.canvas.wheel_mode
+        if mode == self.canvas.WHEEL_SCALE:
+            self.action_toggle_wheel_mode.setText(i18n.t("action_wheel_scale_image"))
+            self.action_toggle_wheel_mode.setChecked(True)
+            self.action_wheel_scale_image.setChecked(True)
+        else:
+            self.action_toggle_wheel_mode.setText(i18n.t("action_wheel_zoom_view"))
+            self.action_toggle_wheel_mode.setChecked(False)
+            self.action_wheel_zoom_view.setChecked(True)
+        
+        # Icon sync
+        wheel_icon = QIcon()
+        wheel_icon.addPixmap(IconGenerator.create_pixmap("arrow_expand", QColor(200, 200, 200), 32), QIcon.Mode.Normal, QIcon.State.Off)
+        wheel_icon.addPixmap(IconGenerator.create_pixmap("image", QColor(255, 204, 0), 32), QIcon.Mode.Normal, QIcon.State.On)
+        self.action_toggle_wheel_mode.setIcon(wheel_icon)
         
 
 
@@ -801,6 +842,13 @@ class MainWindow(QMainWindow):
         
         view_menu.addSeparator()
         
+        # Wheel Mode Submenu
+        wheel_menu = view_menu.addMenu(i18n.t("action_toggle_wheel_mode"))
+        wheel_menu.addAction(self.action_wheel_zoom_view)
+        wheel_menu.addAction(self.action_wheel_scale_image)
+        
+        view_menu.addSeparator()
+        
         self.background_menu = view_menu.addMenu(i18n.t("menu_background"))
         for action in self.bg_actions.values():
             self.background_menu.addAction(action)
@@ -831,6 +879,8 @@ class MainWindow(QMainWindow):
         toolbar.addAction(self.save_action)
         # toolbar.addAction(self.save_as_action) # Removed as per Cycle 33
         toolbar.addAction(self.load_action)
+        toolbar.addSeparator()
+        toolbar.addAction(self.action_toggle_wheel_mode)
         toolbar.addSeparator()
         toolbar.addAction(self.settings_action)
         toolbar.addAction(self.export_action)
@@ -1398,6 +1448,15 @@ class MainWindow(QMainWindow):
             self.onion_toolbar_action.setIcon(onion_icon)
             self.onion_toolbar_action.setToolTip(i18n.t("toolbar_onion_off"))
             self.canvas.set_onion_skins([])
+
+    def toggle_wheel_mode(self, checked):
+        # Toggled from toolbar
+        mode = self.canvas.WHEEL_SCALE if checked else self.canvas.WHEEL_ZOOM
+        self.set_wheel_mode_actual(mode)
+
+    def set_wheel_mode_actual(self, mode):
+        self.canvas.set_wheel_mode(mode)
+        self.update_wheel_toggle_ui()
     
 
         
@@ -1594,7 +1653,7 @@ class MainWindow(QMainWindow):
         self.timeline.refresh_current_items()
         self.mark_dirty()
 
-    def on_property_changed(self, scale, x, y):
+    def on_property_changed(self, frame_data=None):
         self.canvas.update() # Redraw with new values
         self.timeline.refresh_current_items()
         self.mark_dirty()
@@ -1677,6 +1736,10 @@ class MainWindow(QMainWindow):
         self.canvas.update()
         self.property_panel.update_ui_from_selection()
         self.mark_dirty()
+
+    def on_canvas_scale_requested(self, factor):
+        # Use property panel to apply scale with proper anchor support
+        self.property_panel.apply_rel_scale(factor)
 
     def on_order_changed(self):
         # Rebuild project frames list based on timeline order
@@ -2204,6 +2267,11 @@ class MainWindow(QMainWindow):
         self.zoom_fit_action.setText(i18n.t("action_zoom_fit"))
         self.scale_up_action.setText(i18n.t("action_scale_up"))
         self.scale_down_action.setText(i18n.t("action_scale_down"))
+        
+        # Wheel Mode
+        self.action_wheel_zoom_view.setText(i18n.t("action_wheel_zoom_view"))
+        self.action_wheel_scale_image.setText(i18n.t("action_wheel_scale_image"))
+        self.update_wheel_toggle_ui()
         
         # Background Actions
         for mode, action in self.bg_actions.items():
