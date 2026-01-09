@@ -8,21 +8,22 @@ PinFrame is also a GIF processing tool: supporting frame decomposition, cropping
 
 ## Core Features
 
-*   **Precise Alignment**: Supports per-frame translation and scaling.
+*   **Precise Transformations**: Supports per-frame translation, scaling, rotation, and mirroring, with independent X/Y scaling ratios.
+*   **Multi-Dimensional Anchors**: Four anchor modes available: canvas center, image center, custom canvas position, and custom image-following position, ensuring complete control over transformation pivots.
 *   **Onion Skinning**: Configurable multi-frame overlays for perfect animation continuity.
 *   **Reference Frame System**: Lock any frame as a foreground or background reference; includes smart mutual exclusion with onion skinning.
-*   **Flexible Preview**: Forward and reverse playback, custom FPS, and instant overlay preview for multiple selected frames.
-*   **Sprite Sheet & GIF Processing**: Extract frames from sprite sheets or GIFs.
-*   **Professional Export**: Supports custom frame ranges, custom background colors, and exporting as PNG sequences, sprite sheets, or high-quality GIFs.
-*   **Batch Operations**: Batch copy/paste properties, duplicate, remove, and reverse frame order.
-*   **Lossless Workflow**: Data is stored in JSON; the tool does not duplicate resources or sacrifice precision due to import scaling.
-*   **Project Portability**: Easily consolidate external assets into the project directory with automatic relative path management.
+*   **Flexible Interaction**: Supports wheel mode toggle (zoom view or scale image).
+*   **Flexible Preview**: Forward and reverse playback for global or selected frame ranges, custom playback speed. Multi-selected frames display as instant overlays for batch adjustments.
+*   **Sprite Sheet Processing**: Built-in slicing tool to extract sequences from sprite sheets, and direct sprite sheet export support.
+*   **Professional Export**: Supports custom frame ranges, custom background colors, and exporting as PNG sequences, compact sprite sheets, or GIFs.
+*   **Batch Operations**: Batch copy/paste properties, duplicate frames, remove frames, and reverse frame order.
+*   **Lossless Workflow**: Projects store data in JSON without duplicating resources or sacrificing asset precision due to import scaling.
+*   **Project Portability**: Quickly copy assets to the project directory with automatic relative path management; assets remain intact when moving projects.
 
 ## Future Plans
 
-*   **Video Import/Export**: Precise preview and frame extraction from videos. However, this may significantly increase the application size.
-*   **Basic Background Removal**: Useful for better asset previews, though high-quality integrated implementations are complex.
-*   **Rotation**: Adding rotation to the existing scaling and translation system. The challenge lies in maintaining the lossless preview consistency.
+*   **Video Import/Export**: Precise preview and frame extraction from videos is necessary, but it will significantly increase the application size.
+*   **Basic Background Removal**: Useful for better asset previews, though it may not be possible to integrate a highly effective solution.
 
 ## Non-Goals
 
