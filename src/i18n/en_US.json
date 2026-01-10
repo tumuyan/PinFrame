@@ -246,6 +246,7 @@
     "toolbar_raster_off": "Pixel Preview OFF",
     "dlg_raster_settings": "Pixel Preview Settings",
     "raster_enable": "Enable Pixel Preview",
+    "raster_show_grid": "Show Grid",
     "raster_grid_color": "Grid Color:",
     "raster_scale_threshold": "Scale Threshold:",
     "btn_raster_settings": "Pixel Settings"

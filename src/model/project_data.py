@@ -62,7 +62,7 @@ class FrameData:
                 if os.path.exists(test_path):
                     file_path = test_path
                 else:
-                    # Also try preserving the relative structure if possible? 
+                    # Also try to preserve the relative structure if possible? 
                     # Complex, but let's stick to basics for now.
                     pass
         data_target_res = data.get("target_resolution", None)
@@ -101,6 +101,7 @@ class ProjectData:
     
     # Rasterization Settings
     rasterization_enabled: bool = False
+    rasterization_show_grid: bool = True
     rasterization_grid_color: Tuple[int, int, int] = (128, 128, 128)
     rasterization_scale_threshold: float = 5.0
 
@@ -122,6 +123,7 @@ class ProjectData:
             "export_custom_range": self.export_custom_range,
             "rasterization_settings": {
                 "enabled": self.rasterization_enabled,
+                "show_grid": self.rasterization_show_grid,
                 "grid_color": self.rasterization_grid_color,
                 "scale_threshold": self.rasterization_scale_threshold
             }
@@ -152,6 +154,7 @@ class ProjectData:
         # Load rasterization settings
         raster_settings = data.get("rasterization_settings", {})
         project.rasterization_enabled = raster_settings.get("enabled", False)
+        project.rasterization_show_grid = raster_settings.get("show_grid", True)
         project.rasterization_grid_color = tuple(raster_settings.get("grid_color", (128, 128, 128)))
         project.rasterization_scale_threshold = raster_settings.get("scale_threshold", 5.0)
         

@@ -246,6 +246,7 @@
     "toolbar_raster_off": "像素化预览 OFF",
     "dlg_raster_settings": "像素化预览设置",
     "raster_enable": "启用像素化预览",
+    "raster_show_grid": "显示格线",
     "raster_grid_color": "格线颜色:",
     "raster_scale_threshold": "倍率阈值:",
     "btn_raster_settings": "像素化设置"
