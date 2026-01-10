@@ -241,5 +241,12 @@
     "msg_copy_error": "复制 {file} 时出错: {error}",
     "msg_save_project_first": "请先保存工程以确定工程目录。",
     "action_clear_recent": "清除最近项目",
-    "msg_recent_file_not_found": "文件未找到: {path}。是否将其从列表中移除？"
+    "msg_recent_file_not_found": "文件未找到: {path}。是否将其从列表中移除？",
+    "action_rasterization_settings": "栅格化预览设置...",
+    "dlg_rasterization": "栅格化预览设置",
+    "raster_enable": "启用栅格化预览",
+    "raster_grid_color": "格线颜色:",
+    "raster_scale_threshold": "格线显示倍率:",
+    "raster_pick_color": "选择格线颜色",
+    "raster_description": "栅格化预览会在预览倍率>1时，将内容缩小到项目分辨率后用nearest采样放大，实现像素化效果。格线显示倍率设置何时显示像素格线。"
 }

@@ -14,6 +14,7 @@ from ui.settings_dialog import SettingsDialog
 from ui.export_dialog import ExportOptionsDialog
 from ui.onion_settings import OnionSettingsDialog
 from ui.reference_settings import ReferenceSettingsDialog
+from ui.rasterization_settings import RasterizationSettingsDialog
 from ui.utils.icon_generator import IconGenerator
 from i18n.manager import i18n
 import os
@@ -617,6 +618,10 @@ class MainWindow(QMainWindow):
         # Clear Reference Action
         self.clear_ref_action = QAction(i18n.t("action_cancel_reference"), self)
         self.clear_ref_action.triggered.connect(self.clear_reference_frame)
+        
+        # Rasterization Settings Action
+        self.rasterization_settings_action = QAction(i18n.t("action_rasterization_settings"), self)
+        self.rasterization_settings_action.triggered.connect(self.configure_rasterization_settings)
 
         # Play/Pause Shortcut (Global Space)
         self.play_pause_action = QAction(i18n.t("action_play_pause"), self)
@@ -839,6 +844,11 @@ class MainWindow(QMainWindow):
         view_menu.addAction(self.set_ref_action)
         view_menu.addAction(self.ref_settings_action)
         view_menu.addAction(self.clear_ref_action)
+        
+        view_menu.addSeparator()
+        
+        # Rasterization Settings
+        view_menu.addAction(self.rasterization_settings_action)
         
         view_menu.addSeparator()
         
@@ -1477,6 +1487,33 @@ class MainWindow(QMainWindow):
                  self.clear_reference_frame(update=False)
 
             self.update_onion_state()
+    
+    def configure_rasterization_settings(self):
+        dlg = RasterizationSettingsDialog(
+            self,
+            enabled=self.project.rasterization_enabled,
+            grid_color=QColor(*self.project.rasterization_grid_color),
+            scale_threshold=self.project.rasterization_scale_threshold
+        )
+        if dlg.exec():
+            settings = dlg.get_settings()
+            self.project.rasterization_enabled = settings["enabled"]
+            self.project.rasterization_grid_color = (
+                settings["grid_color"].red(),
+                settings["grid_color"].green(),
+                settings["grid_color"].blue()
+            )
+            self.project.rasterization_scale_threshold = settings["scale_threshold"]
+            
+            # Apply to canvas
+            self.canvas.set_rasterization_settings(
+                settings["enabled"],
+                settings["grid_color"],
+                settings["scale_threshold"]
+            )
+            
+            # Mark project as dirty
+            self.mark_dirty()
 
     def set_reference_frame_from_selection(self):
         selected = self.timeline.selectedItems()
@@ -2004,6 +2041,13 @@ class MainWindow(QMainWindow):
             self.fps_spin.setValue(self.project.fps)
             self.canvas.set_project_settings(self.project.width, self.project.height)
             self.property_panel.set_project_info(self.project.width, self.project.height)
+            
+            # Restore rasterization settings
+            self.canvas.set_rasterization_settings(
+                self.project.rasterization_enabled,
+                QColor(*self.project.rasterization_grid_color),
+                self.project.rasterization_scale_threshold
+            )
             
             self.timeline.clear()
             for frame in self.project.frames:
