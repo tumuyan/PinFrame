@@ -80,16 +80,31 @@ class Exporter:
                         x, y, w, h = frame.crop_rect
                         src_img = src_img.crop((x, y, x + w, y + h))
                     
-                    if frame.scale != 1.0 or frame.aspect_ratio != 1.0:
-                        new_w = int(src_img.width * frame.scale)
-                        new_h = int(src_img.height * (frame.scale / frame.aspect_ratio))
+                    # Handle scale and aspect_ratio (negative values indicate mirroring)
+                    scale_x = frame.scale
+                    scale_y = frame.scale / frame.aspect_ratio
+                    
+                    new_w = int(src_img.width * abs(scale_x))
+                    new_h = int(src_img.height * abs(scale_y))
+                    
+                    if new_w > 0 and new_h > 0:
                         src_img = src_img.resize((new_w, new_h), Image.Resampling.LANCZOS)
+                        
+                        # Apply mirroring if scales are negative
+                        if scale_x < 0:
+                            src_img = src_img.transpose(Image.Transpose.FLIP_LEFT_RIGHT)
+                        if scale_y < 0:
+                            src_img = src_img.transpose(Image.Transpose.FLIP_TOP_BOTTOM)
+                        
+                        # Apply rotation
+                        if frame.rotation != 0:
+                            src_img = src_img.rotate(-frame.rotation, resample=Image.Resampling.BICUBIC, expand=True)
                     
-                    cx, cy = project.width / 2, project.height / 2
-                    dest_x = int((cx + frame.position[0]) - src_img.width / 2)
-                    dest_y = int((cy + frame.position[1]) - src_img.height / 2)
-                    
-                    canvas.alpha_composite(src_img, (dest_x, dest_y))
+                        cx, cy = project.width / 2, project.height / 2
+                        dest_x = int((cx + frame.position[0]) - src_img.width / 2)
+                        dest_y = int((cy + frame.position[1]) - src_img.height / 2)
+                        
+                        canvas.alpha_composite(src_img, (dest_x, dest_y))
                 
                 # Save
                 if use_original_filenames:
@@ -147,16 +162,29 @@ class Exporter:
                     if frame.crop_rect:
                         x, y, w, h = frame.crop_rect
                         src_img = src_img.crop((x, y, x + w, y + h))
-                        
-                    if frame.scale != 1.0 or frame.aspect_ratio != 1.0:
-                        new_w = int(src_img.width * frame.scale)
-                        new_h = int(src_img.height * (frame.scale / frame.aspect_ratio))
+                    
+                    # Handle scale and aspect_ratio (negative values indicate mirroring)
+                    scale_x = frame.scale
+                    scale_y = frame.scale / frame.aspect_ratio
+                    
+                    new_w = int(src_img.width * abs(scale_x))
+                    new_h = int(src_img.height * abs(scale_y))
+                    
+                    if new_w > 0 and new_h > 0:
                         src_img = src_img.resize((new_w, new_h), Image.Resampling.LANCZOS)
                         
-                    cx, cy = fw / 2, fh / 2
-                    dest_x = int((cx + frame.position[0]) - src_img.width / 2)
-                    dest_y = int((cy + frame.position[1]) - src_img.height / 2)
-                    canvas.alpha_composite(src_img, (dest_x, dest_y))
+                        if scale_x < 0:
+                            src_img = src_img.transpose(Image.Transpose.FLIP_LEFT_RIGHT)
+                        if scale_y < 0:
+                            src_img = src_img.transpose(Image.Transpose.FLIP_TOP_BOTTOM)
+                        
+                        if frame.rotation != 0:
+                            src_img = src_img.rotate(-frame.rotation, resample=Image.Resampling.BICUBIC, expand=True)
+                        
+                        cx, cy = fw / 2, fh / 2
+                        dest_x = int((cx + frame.position[0]) - src_img.width / 2)
+                        dest_y = int((cy + frame.position[1]) - src_img.height / 2)
+                        canvas.alpha_composite(src_img, (dest_x, dest_y))
                 
                 row_idx = i // cols
                 col_idx = i % cols
@@ -196,16 +224,29 @@ class Exporter:
                     if frame.crop_rect:
                         x, y, w, h = frame.crop_rect
                         src_img = src_img.crop((x, y, x + w, y + h))
-                        
-                    if frame.scale != 1.0 or frame.aspect_ratio != 1.0:
-                        new_w = int(src_img.width * frame.scale)
-                        new_h = int(src_img.height * (frame.scale / frame.aspect_ratio))
+                    
+                    # Handle scale and aspect_ratio (negative values indicate mirroring)
+                    scale_x = frame.scale
+                    scale_y = frame.scale / frame.aspect_ratio
+                    
+                    new_w = int(src_img.width * abs(scale_x))
+                    new_h = int(src_img.height * abs(scale_y))
+                    
+                    if new_w > 0 and new_h > 0:
                         src_img = src_img.resize((new_w, new_h), Image.Resampling.LANCZOS)
                         
-                    cx, cy = project.width / 2, project.height / 2
-                    dest_x = int((cx + frame.position[0]) - src_img.width / 2)
-                    dest_y = int((cy + frame.position[1]) - src_img.height / 2)
-                    canvas.alpha_composite(src_img, (dest_x, dest_y))
+                        if scale_x < 0:
+                            src_img = src_img.transpose(Image.Transpose.FLIP_LEFT_RIGHT)
+                        if scale_y < 0:
+                            src_img = src_img.transpose(Image.Transpose.FLIP_TOP_BOTTOM)
+                        
+                        if frame.rotation != 0:
+                            src_img = src_img.rotate(-frame.rotation, resample=Image.Resampling.BICUBIC, expand=True)
+                        
+                        cx, cy = project.width / 2, project.height / 2
+                        dest_x = int((cx + frame.position[0]) - src_img.width / 2)
+                        dest_y = int((cy + frame.position[1]) - src_img.height / 2)
+                        canvas.alpha_composite(src_img, (dest_x, dest_y))
                 
                 # Convert to RGB or keep RGBA? 
                 # GIF doesn't support full alpha, but PIL can handle it with trans index.
