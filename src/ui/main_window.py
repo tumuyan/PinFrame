@@ -14,6 +14,7 @@ from ui.settings_dialog import SettingsDialog
 from ui.export_dialog import ExportOptionsDialog
 from ui.onion_settings import OnionSettingsDialog
 from ui.reference_settings import ReferenceSettingsDialog
+from ui.raster_settings import RasterizationSettingsDialog
 from ui.utils.icon_generator import IconGenerator
 from i18n.manager import i18n
 import os
@@ -728,10 +729,24 @@ class MainWindow(QMainWindow):
         self.action_toggle_wheel_mode = QAction("", self) # Text set dynamically
         self.action_toggle_wheel_mode.setCheckable(True)
         self.action_toggle_wheel_mode.triggered.connect(self.toggle_wheel_mode)
-        
+
         # Initial State
         self.action_wheel_zoom_view.setChecked(True)
         self.update_wheel_toggle_ui()
+
+        # Rasterization Preview Actions
+        self.raster_toolbar_action = QAction(i18n.t("toolbar_raster_off"))
+        raster_icon = QIcon()
+        raster_icon.addPixmap(IconGenerator.rasterization_icon(QColor(150, 150, 150)).pixmap(32, 32), QIcon.Mode.Normal, QIcon.State.Off)
+        raster_icon.addPixmap(IconGenerator.rasterization_icon(QColor(0, 122, 204)).pixmap(32, 32), QIcon.Mode.Normal, QIcon.State.On)
+        self.raster_toolbar_action.setIcon(raster_icon)
+        self.raster_toolbar_action.setCheckable(True)
+        self.raster_toolbar_action.triggered.connect(self.toggle_rasterization)
+
+        self.raster_settings_action = QAction(i18n.t("btn_raster_settings"))
+        settings_icon = self.style().standardIcon(QStyle.StandardPixmap.SP_FileDialogDetailedView)
+        self.raster_settings_action.setIcon(settings_icon)
+        self.raster_settings_action.triggered.connect(self.configure_rasterization_settings)
 
     def update_wheel_toggle_ui(self):
         # Sync the master toggle in toolbar based on current canvas mode
@@ -888,12 +903,16 @@ class MainWindow(QMainWindow):
         toolbar.addSeparator()
         
         toolbar.addAction(self.onion_toolbar_action)
-        
+
         # Add "Set Reference" action (from selection)
         # Add "Set Reference" action (from selection)
         # Action already defined in create_actions
         toolbar.addAction(self.set_ref_action)
-        
+
+        # Rasterization Preview
+        toolbar.addAction(self.raster_toolbar_action)
+        toolbar.addAction(self.raster_settings_action)
+
         toolbar.addSeparator()
         
         # FPS Control
@@ -1373,7 +1392,7 @@ class MainWindow(QMainWindow):
             self.onion_toolbar_action.setIcon(onion_icon)
             self.onion_toolbar_action.setToolTip(i18n.t("toolbar_onion_off"))
             self.canvas.set_onion_skins([])
-        
+
     def configure_reference_settings(self):
         dlg = ReferenceSettingsDialog(self, self.ref_opacity, self.ref_layer, self.ref_show_on_playback)
         if dlg.exec():
@@ -1381,19 +1400,89 @@ class MainWindow(QMainWindow):
             self.ref_opacity = settings["opacity"]
             self.ref_layer = settings["layer"]
             self.ref_show_on_playback = settings["show_on_playback"]
-            
+
             # Save settings
             self.settings.setValue("ref_opacity", self.ref_opacity)
             self.settings.setValue("ref_layer", self.ref_layer)
             self.settings.setValue("ref_show_on_playback", self.ref_show_on_playback)
-            
+
             # Apply to canvas
             self.canvas.ref_opacity = self.ref_opacity
             self.canvas.ref_layer = self.ref_layer
             self.canvas.ref_show_on_playback = self.ref_show_on_playback
             self.canvas.update()
-            
+
             self.update_onion_state()
+
+    def toggle_rasterization(self, checked=None):
+        """Toggle rasterization preview mode."""
+        if checked is None:
+            # Called from toggle, invert state
+            self.project.rasterization_enabled = not self.project.rasterization_enabled
+        else:
+            # Called from action with checked state
+            self.project.rasterization_enabled = checked
+
+        # Update canvas settings
+        grid_color = QColor(*self.project.rasterization_grid_color)
+        self.canvas.set_rasterization_settings(
+            self.project.rasterization_enabled,
+            grid_color,
+            self.project.rasterization_scale_threshold
+        )
+
+        # Update UI
+        self.update_rasterization_ui()
+        self.mark_dirty()
+
+    def configure_rasterization_settings(self):
+        """Open rasterization settings dialog."""
+        dlg = RasterizationSettingsDialog(
+            self,
+            self.project.rasterization_enabled,
+            self.project.rasterization_grid_color,
+            self.project.rasterization_scale_threshold
+        )
+        if dlg.exec():
+            settings = dlg.get_settings()
+            self.project.rasterization_enabled = settings["enabled"]
+            self.project.rasterization_grid_color = settings["grid_color"]
+            self.project.rasterization_scale_threshold = settings["scale_threshold"]
+
+            # Update canvas settings
+            grid_color = QColor(*self.project.rasterization_grid_color)
+            self.canvas.set_rasterization_settings(
+                self.project.rasterization_enabled,
+                grid_color,
+                self.project.rasterization_scale_threshold
+            )
+
+            # Update UI
+            self.update_rasterization_ui()
+            self.mark_dirty()
+
+    def update_rasterization_ui(self):
+        """Update rasterization button state."""
+        enabled = self.project.rasterization_enabled
+
+        # Update button text
+        if enabled:
+            self.raster_toolbar_action.setText(i18n.t("toolbar_raster_on"))
+        else:
+            self.raster_toolbar_action.setText(i18n.t("toolbar_raster_off"))
+
+        # Update button checked state
+        self.raster_toolbar_action.setChecked(enabled)
+
+        # Update icon colors
+        raster_icon = QIcon()
+        if enabled:
+            raster_icon.addPixmap(IconGenerator.rasterization_icon(QColor(0, 122, 204)).pixmap(32, 32), QIcon.Mode.Normal, QIcon.State.Off)
+            raster_icon.addPixmap(IconGenerator.rasterization_icon(QColor(0, 122, 204)).pixmap(32, 32), QIcon.Mode.Normal, QIcon.State.On)
+        else:
+            raster_icon.addPixmap(IconGenerator.rasterization_icon(QColor(150, 150, 150)).pixmap(32, 32), QIcon.Mode.Normal, QIcon.State.Off)
+            raster_icon.addPixmap(IconGenerator.rasterization_icon(QColor(150, 150, 150)).pixmap(32, 32), QIcon.Mode.Normal, QIcon.State.On)
+        self.raster_toolbar_action.setIcon(raster_icon)
 
     def update_onion_state(self):
         """
@@ -2004,7 +2093,16 @@ class MainWindow(QMainWindow):
             self.fps_spin.setValue(self.project.fps)
             self.canvas.set_project_settings(self.project.width, self.project.height)
             self.property_panel.set_project_info(self.project.width, self.project.height)
-            
+
+            # Apply rasterization settings
+            grid_color = QColor(*self.project.rasterization_grid_color)
+            self.canvas.set_rasterization_settings(
+                self.project.rasterization_enabled,
+                grid_color,
+                self.project.rasterization_scale_threshold
+            )
+            self.update_rasterization_ui()
+
             self.timeline.clear()
             for frame in self.project.frames:
                 w, h = 0, 0
@@ -2072,7 +2170,16 @@ class MainWindow(QMainWindow):
         self.fps_spin.setValue(self.project.fps)
         self.canvas.set_project_settings(self.project.width, self.project.height)
         self.property_panel.set_project_info(self.project.width, self.project.height)
-        
+
+        # Apply rasterization settings
+        grid_color = QColor(*self.project.rasterization_grid_color)
+        self.canvas.set_rasterization_settings(
+            self.project.rasterization_enabled,
+            grid_color,
+            self.project.rasterization_scale_threshold
+        )
+        self.update_rasterization_ui()
+
         # Clear timeline
         self.timeline.clear()
         
