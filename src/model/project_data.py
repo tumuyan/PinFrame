@@ -101,7 +101,7 @@ class ProjectData:
     
     # Rasterization Settings
     rasterization_enabled: bool = False
-    rasterization_grid_color: Tuple[int, int, int] = (0, 0, 0)
+    rasterization_grid_color: Tuple[int, int, int] = (128, 128, 128)
     rasterization_scale_threshold: float = 5.0
 
     def to_json(self, project_file_path: Optional[str] = None):
@@ -152,7 +152,7 @@ class ProjectData:
         # Load rasterization settings
         raster_settings = data.get("rasterization_settings", {})
         project.rasterization_enabled = raster_settings.get("enabled", False)
-        project.rasterization_grid_color = tuple(raster_settings.get("grid_color", (0, 0, 0)))
-        project.rasterization_scale_threshold = raster_settings.get("scale_threshold", 1.5)
+        project.rasterization_grid_color = tuple(raster_settings.get("grid_color", (128, 128, 128)))
+        project.rasterization_scale_threshold = raster_settings.get("scale_threshold", 5.0)
         
         return project

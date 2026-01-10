@@ -187,8 +187,10 @@ class CanvasWidget(QWidget):
 
             # Step 5: Draw canvas border
             painter.setPen(QPen(Qt.GlobalColor.white, 2))
-            painter.drawRect(QRectF(-self.project_width / 2, -self.project_height / 2,
-                                   self.project_width, self.project_height))
+            scaled_width = int(self.project_width * self.view_scale)
+            scaled_height = int(self.project_height * self.view_scale)
+            painter.drawRect(QRectF(-scaled_width / 2, -scaled_height / 2,
+                                   scaled_width, scaled_height))
 
             # Step 6: Draw UI elements (anchor, selection outlines) - these stay sharp
             self._draw_ui_elements(painter)
@@ -422,9 +424,11 @@ class CanvasWidget(QWidget):
             pixel_size = self.view_scale
 
             # Use integer coordinates for precise grid alignment
+            # Draw vertical lines at pixel boundaries
             for x in range(0, target_width + 1, int(pixel_size)):
                 painter.drawLine(x, 0, x, target_height)
 
+            # Draw horizontal lines at pixel boundaries
             for y in range(0, target_height + 1, int(pixel_size)):
                 painter.drawLine(0, y, target_width, y)
 
