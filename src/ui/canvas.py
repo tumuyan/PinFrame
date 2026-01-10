@@ -24,16 +24,10 @@ class CanvasWidget(QWidget):
         self.current_frames = [] # List of (image, data) tuples or just data? 
                                  # We need images to draw. 
                                  # Let's verify how we pass data.
-                                 # MainWindow passes Image + FrameData.
                                  # With multi-selection, we probably only really "edit" one active one or all?
                                  # User wants to move ALL selected.
         
         # We will maintain a list of (FrameData, QImage or None)
-        # To avoid heavy IO, MainWindow should manage image caching/loading. 
-        # For now, let's just stick to rendering "Current" (primary) + "Selected" (ghosts/outlines)?
-        # Actually user said: "simultaneous preview and edit".
-        # So we need to draw all selected images.
-        
         self.selected_frames_data = [] # List of FrameData
         self.onion_skin_frames = [] # List of (FrameData, opacity)
         self.reference_frame = None # FrameData or None
@@ -50,8 +44,6 @@ class CanvasWidget(QWidget):
         
         self.checkerboard_color1 = QColor(200, 200, 200)
         self.checkerboard_color2 = QColor(160, 160, 160)
-        self.checkerboard_color1 = QColor(200, 200, 200)
-        self.checkerboard_color2 = QColor(160, 160, 160)
         self.background_mode = "checkerboard" # "checkerboard", "black", "white", "red", "green"
         
         # Reference Settings
@@ -60,9 +52,6 @@ class CanvasWidget(QWidget):
         self.ref_show_on_playback = False
         self.ref_show_on_playback = False
         self.is_playing = False # Needs to be updated by MainWindow
-        
-        # Custom Anchor
-        self.show_custom_anchor = False
         self.custom_anchor_pos = QPointF(256, 256)
         self.is_dragging_anchor = False
         self.anchor_handle_radius = 6
@@ -74,17 +63,12 @@ class CanvasWidget(QWidget):
         
         # Rasterization Settings
         self.raster_enabled = False
-        self.raster_grid_color = QColor(0, 0, 0)
-        self.raster_scale_threshold = 1.5
+        self.raster_grid_color = QColor(128, 128, 128)
+        self.raster_scale_threshold = 5.0
+        self.rasterization_show_grid = True
         
     def set_wheel_mode(self, mode):
         self.wheel_mode = mode
-        self.update()
-
-    def set_rasterization_settings(self, enabled, grid_color, scale_threshold):
-        self.raster_enabled = enabled
-        self.raster_grid_color = grid_color
-        self.raster_scale_threshold = scale_threshold
         self.update()
 
     def set_background_mode(self, mode):
@@ -95,7 +79,7 @@ class CanvasWidget(QWidget):
         self.project_width = width
         self.project_height = height
         self.update()
-
+        
     def set_show_custom_anchor(self, show):
         self.show_custom_anchor = show
         self.update()
@@ -132,6 +116,8 @@ class CanvasWidget(QWidget):
 
     def fit_to_view(self):
         if self.project_width <= 0 or self.project_height <= 0:
+            # Fallback to reset if widget size is too small or invalid
+            self.reset_view()
             return
             
         # Add some padding to ensure it's not sticking to edges
@@ -177,9 +163,9 @@ class CanvasWidget(QWidget):
             # Step 4: Draw processed image with view transform
             painter.translate(self.width() / 2, self.height() / 2)
             painter.translate(self.view_offset)
-            # Scale the processed image to screen size using nearest neighbor
+            # Scale -> processed image to screen size using nearest neighbor
             # The processed image is already scaled by _apply_rasterization
-            # Draw it at the scaled size centered
+            # So we just draw it at 1.0 scale (already pixelated)
             scaled_width = int(self.project_width * self.view_scale)
             scaled_height = int(self.project_height * self.view_scale)
             painter.drawImage(QRectF(-scaled_width / 2, -scaled_height / 2,
@@ -206,7 +192,7 @@ class CanvasWidget(QWidget):
             # Draw Canvas Area (The Output Rectangle)
             output_rect = QRectF(-self.project_width / 2, -self.project_height / 2,
                                  self.project_width, self.project_height)
-
+            
             if self.background_mode == "checkerboard":
                 self.draw_checkerboard(painter, output_rect)
             elif self.background_mode == "black":
@@ -217,7 +203,7 @@ class CanvasWidget(QWidget):
                 painter.fillRect(output_rect, Qt.GlobalColor.red)
             elif self.background_mode == "green":
                 painter.fillRect(output_rect, Qt.GlobalColor.green)
-
+                
             painter.setPen(QPen(Qt.GlobalColor.white, 2))
             painter.drawRect(output_rect)
 
@@ -225,23 +211,23 @@ class CanvasWidget(QWidget):
             def draw_frame(frame_data, opacity=1.0, is_ref=False):
                 img = image_cache.get(frame_data.file_path)
                 if img:
-
+                    
                     painter.save()
-
+                    
                     x, y = frame_data.position
                     scale = frame_data.scale
-
+                    
                     painter.translate(x, y)
                     painter.rotate(frame_data.rotation)
                     painter.scale(scale, scale / frame_data.aspect_ratio)
-
+                    
                     w = img.width()
                     h = img.height()
-
+                    
                     # Setup transparency
                     if opacity < 1.0:
                         painter.setOpacity(opacity)
-
+                    
                     # Handle crop_rect
                     if frame_data.crop_rect:
                         cx, cy, cw, ch = frame_data.crop_rect
@@ -251,18 +237,18 @@ class CanvasWidget(QWidget):
                     else:
                         target_rect = QRectF(-w/2, -h/2, w, h)
                         painter.drawImage(target_rect, img)
-
+                    
                     if not is_ref and opacity == 1.0: # Active Selection Outline
                         painter.setPen(QPen(Qt.GlobalColor.cyan, 2))
                         painter.setBrush(Qt.BrushStyle.NoBrush)
                         painter.drawRect(target_rect)
-
+                    
                     painter.restore()
 
             # 1. Draw Reference Frame (Bottom)
             if self.reference_frame and self.ref_layer == "bottom":
                 if not self.is_playing or self.ref_show_on_playback:
-                    draw_frame(self.reference_frame, self.ref_opacity, is_ref=True)
+                    draw_frame(self.reference_frame, self.ref_opacity, is_ref=True) 
 
             # 2. Draw Onion Skins
             for frame, opacity in self.onion_skin_frames:
@@ -271,7 +257,7 @@ class CanvasWidget(QWidget):
             # 3. Draw Selected Images (Active)
             for frame_data in self.selected_frames_data:
                 draw_frame(frame_data)
-
+                
             # 4. Draw Reference Frame (Top)
             if self.reference_frame and self.ref_layer == "top":
                 if not self.is_playing or self.ref_show_on_playback:
@@ -282,32 +268,59 @@ class CanvasWidget(QWidget):
                 # Anchor is in Project Coordinates (0,0 is center)
                 # We need to map it to View Coordinates to check for mouse hits easily if we did separate logic
                 # But here we just draw it in the transformed painter context.
-
+                
                 painter.setPen(QPen(Qt.GlobalColor.yellow, 2))
                 painter.setBrush(Qt.BrushStyle.NoBrush)
-
+                
                 ax, ay = self.custom_anchor_pos.x(), self.custom_anchor_pos.y()
                 r = self.anchor_handle_radius
-
+                
                 # Crosshair
                 painter.drawLine(QPointF(ax - r*2, ay), QPointF(ax + r*2, ay))
                 painter.drawLine(QPointF(ax, ay - r*2), QPointF(ax, ay + r*2))
-
+                
                 # Circle
                 painter.drawEllipse(self.custom_anchor_pos, r, r)
 
     def _render_to_buffer(self):
-        """Render canvas content to a QImage buffer at project resolution."""
-        # Create buffer at project resolution
-        buffer = QImage(self.project_width, self.project_height, QImage.Format.Format_RGBA8888)
+        """Render canvas content to a QImage buffer at project resolution.
+        Captures all content including frames positioned outside canvas area."""
+        # Calculate bounding box of all frames to ensure everything is captured
+        # This includes frames that may be positioned outside of canvas area
+        if not self.selected_frames_data:
+            # No frames selected, return empty buffer
+            buffer = QImage(self.project_width, self.project_height, QImage.Format.Format_RGBA8888)
+            buffer.fill(Qt.GlobalColor.transparent)
+            return buffer
+        
+        min_x = min([frame.position[0] for frame in self.selected_frames_data] + [0], default=0)
+        max_x = max([frame.position[0] for frame in self.selected_frames_data] + [self.project_width], default=self.project_width)
+        min_y = min([frame.position[1] for frame in self.selected_frames_data] + [0], default=0)
+        max_y = max([frame.position[1] for frame in self.selected_frames_data] + [self.project_height], default=self.project_height)
+        
+        # Add margin for transformed content (scaled/rotated frames)
+        # Use a larger buffer to capture all content
+        margin = 200
+        content_width = max(max_x - min_x, self.project_width) + margin
+        content_height = max(max_y - min_y, self.project_height) + margin
+        content_x = (min_x + max_x) / 2
+        content_y = (min_y + max_y) / 2
+
+        # Create buffer at content size (larger than project to capture outside content)
+        buffer = QImage(int(content_width), int(content_height), QImage.Format.Format_RGBA8888)
         buffer.fill(Qt.GlobalColor.transparent)
 
         painter = QPainter(buffer)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, False)  # Disable AA for pixelated look
         painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform, False)
 
-        # Draw background
-        output_rect = QRectF(0, 0, self.project_width, self.project_height)
+        # Translate to center of content area
+        painter.translate(content_width / 2, content_height / 2)
+        painter.translate(-content_x, -content_y)
+
+        # Draw background (at project canvas position)
+        output_rect = QRectF(-self.project_width / 2, -self.project_height / 2,
+                             self.project_width, self.project_height)
 
         if self.background_mode == "checkerboard":
             self.draw_checkerboard_buffer(painter, output_rect)
@@ -320,12 +333,8 @@ class CanvasWidget(QWidget):
         elif self.background_mode == "green":
             painter.fillRect(output_rect, Qt.GlobalColor.green)
 
-        # Apply transforms to match the view, but render at project resolution
-        # We need to map world coordinates to project coordinates
-        # World coordinates: (0,0) is center of canvas
-        # Buffer coordinates: (0,0) is top-left
-
-        painter.translate(self.project_width / 2, self.project_height / 2)
+        painter.setPen(QPen(Qt.GlobalColor.white, 2))
+        painter.drawRect(output_rect)
 
         # Draw frames
         def draw_frame_buffer(frame_data, opacity=1.0, is_ref=False):
@@ -376,29 +385,42 @@ class CanvasWidget(QWidget):
                 draw_frame_buffer(self.reference_frame, self.ref_opacity, is_ref=True)
 
         painter.end()
-        return buffer
+
+        # Crop to project canvas area for scaling
+        # We want to rasterize only the project canvas area
+        project_area = QRectF(-self.project_width / 2, -self.project_height / 2,
+                                 self.project_width, self.project_height)
+        
+        # Convert to content coordinates for cropping
+        crop_left = int(project_area.left() - content_x + content_width / 2)
+        crop_top = int(project_area.top() - content_y + content_height / 2)
+        
+        # Crop and return only the project canvas area
+        cropped = buffer.copy(crop_left, crop_top, self.project_width, self.project_height)
+        
+        return cropped
 
     def draw_checkerboard_buffer(self, painter, rect):
         """Draw checkerboard pattern in buffer coordinates (no view transform)."""
         size = 20
         cols = int(rect.width() / size) + 1
         rows = int(rect.height() / size) + 1
-
+        
         painter.save()
         painter.setClipRect(rect)
         painter.translate(rect.topLeft())
-
+        
         for r in range(rows):
             for c in range(cols):
                 color = self.checkerboard_color1 if (r + c) % 2 == 0 else self.checkerboard_color2
                 painter.fillRect(c * size, r * size, size, size, color)
-
+        
         painter.restore()
 
     def _apply_rasterization(self, image):
         """Apply rasterization: shrink -> nearest upscale -> optional grid."""
-        # Determine if we should show grid
-        show_grid = self.view_scale > self.raster_scale_threshold
+        # Use to show_grid setting from rasterization config
+        show_grid = (self.view_scale > self.raster_scale_threshold) and self.rasterization_show_grid
 
         # Create processed image at screen size using nearest neighbor
         target_width = int(self.project_width * self.view_scale)
@@ -423,7 +445,6 @@ class CanvasWidget(QWidget):
             # Each original pixel is now 'view_scale' screen pixels
             pixel_size = self.view_scale
 
-            # Use integer coordinates for precise grid alignment
             # Draw vertical lines at pixel boundaries
             for x in range(0, target_width + 1, int(pixel_size)):
                 painter.drawLine(x, 0, x, target_height)
@@ -549,7 +570,8 @@ class CanvasWidget(QWidget):
             if self.show_custom_anchor:
                 # Map mouse pos to World Coords
                 # View Transform: Translate(W/2, H/2) -> Translate(ViewOffset) -> Scale(ViewScale)
-                # Reverse:
+                # World Coords = (MousePos - W/2 - ViewOffset) / ViewScale
+                
                 center_offset = QPointF(self.width() / 2, self.height() / 2)
                 local_pos = event.position() - center_offset - self.view_offset
                 world_pos = local_pos / self.view_scale
