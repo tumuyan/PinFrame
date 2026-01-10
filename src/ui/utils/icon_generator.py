@@ -157,3 +157,37 @@ class IconGenerator:
         
         painter.end()
         return pixmap
+
+    @staticmethod
+    def rasterization_icon(color: QColor, size: int = 32) -> QIcon:
+        """Create a pixel grid icon representing rasterization."""
+        pixmap = QPixmap(size, size)
+        pixmap.fill(Qt.GlobalColor.transparent)
+        
+        painter = QPainter(pixmap)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, False)  # No anti-aliasing for pixelated look
+        
+        # Draw pixel grid
+        grid_size = 4  # 4x4 grid
+        cell_size = size // grid_size
+        
+        painter.setPen(QPen(color, 1))
+        painter.setBrush(Qt.BrushStyle.NoBrush)
+        
+        # Draw grid lines
+        for i in range(grid_size + 1):
+            pos = i * cell_size
+            painter.drawLine(pos, 0, pos, size)  # Vertical lines
+            painter.drawLine(0, pos, size, pos)  # Horizontal lines
+        
+        # Fill alternating cells to show pixelated effect
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QColor(color.red(), color.green(), color.blue(), 100))
+        
+        for row in range(grid_size):
+            for col in range(grid_size):
+                if (row + col) % 2 == 0:
+                    painter.drawRect(col * cell_size, row * cell_size, cell_size, cell_size)
+        
+        painter.end()
+        return QIcon(pixmap)

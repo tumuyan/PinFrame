@@ -241,5 +241,12 @@
     "msg_copy_error": "复制 {file} 时出错: {error}",
     "msg_save_project_first": "请先保存工程以确定工程目录。",
     "action_clear_recent": "清除最近项目",
-    "msg_recent_file_not_found": "文件未找到: {path}。是否将其从列表中移除？"
+    "msg_recent_file_not_found": "文件未找到: {path}。是否将其从列表中移除？",
+    "toolbar_raster_on": "像素化预览 ON",
+    "toolbar_raster_off": "像素化预览 OFF",
+    "dlg_raster_settings": "像素化预览设置",
+    "raster_enable": "启用像素化预览",
+    "raster_grid_color": "格线颜色:",
+    "raster_scale_threshold": "倍率阈值:",
+    "btn_raster_settings": "像素化设置"
 }

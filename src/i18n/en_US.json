@@ -241,5 +241,12 @@
     "msg_copy_error": "Error copying {file}: {error}",
     "msg_save_project_first": "Please save the project first to define a project directory.",
     "action_clear_recent": "Clear Recent Projects",
-    "msg_recent_file_not_found": "File not found: {path}. Remove from list?"
+    "msg_recent_file_not_found": "File not found: {path}. Remove from list?",
+    "toolbar_raster_on": "Pixel Preview ON",
+    "toolbar_raster_off": "Pixel Preview OFF",
+    "dlg_raster_settings": "Pixel Preview Settings",
+    "raster_enable": "Enable Pixel Preview",
+    "raster_grid_color": "Grid Color:",
+    "raster_scale_threshold": "Scale Threshold:",
+    "btn_raster_settings": "Pixel Settings"
 }
