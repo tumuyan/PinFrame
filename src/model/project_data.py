@@ -102,7 +102,7 @@ class ProjectData:
     # Rasterization Settings
     rasterization_enabled: bool = False
     rasterization_grid_color: Tuple[int, int, int] = (0, 0, 0)
-    rasterization_scale_threshold: float = 1.5
+    rasterization_scale_threshold: float = 5.0
 
     def to_json(self, project_file_path: Optional[str] = None):
         base_dir = os.path.abspath(os.path.dirname(project_file_path)) if project_file_path else None

@@ -177,8 +177,13 @@ class CanvasWidget(QWidget):
             # Step 4: Draw processed image with view transform
             painter.translate(self.width() / 2, self.height() / 2)
             painter.translate(self.view_offset)
-            painter.drawImage(QRectF(-self.project_width / 2, -self.project_height / 2,
-                                   self.project_width, self.project_height), processed)
+            # Scale the processed image to screen size using nearest neighbor
+            # The processed image is already scaled by _apply_rasterization
+            # Draw it at the scaled size centered
+            scaled_width = int(self.project_width * self.view_scale)
+            scaled_height = int(self.project_height * self.view_scale)
+            painter.drawImage(QRectF(-scaled_width / 2, -scaled_height / 2,
+                                   scaled_width, scaled_height), processed)
 
             # Step 5: Draw canvas border
             painter.setPen(QPen(Qt.GlobalColor.white, 2))
