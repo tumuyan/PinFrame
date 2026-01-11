@@ -1428,7 +1428,8 @@ class MainWindow(QMainWindow):
         self.canvas.set_rasterization_settings(
             self.project.rasterization_enabled,
             grid_color,
-            self.project.rasterization_scale_threshold
+            self.project.rasterization_scale_threshold,
+            self.project.rasterization_show_grid
         )
 
         # Update UI
@@ -1441,20 +1442,23 @@ class MainWindow(QMainWindow):
             self,
             self.project.rasterization_enabled,
             self.project.rasterization_grid_color,
-            self.project.rasterization_scale_threshold
+            self.project.rasterization_scale_threshold,
+            self.project.rasterization_show_grid
         )
         if dlg.exec():
             settings = dlg.get_settings()
             self.project.rasterization_enabled = settings["enabled"]
             self.project.rasterization_grid_color = settings["grid_color"]
             self.project.rasterization_scale_threshold = settings["scale_threshold"]
+            self.project.rasterization_show_grid = settings["show_grid"]
 
             # Update canvas settings
             grid_color = QColor(*self.project.rasterization_grid_color)
             self.canvas.set_rasterization_settings(
                 self.project.rasterization_enabled,
                 grid_color,
-                self.project.rasterization_scale_threshold
+                self.project.rasterization_scale_threshold,
+                self.project.rasterization_show_grid
             )
 
             # Update UI
@@ -2099,7 +2103,8 @@ class MainWindow(QMainWindow):
             self.canvas.set_rasterization_settings(
                 self.project.rasterization_enabled,
                 grid_color,
-                self.project.rasterization_scale_threshold
+                self.project.rasterization_scale_threshold,
+                self.project.rasterization_show_grid
             )
             self.update_rasterization_ui()
 
