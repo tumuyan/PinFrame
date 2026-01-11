@@ -2,7 +2,8 @@ import os
 import math
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel, 
                              QDoubleSpinBox, QGroupBox, QSpinBox, QPushButton, 
-                             QGridLayout, QCheckBox, QRadioButton, QButtonGroup)
+                             QGridLayout, QCheckBox, QRadioButton, QButtonGroup,
+                             QScrollArea)
 from PyQt6.QtCore import Qt, pyqtSignal, QRect, QTimer, QPointF
 from PyQt6.QtCore import Qt, pyqtSignal, QRect, QTimer, QPointF, QRectF
 from PyQt6.QtGui import QImage, QPixmap, QPainter, QColor, QTransform
@@ -39,7 +40,28 @@ class PropertyPanel(QWidget):
         self.repeat_mode = None # "repeat" or "rev"
         self.repeat_interval = 250
         
-        layout = QVBoxLayout(self)
+        # Main Layout for the PropertyPanel itself
+        main_layout = QVBoxLayout(self)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        
+        # Scroll Area Setup
+        self.scroll_area = QScrollArea(self)
+        self.scroll_area.setWidgetResizable(True)
+        self.scroll_area.setFrameShape(QScrollArea.Shape.NoFrame)
+        self.scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        
+        # Container Widget for all property controls
+        self.container = QWidget()
+        self.container.setObjectName("PropertyPanelContainer")
+        self.scroll_area.setWidget(self.container)
+        
+        # Original layout now applied to the container
+        layout = QVBoxLayout(self.container)
+        
+        main_layout.addWidget(self.scroll_area)
+        
+        # self.setMinimumHeight(200) # Removed in favor of scrolling
+        self.setMinimumWidth(300)
         
         # Preview
         self.preview_label = QLabel(i18n.t("msg_no_selection"))

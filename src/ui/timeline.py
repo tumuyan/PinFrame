@@ -83,6 +83,7 @@ class TimelineWidget(QTreeWidget):
         
         self.reference_frame_data = None
         self.is_dark_theme = True # Default to dark
+        self.setMinimumHeight(120)
 
     def block_selection_signals(self, block: bool):
         """

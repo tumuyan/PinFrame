@@ -200,6 +200,14 @@ class MainWindow(QMainWindow):
                     background-color: #252526;
                     color: #CCCCCC;
                 }
+                QMainWindow::separator {
+                    background-color: #333333;
+                    width: 4px;
+                    height: 4px;
+                }
+                QMainWindow::separator:hover {
+                    background-color: #007ACC;
+                }
                 QDockWidget {
                     background-color: #2D2D2D;
                     color: #CCCCCC;
@@ -337,6 +345,14 @@ class MainWindow(QMainWindow):
                     background-color: #F3F3F3;
                     color: #333333;
                 }
+                QMainWindow::separator {
+                    background-color: #CCCCCC;
+                    width: 4px;
+                    height: 4px;
+                }
+                QMainWindow::separator:hover {
+                    background-color: #007ACC;
+                }
                 QDockWidget {
                     background-color: #E0E0E0;
                     color: #333333;
@@ -468,6 +484,8 @@ class MainWindow(QMainWindow):
         
         # Update specific widget styles that might need override
         self.canvas.update()
+        self.timeline.update()
+        self.property_panel.update()
         self.property_panel.update_preview()
 
     def update_title(self):
