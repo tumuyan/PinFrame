@@ -98,12 +98,6 @@ class ProjectData:
     export_bg_color: Tuple[int, int, int, int] = (0, 0, 0, 0)
     export_range_mode: str = "all" # "all", "selected", "custom"
     export_custom_range: str = ""
-    
-    # Rasterization Settings
-    rasterization_enabled: bool = False
-    rasterization_show_grid: bool = True
-    rasterization_grid_color: Tuple[int, int, int] = (128, 128, 128)
-    rasterization_scale_threshold: float = 5.0
 
     def to_json(self, project_file_path: Optional[str] = None):
         base_dir = os.path.abspath(os.path.dirname(project_file_path)) if project_file_path else None
