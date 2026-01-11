@@ -62,7 +62,7 @@ class FrameData:
                 if os.path.exists(test_path):
                     file_path = test_path
                 else:
-                    # Also try preserving the relative structure if possible? 
+                    # Also try to preserve the relative structure if possible? 
                     # Complex, but let's stick to basics for now.
                     pass
         data_target_res = data.get("target_resolution", None)
@@ -98,6 +98,12 @@ class ProjectData:
     export_bg_color: Tuple[int, int, int, int] = (0, 0, 0, 0)
     export_range_mode: str = "all" # "all", "selected", "custom"
     export_custom_range: str = ""
+    
+    # Rasterization Settings
+    rasterization_enabled: bool = False
+    rasterization_show_grid: bool = True
+    rasterization_grid_color: Tuple[int, int, int] = (128, 128, 128)
+    rasterization_scale_threshold: float = 5.0
 
     def to_json(self, project_file_path: Optional[str] = None):
         base_dir = os.path.abspath(os.path.dirname(project_file_path)) if project_file_path else None
@@ -138,4 +144,5 @@ class ProjectData:
         project.export_bg_color = tuple(data.get("export_bg_color", (0, 0, 0, 0)))
         project.export_range_mode = data.get("export_range_mode", "all")
         project.export_custom_range = data.get("export_custom_range", "")
+        
         return project
