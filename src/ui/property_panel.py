@@ -378,10 +378,19 @@ class PropertyPanel(QWidget):
             
             # Sync visual anchor to canvas
             if self.anchor_mode == self.ANCHOR_CUSTOM_IMAGE:
-                # Follow image translation
+                # Follow image translation AND rotation
                 if first:
                     frame_pos = QPointF(first.position[0], first.position[1])
-                    self.custom_anchor_pos = frame_pos + self.custom_image_relative_offset
+                    # Rotate local offset back to global space
+                    rad = math.radians(first.rotation)
+                    cos_a = math.cos(rad)
+                    sin_a = math.sin(rad)
+                    lx = self.custom_image_relative_offset.x()
+                    ly = self.custom_image_relative_offset.y()
+                    gx = lx * cos_a - ly * sin_a
+                    gy = lx * sin_a + ly * cos_a
+                    
+                    self.custom_anchor_pos = frame_pos + QPointF(gx, gy)
                     self.update_custom_anchor_ui()
                     self.custom_anchor_changed.emit(self.custom_anchor_pos)
             elif self.anchor_mode == self.ANCHOR_CUSTOM_CANVAS:
@@ -466,7 +475,15 @@ class PropertyPanel(QWidget):
         # Update the local offset based on current anchor and frame position
         if self.anchor_mode == self.ANCHOR_CUSTOM_IMAGE and self.frame_data:
             frame_pos = QPointF(self.frame_data.position[0], self.frame_data.position[1])
-            self.custom_image_relative_offset = self.custom_anchor_pos - frame_pos
+            global_offset = self.custom_anchor_pos - frame_pos
+            
+            # Rotate global offset by -rotation to get local offset
+            rad = math.radians(-self.frame_data.rotation)
+            cos_a = math.cos(rad)
+            sin_a = math.sin(rad)
+            lx = global_offset.x() * cos_a - global_offset.y() * sin_a
+            ly = global_offset.x() * sin_a + global_offset.y() * cos_a
+            self.custom_image_relative_offset = QPointF(lx, ly)
 
     def on_anchor_mode_changed(self, id, checked):
         if not checked: return
