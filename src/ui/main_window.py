@@ -94,10 +94,27 @@ class MainWindow(QMainWindow):
         
         self.last_relative_offset = (0.0, 0.0)
 
+        # Load global rasterization settings
+        self.project.rasterization_enabled = self.settings.value("raster_enabled", False, type=bool)
+        self.project.rasterization_show_grid = self.settings.value("raster_show_grid", True, type=bool)
+        grid_color_str = self.settings.value("raster_grid_color", "128,128,128")
+        self.project.rasterization_grid_color = tuple(map(int, grid_color_str.split(',')))
+        self.project.rasterization_scale_threshold = float(self.settings.value("raster_scale_threshold", 5.0))
+
         # Menus & Toolbar
         self.create_actions()
         self.create_menus()
         self.create_toolbar()
+        
+        # Apply initial raster settings to canvas
+        grid_color = QColor(*self.project.rasterization_grid_color)
+        self.canvas.set_rasterization_settings(
+            self.project.rasterization_enabled,
+            grid_color,
+            self.project.rasterization_scale_threshold,
+            self.project.rasterization_show_grid
+        )
+        self.update_rasterization_ui()
         
         # Playback
         self.timer = QTimer()
@@ -1423,6 +1440,9 @@ class MainWindow(QMainWindow):
             # Called from action with checked state
             self.project.rasterization_enabled = checked
 
+        # Save to global settings
+        self.settings.setValue("raster_enabled", self.project.rasterization_enabled)
+
         # Update canvas settings
         grid_color = QColor(*self.project.rasterization_grid_color)
         self.canvas.set_rasterization_settings(
@@ -1434,7 +1454,6 @@ class MainWindow(QMainWindow):
 
         # Update UI
         self.update_rasterization_ui()
-        self.mark_dirty()
 
     def configure_rasterization_settings(self):
         """Open rasterization settings dialog."""
@@ -1452,6 +1471,13 @@ class MainWindow(QMainWindow):
             self.project.rasterization_scale_threshold = settings["scale_threshold"]
             self.project.rasterization_show_grid = settings["show_grid"]
 
+            # Save to global settings
+            self.settings.setValue("raster_enabled", self.project.rasterization_enabled)
+            self.settings.setValue("raster_show_grid", self.project.rasterization_show_grid)
+            grid_color_str = ",".join(map(str, self.project.rasterization_grid_color))
+            self.settings.setValue("raster_grid_color", grid_color_str)
+            self.settings.setValue("raster_scale_threshold", self.project.rasterization_scale_threshold)
+
             # Update canvas settings
             grid_color = QColor(*self.project.rasterization_grid_color)
             self.canvas.set_rasterization_settings(
@@ -1463,7 +1489,6 @@ class MainWindow(QMainWindow):
 
             # Update UI
             self.update_rasterization_ui()
-            self.mark_dirty()
 
     def update_rasterization_ui(self):
         """Update rasterization button state."""

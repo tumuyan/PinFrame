@@ -120,13 +120,7 @@ class ProjectData:
             "export_sheet_padding": self.export_sheet_padding,
             "export_bg_color": self.export_bg_color,
             "export_range_mode": self.export_range_mode,
-            "export_custom_range": self.export_custom_range,
-            "rasterization_settings": {
-                "enabled": self.rasterization_enabled,
-                "show_grid": self.rasterization_show_grid,
-                "grid_color": self.rasterization_grid_color,
-                "scale_threshold": self.rasterization_scale_threshold
-            }
+            "export_custom_range": self.export_custom_range
         }, indent=4)
 
     @classmethod
@@ -150,12 +144,5 @@ class ProjectData:
         project.export_bg_color = tuple(data.get("export_bg_color", (0, 0, 0, 0)))
         project.export_range_mode = data.get("export_range_mode", "all")
         project.export_custom_range = data.get("export_custom_range", "")
-        
-        # Load rasterization settings
-        raster_settings = data.get("rasterization_settings", {})
-        project.rasterization_enabled = raster_settings.get("enabled", False)
-        project.rasterization_show_grid = raster_settings.get("show_grid", True)
-        project.rasterization_grid_color = tuple(raster_settings.get("grid_color", (128, 128, 128)))
-        project.rasterization_scale_threshold = raster_settings.get("scale_threshold", 5.0)
         
         return project
