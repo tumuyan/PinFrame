@@ -9,7 +9,7 @@ import subprocess
 import sys
 import os
 
-from core.version import VERSION as BUILD_VERSION, COMPILE_DATE as BUILD_DATE
+from core.version import VERSION as BUILD_VERSION, COMPILE_DATE as BUILD_DATE, REPO_URL as BUILD_REPO_URL
 from model.project_data import ProjectData, FrameData
 from ui.canvas import CanvasWidget
 from ui.timeline import TimelineWidget
@@ -939,11 +939,14 @@ class MainWindow(QMainWindow):
 
     def open_repo_url(self):
         try:
-            url = subprocess.check_output(
-                ['git', 'remote', 'get-url', 'origin'],
-                stderr=subprocess.DEVNULL,
-                text=True
-            ).strip()
+            if getattr(self, '_git_available', False):
+                url = subprocess.check_output(
+                    ['git', 'remote', 'get-url', 'origin'],
+                    stderr=subprocess.DEVNULL,
+                    text=True
+                ).strip()
+            else:
+                url = BUILD_REPO_URL
             
             # Sanitize URL: remove username/password
             parsed_url = QUrl(url)
