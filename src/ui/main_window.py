@@ -4,7 +4,10 @@ from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QH
                              QLabel, QPushButton, QInputDialog, QTreeWidgetItem, QMenu, QStyle,
                              QMessageBox)
 from PyQt6.QtGui import QAction, QIcon, QKeySequence, QImage, QActionGroup, QImageReader, QDesktopServices, QColor
-from PyQt6.QtCore import Qt, QTimer, QSettings, QByteArray, QUrl
+from PyQt6.QtCore import Qt, QTimer, QSettings, QByteArray, QUrl, QDateTime, QLocale
+import subprocess
+import sys
+import os
 
 from model.project_data import ProjectData, FrameData
 from ui.canvas import CanvasWidget
@@ -17,7 +20,6 @@ from ui.reference_settings import ReferenceSettingsDialog
 from ui.raster_settings import RasterizationSettingsDialog
 from ui.utils.icon_generator import IconGenerator
 from i18n.manager import i18n
-import os
 
 class MainWindow(QMainWindow):
     def __init__(self):
@@ -786,6 +788,18 @@ class MainWindow(QMainWindow):
         self.raster_settings_action.setIcon(settings_icon)
         self.raster_settings_action.triggered.connect(self.configure_rasterization_settings)
 
+        # About Actions
+        self.repo_action = QAction(i18n.t("action_repo"), self)
+        self.repo_action.triggered.connect(self.open_repo_url)
+        
+        version_str = self.get_git_version()
+        self.version_action = QAction(i18n.t("action_version").format(version=version_str), self)
+        self.version_action.setEnabled(False)
+        
+        compile_date = self.get_compile_date()
+        self.compile_date_action = QAction(i18n.t("action_compile_date").format(date=compile_date), self)
+        self.compile_date_action.setEnabled(False)
+
     def update_wheel_toggle_ui(self):
         # Sync the master toggle in toolbar based on current canvas mode
         mode = self.canvas.wheel_mode
@@ -915,6 +929,75 @@ class MainWindow(QMainWindow):
         lang_menu = view_menu.addMenu(i18n.t("menu_lang"))
         lang_menu.addAction(self.lang_zh_action)
         lang_menu.addAction(self.lang_en_action)
+
+        # About Menu
+        about_menu = menubar.addMenu(i18n.t("menu_about"))
+        about_menu.addAction(self.repo_action)
+        about_menu.addAction(self.version_action)
+        about_menu.addAction(self.compile_date_action)
+
+    def open_repo_url(self):
+        try:
+            url = subprocess.check_output(
+                ['git', 'remote', 'get-url', 'origin'],
+                stderr=subprocess.DEVNULL,
+                text=True
+            ).strip()
+            
+            # Sanitize URL: remove username/password
+            parsed_url = QUrl(url)
+            if parsed_url.userName():
+                parsed_url.setUserName("")
+            if parsed_url.password():
+                parsed_url.setPassword("")
+            
+            QDesktopServices.openUrl(parsed_url)
+        except Exception:
+            # Fallback
+            QDesktopServices.openUrl(QUrl("https://github.com/tumuyan/PinFrame"))
+
+    def get_git_version(self):
+        try:
+            # Get output from git describe --tags --long
+            # Result format: tag-count-gHash
+            output = subprocess.check_output(
+                ['git', 'describe', '--tags', '--long'],
+                stderr=subprocess.DEVNULL,
+                text=True
+            ).strip()
+            
+            parts = output.rsplit('-', 2)
+            if len(parts) == 3:
+                tag = parts[0]
+                count = parts[1]
+                if count == '0':
+                    return tag
+                else:
+                    return f"{tag}/{count}"
+            return output
+        except Exception:
+            return "Unknown"
+
+    def get_compile_date(self):
+        try:
+            # Use modification time of the main file as a proxy for compile date
+            import sys
+            if getattr(sys, 'frozen', False):
+                # If running as a bundled executable
+                path = sys.executable
+            else:
+                # If running from source
+                # Get the path of main.py which is two levels up from this file (src/ui/main_window.py)
+                path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "main.py")
+            
+            if os.path.exists(path):
+                mtime = os.path.getmtime(path)
+                dt = QDateTime.fromSecsSinceEpoch(int(mtime))
+            else:
+                dt = QDateTime.currentDateTime()
+            return QLocale.system().toString(dt, QLocale.FormatType.LongFormat)
+        except Exception:
+            return QLocale.system().toString(QDateTime.currentDateTime(), QLocale.FormatType.LongFormat)
 
     def create_toolbar(self):
         # Remove and delete existing toolbar(s) to avoid duplication on language change
@@ -2444,6 +2527,13 @@ class MainWindow(QMainWindow):
         # Misc
         self.theme_dark_action.setText(i18n.t("theme_dark"))
         self.theme_light_action.setText(i18n.t("theme_light"))
+
+        # About
+        self.repo_action.setText(i18n.t("action_repo"))
+        version_str = self.get_git_version()
+        self.version_action.setText(i18n.t("action_version").format(version=version_str))
+        compile_date = self.get_compile_date()
+        self.compile_date_action.setText(i18n.t("action_compile_date").format(date=compile_date))
         
         # Repeat Actions
         for ms, action in self.repeat_actions.items():
