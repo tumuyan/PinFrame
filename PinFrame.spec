@@ -18,7 +18,7 @@ def update_version_info():
     except:
         version_str = "unknown"
 
-    compile_date = datetime.datetime.now().astimezone().isoformat(timespec='minutes')
+    compile_date = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec='minutes')
     
     version_file = os.path.join('src', 'core', 'version.py')
     with open(version_file, 'w') as f:
