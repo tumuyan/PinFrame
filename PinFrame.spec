@@ -19,13 +19,13 @@ def update_version_info():
     except:
         repo_url = "https://github.com/tumuyan/PinFrame"
 
-    compile_date = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec='minutes')
+    build_date = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec='minutes')
     
     version_file = os.path.join('src', 'core', 'version.py')
     with open(version_file, 'w') as f:
         f.write(f'VERSION = "{version_str}"\n')
         f.write(f'REPO_URL = "{repo_url}"\n')
-        f.write(f'COMPILE_DATE = "{compile_date}"\n')
+        f.write(f'BUILD_DATE = "{build_date}"\n')
 
 update_version_info()
 

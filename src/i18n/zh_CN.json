@@ -253,5 +253,5 @@
     "menu_about": "关于 (&A)",
     "action_repo": "项目仓库",
     "action_version": "版本: {version}",
-    "action_compile_date": "编译日期: {date}"
+    "action_build_date": "构建时间: {date}"
 }

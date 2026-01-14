@@ -253,5 +253,5 @@
     "menu_about": "About (&A)",
     "action_repo": "Project Repository",
     "action_version": "Version: {version}",
-    "action_compile_date": "Compile Date: {date}"
+    "action_build_date": "Build Date: {date}"
 }

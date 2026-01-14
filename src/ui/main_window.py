@@ -9,7 +9,7 @@ import subprocess
 import sys
 import os
 
-from core.version import VERSION as BUILD_VERSION, COMPILE_DATE as BUILD_DATE, REPO_URL as BUILD_REPO_URL
+from core.version import VERSION as BUILD_VERSION, BUILD_DATE, REPO_URL as BUILD_REPO_URL
 from model.project_data import ProjectData, FrameData
 from ui.canvas import CanvasWidget
 from ui.timeline import TimelineWidget
@@ -797,9 +797,9 @@ class MainWindow(QMainWindow):
         self.version_action = QAction(i18n.t("action_version").format(version=version_str), self)
         self.version_action.setEnabled(False)
         
-        compile_date = self.get_compile_date()
-        self.compile_date_action = QAction(i18n.t("action_compile_date").format(date=compile_date), self)
-        self.compile_date_action.setEnabled(False)
+        compile_date = self.get_build_date()
+        self.build_date_action = QAction(i18n.t("action_build_date").format(date=compile_date), self)
+        self.build_date_action.setEnabled(False)
 
     def update_wheel_toggle_ui(self):
         # Sync the master toggle in toolbar based on current canvas mode
@@ -935,26 +935,11 @@ class MainWindow(QMainWindow):
         about_menu = menubar.addMenu(i18n.t("menu_about"))
         about_menu.addAction(self.repo_action)
         about_menu.addAction(self.version_action)
-        about_menu.addAction(self.compile_date_action)
+        about_menu.addAction(self.build_date_action)
 
     def open_repo_url(self):
         try:
-            if getattr(self, '_git_available', False):
-                url = subprocess.check_output(
-                    ['git', 'remote', 'get-url', 'origin'],
-                    stderr=subprocess.DEVNULL,
-                    text=True
-                ).strip()
-            else:
-                url = BUILD_REPO_URL
-            
-            # Sanitize URL: remove username/password
-            parsed_url = QUrl(url)
-            if parsed_url.userName():
-                parsed_url.setUserName("")
-            if parsed_url.password():
-                parsed_url.setPassword("")
-            
+            parsed_url = QUrl(BUILD_REPO_URL)
             QDesktopServices.openUrl(parsed_url)
         except Exception:
             # Fallback
@@ -973,7 +958,7 @@ class MainWindow(QMainWindow):
         except Exception:
             return BUILD_VERSION
 
-    def get_compile_date(self):
+    def get_build_date(self):
         if getattr(self, '_git_available', False):
             dt = QDateTime.currentDateTime()
         else:
@@ -2520,8 +2505,8 @@ class MainWindow(QMainWindow):
         self.repo_action.setText(i18n.t("action_repo"))
         version_str = self.get_git_version()
         self.version_action.setText(i18n.t("action_version").format(version=version_str))
-        compile_date = self.get_compile_date()
-        self.compile_date_action.setText(i18n.t("action_compile_date").format(date=compile_date))
+        build_date = self.get_build_date()
+        self.build_date_action.setText(i18n.t("action_build_date").format(date=build_date))
         
         # Repeat Actions
         for ms, action in self.repeat_actions.items():

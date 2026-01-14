@@ -1,3 +1,3 @@
-VERSION = "v0.4.1-4-ga16e0fc"
+VERSION = "v0.4.1-6-gce17dec"
 REPO_URL = "https://github.com/tumuyan/PinFrame.git"
-COMPILE_DATE = "2024-01-14T17:40+00:00"
+BUILD_DATE = "2026-01-14T18:53+00:00"
