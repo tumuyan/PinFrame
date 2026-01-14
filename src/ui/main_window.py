@@ -958,18 +958,31 @@ class MainWindow(QMainWindow):
             QDesktopServices.openUrl(QUrl("https://github.com/tumuyan/PinFrame"))
 
     def get_git_version(self):
-        return BUILD_VERSION
+        self._git_available = False
+        try:
+            version = subprocess.check_output(
+                ['git', 'describe', '--tags', '--long'],
+                stderr=subprocess.DEVNULL,
+                text=True
+            ).strip()
+            self._git_available = True
+            return version
+        except Exception:
+            return BUILD_VERSION
 
     def get_compile_date(self):
-        try:
-            dt = QDateTime.fromString(BUILD_DATE, Qt.DateFormat.ISODate)
-            if not dt.isValid():
+        if getattr(self, '_git_available', False):
+            dt = QDateTime.currentDateTime()
+        else:
+            try:
+                dt = QDateTime.fromString(BUILD_DATE, Qt.DateFormat.ISODate)
+                if not dt.isValid():
+                    dt = QDateTime.currentDateTime()
+                else:
+                    dt = dt.toLocalTime()
+            except Exception:
                 dt = QDateTime.currentDateTime()
-            else:
-                dt = dt.toLocalTime()
-            return QLocale.system().toString(dt, QLocale.FormatType.LongFormat)
-        except Exception:
-            return QLocale.system().toString(QDateTime.currentDateTime(), QLocale.FormatType.LongFormat)
+        return QLocale.system().toString(dt, QLocale.FormatType.LongFormat)
 
     def create_toolbar(self):
         # Remove and delete existing toolbar(s) to avoid duplication on language change
