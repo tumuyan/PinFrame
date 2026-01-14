@@ -965,6 +965,8 @@ class MainWindow(QMainWindow):
             dt = QDateTime.fromString(BUILD_DATE, Qt.DateFormat.ISODate)
             if not dt.isValid():
                 dt = QDateTime.currentDateTime()
+            else:
+                dt = dt.toLocalTime()
             return QLocale.system().toString(dt, QLocale.FormatType.LongFormat)
         except Exception:
             return QLocale.system().toString(QDateTime.currentDateTime(), QLocale.FormatType.LongFormat)

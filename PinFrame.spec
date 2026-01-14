@@ -12,13 +12,13 @@ def update_version_info():
             if count == '0':
                 version_str = tag
             else:
-                version_str = f"{tag}/{count}"
+                version_str = f"{tag}-{count}"
         else:
             version_str = version
     except:
         version_str = "unknown"
 
-    compile_date = datetime.datetime.now().strftime('%Y-%m-%dT%H:%M:%S')
+    compile_date = datetime.datetime.now().astimezone().isoformat(timespec='minutes')
     
     version_file = os.path.join('src', 'core', 'version.py')
     with open(version_file, 'w') as f:
