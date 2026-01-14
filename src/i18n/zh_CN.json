@@ -249,5 +249,9 @@
     "raster_show_grid": "显示格线",
     "raster_grid_color": "格线颜色:",
     "raster_scale_threshold": "倍率阈值:",
-    "btn_raster_settings": "像素化设置"
+    "btn_raster_settings": "像素化设置",
+    "menu_about": "关于 (&A)",
+    "action_repo": "项目仓库",
+    "action_version": "版本: {version}",
+    "action_build_date": "构建时间: {date}"
 }

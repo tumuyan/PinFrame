@@ -1,5 +1,33 @@
 # -*- mode: python ; coding: utf-8 -*-
 import os
+import subprocess
+import datetime
+
+def update_version_info():
+    try:
+        version_str = subprocess.check_output(['git', 'describe', '--tags', '--long'], text=True).strip()
+    except:
+        version_str = "unknown"
+
+    try:
+        repo_url = subprocess.check_output(['git', 'remote', 'get-url', 'origin'], text=True).strip()
+        from urllib.parse import urlparse, urlunparse
+        parsed = urlparse(repo_url)
+        if parsed.username or parsed.password:
+            parsed = parsed._replace(netloc=parsed.hostname + (f":{parsed.port}" if parsed.port else ""))
+            repo_url = urlunparse(parsed)
+    except:
+        repo_url = "https://github.com/tumuyan/PinFrame"
+
+    build_date = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec='minutes')
+    
+    version_file = os.path.join('src', 'core', 'version.py')
+    with open(version_file, 'w') as f:
+        f.write(f'VERSION = "{version_str}"\n')
+        f.write(f'REPO_URL = "{repo_url}"\n')
+        f.write(f'BUILD_DATE = "{build_date}"\n')
+
+update_version_info()
 
 a = Analysis(
     ['main.py'],

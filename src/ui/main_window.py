@@ -4,8 +4,12 @@ from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QH
                              QLabel, QPushButton, QInputDialog, QTreeWidgetItem, QMenu, QStyle,
                              QMessageBox)
 from PyQt6.QtGui import QAction, QIcon, QKeySequence, QImage, QActionGroup, QImageReader, QDesktopServices, QColor
-from PyQt6.QtCore import Qt, QTimer, QSettings, QByteArray, QUrl
+from PyQt6.QtCore import Qt, QTimer, QSettings, QByteArray, QUrl, QDateTime, QLocale
+import subprocess
+import sys
+import os
 
+from core.version import VERSION as BUILD_VERSION, BUILD_DATE, REPO_URL as BUILD_REPO_URL
 from model.project_data import ProjectData, FrameData
 from ui.canvas import CanvasWidget
 from ui.timeline import TimelineWidget
@@ -17,7 +21,6 @@ from ui.reference_settings import ReferenceSettingsDialog
 from ui.raster_settings import RasterizationSettingsDialog
 from ui.utils.icon_generator import IconGenerator
 from i18n.manager import i18n
-import os
 
 class MainWindow(QMainWindow):
     def __init__(self):
@@ -786,6 +789,18 @@ class MainWindow(QMainWindow):
         self.raster_settings_action.setIcon(settings_icon)
         self.raster_settings_action.triggered.connect(self.configure_rasterization_settings)
 
+        # About Actions
+        self.repo_action = QAction(i18n.t("action_repo"), self)
+        self.repo_action.triggered.connect(self.open_repo_url)
+        
+        version_str = self.get_git_version()
+        self.version_action = QAction(i18n.t("action_version").format(version=version_str), self)
+        self.version_action.setEnabled(False)
+        
+        compile_date = self.get_build_date()
+        self.build_date_action = QAction(i18n.t("action_build_date").format(date=compile_date), self)
+        self.build_date_action.setEnabled(False)
+
     def update_wheel_toggle_ui(self):
         # Sync the master toggle in toolbar based on current canvas mode
         mode = self.canvas.wheel_mode
@@ -915,6 +930,47 @@ class MainWindow(QMainWindow):
         lang_menu = view_menu.addMenu(i18n.t("menu_lang"))
         lang_menu.addAction(self.lang_zh_action)
         lang_menu.addAction(self.lang_en_action)
+
+        # About Menu
+        about_menu = menubar.addMenu(i18n.t("menu_about"))
+        about_menu.addAction(self.repo_action)
+        about_menu.addAction(self.version_action)
+        about_menu.addAction(self.build_date_action)
+
+    def open_repo_url(self):
+        try:
+            parsed_url = QUrl(BUILD_REPO_URL)
+            QDesktopServices.openUrl(parsed_url)
+        except Exception:
+            # Fallback
+            QDesktopServices.openUrl(QUrl("https://github.com/tumuyan/PinFrame"))
+
+    def get_git_version(self):
+        self._git_available = False
+        try:
+            version = subprocess.check_output(
+                ['git', 'describe', '--tags', '--long'],
+                stderr=subprocess.DEVNULL,
+                text=True
+            ).strip()
+            self._git_available = True
+            return version
+        except Exception:
+            return BUILD_VERSION
+
+    def get_build_date(self):
+        if getattr(self, '_git_available', False):
+            dt = QDateTime.currentDateTime()
+        else:
+            try:
+                dt = QDateTime.fromString(BUILD_DATE, Qt.DateFormat.ISODate)
+                if not dt.isValid():
+                    dt = QDateTime.currentDateTime()
+                else:
+                    dt = dt.toLocalTime()
+            except Exception:
+                dt = QDateTime.currentDateTime()
+        return QLocale.system().toString(dt, QLocale.FormatType.LongFormat)
 
     def create_toolbar(self):
         # Remove and delete existing toolbar(s) to avoid duplication on language change
@@ -2444,6 +2500,13 @@ class MainWindow(QMainWindow):
         # Misc
         self.theme_dark_action.setText(i18n.t("theme_dark"))
         self.theme_light_action.setText(i18n.t("theme_light"))
+
+        # About
+        self.repo_action.setText(i18n.t("action_repo"))
+        version_str = self.get_git_version()
+        self.version_action.setText(i18n.t("action_version").format(version=version_str))
+        build_date = self.get_build_date()
+        self.build_date_action.setText(i18n.t("action_build_date").format(date=build_date))
         
         # Repeat Actions
         for ms, action in self.repeat_actions.items():

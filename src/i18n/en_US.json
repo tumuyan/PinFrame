@@ -249,5 +249,9 @@
     "raster_show_grid": "Show Grid",
     "raster_grid_color": "Grid Color:",
     "raster_scale_threshold": "Scale Threshold:",
-    "btn_raster_settings": "Pixel Settings"
+    "btn_raster_settings": "Pixel Settings",
+    "menu_about": "About (&A)",
+    "action_repo": "Project Repository",
+    "action_version": "Version: {version}",
+    "action_build_date": "Build Date: {date}"
 }
