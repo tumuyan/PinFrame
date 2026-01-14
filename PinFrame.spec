@@ -1,5 +1,31 @@
 # -*- mode: python ; coding: utf-8 -*-
 import os
+import subprocess
+import datetime
+
+def update_version_info():
+    try:
+        version = subprocess.check_output(['git', 'describe', '--tags', '--long'], text=True).strip()
+        parts = version.rsplit('-', 2)
+        if len(parts) == 3:
+            tag, count, _ = parts
+            if count == '0':
+                version_str = tag
+            else:
+                version_str = f"{tag}/{count}"
+        else:
+            version_str = version
+    except:
+        version_str = "unknown"
+
+    compile_date = datetime.datetime.now().strftime('%Y-%m-%dT%H:%M:%S')
+    
+    version_file = os.path.join('src', 'core', 'version.py')
+    with open(version_file, 'w') as f:
+        f.write(f'VERSION = "{version_str}"\n')
+        f.write(f'COMPILE_DATE = "{compile_date}"\n')
+
+update_version_info()
 
 a = Analysis(
     ['main.py'],
