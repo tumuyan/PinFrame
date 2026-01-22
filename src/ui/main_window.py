@@ -789,6 +789,22 @@ class MainWindow(QMainWindow):
         self.raster_settings_action.setIcon(settings_icon)
         self.raster_settings_action.triggered.connect(self.configure_rasterization_settings)
 
+        # Timeline View Actions
+        self.timeline_view_group = QActionGroup(self)
+        
+        self.list_view_action = QAction(i18n.t("action_list_view"), self)
+        self.list_view_action.setCheckable(True)
+        self.list_view_action.triggered.connect(self.switch_to_list_view)
+        self.timeline_view_group.addAction(self.list_view_action)
+        
+        self.grid_view_action = QAction(i18n.t("action_grid_view"), self)
+        self.grid_view_action.setCheckable(True)
+        self.grid_view_action.triggered.connect(self.switch_to_grid_view)
+        self.timeline_view_group.addAction(self.grid_view_action)
+        
+        self.thumbnail_size_action = QAction(i18n.t("action_thumbnail_size"), self)
+        self.thumbnail_size_action.triggered.connect(self.set_thumbnail_size)
+
         # About Actions
         self.repo_action = QAction(i18n.t("action_repo"), self)
         self.repo_action.triggered.connect(self.open_repo_url)
@@ -920,6 +936,15 @@ class MainWindow(QMainWindow):
         self.background_menu = view_menu.addMenu(i18n.t("menu_background"))
         for action in self.bg_actions.values():
             self.background_menu.addAction(action)
+        
+        view_menu.addSeparator()
+        
+        # Timeline View Mode Submenu
+        timeline_view_menu = view_menu.addMenu(i18n.t("menu_timeline_view"))
+        timeline_view_menu.addAction(self.list_view_action)
+        timeline_view_menu.addAction(self.grid_view_action)
+        timeline_view_menu.addSeparator()
+        timeline_view_menu.addAction(self.thumbnail_size_action)
         
         view_menu.addSeparator()
         
@@ -2218,6 +2243,10 @@ class MainWindow(QMainWindow):
             self.update_title()
             self.update_onion_state()
             self.update_menu_state()
+            
+            # Apply timeline view settings
+            self.apply_timeline_view_settings()
+            
             self.statusBar().showMessage(i18n.t("msg_project_loaded").format(path=path), 3000)
         except Exception as e:
             msg_box = QMessageBox(self)
@@ -2680,10 +2709,13 @@ class MainWindow(QMainWindow):
     def _get_export_indices(self, range_mode, custom_range):
         """Helper to get list of indices based on mode."""
         if range_mode == "selected":
-            selected = self.timeline.selectedItems()
+            selected_frames = self.timeline.get_selected_frames()
             indices = []
-            for item in selected:
-                indices.append(self.timeline.indexOfTopLevelItem(item))
+            for frame_data in selected_frames:
+                try:
+                    indices.append(self.project.frames.index(frame_data))
+                except ValueError:
+                    pass
             return sorted(indices)
         elif range_mode == "custom":
             from utils.exporter import Exporter
@@ -2890,3 +2922,94 @@ class MainWindow(QMainWindow):
         self.recent_projects = []
         self.save_settings()
         self.update_recent_projects_menu()
+
+    # Timeline View Management
+    def switch_to_list_view(self):
+        """切换到列表视图"""
+        from model.project_data import TimelineViewMode
+        self.timeline.set_view_mode(TimelineViewMode.LIST)
+        self.project.timeline_view_mode = TimelineViewMode.LIST
+        self.list_view_action.setChecked(True)
+        self.grid_view_action.setChecked(False)
+        self.mark_dirty()
+
+    def switch_to_grid_view(self):
+        """切换到网格视图"""
+        from model.project_data import TimelineViewMode
+        self.timeline.set_view_mode(TimelineViewMode.GRID)
+        self.project.timeline_view_mode = TimelineViewMode.GRID
+        self.list_view_action.setChecked(False)
+        self.grid_view_action.setChecked(True)
+        self.mark_dirty()
+
+    def set_thumbnail_size(self):
+        """设置缩略图尺寸"""
+        from PyQt6.QtWidgets import QInputDialog, QSpinBox, QVBoxLayout, QLabel, QDialog, QDialogButtonBox, QPushButton
+        
+        dialog = QDialog(self)
+        dialog.setWindowTitle(i18n.t("msg_thumbnail_size"))
+        dialog.setModal(True)
+        dialog.resize(300, 150)
+        
+        layout = QVBoxLayout(dialog)
+        
+        # 说明标签
+        desc_label = QLabel(i18n.t("msg_thumbnail_size_desc"))
+        desc_label.setWordWrap(True)
+        layout.addWidget(desc_label)
+        
+        # 尺寸选择
+        spinbox = QSpinBox()
+        spinbox.setRange(32, 512)
+        spinbox.setSingleStep(16)
+        spinbox.setValue(self.project.grid_thumbnail_size)
+        spinbox.setSuffix(" px")
+        layout.addWidget(spinbox)
+        
+        # 预设按钮
+        presets_layout = QVBoxLayout()
+        layout.addLayout(presets_layout)
+        
+        presets = [
+            ("64x64", 64),
+            ("128x128", 128),
+            ("256x256", 256),
+            ("512x512", 512)
+        ]
+        
+        for name, size in presets:
+            btn = QPushButton(name)
+            btn.clicked.connect(lambda checked, s=size: spinbox.setValue(s))
+            presets_layout.addWidget(btn)
+        
+        # 按钮
+        button_box = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        button_box.accepted.connect(dialog.accept)
+        button_box.rejected.connect(dialog.reject)
+        layout.addWidget(button_box)
+        
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            new_size = spinbox.value()
+            if new_size != self.project.grid_thumbnail_size:
+                self.project.grid_thumbnail_size = new_size
+                self.timeline.set_thumbnail_size(new_size)
+                self.mark_dirty()
+
+    def apply_timeline_view_settings(self):
+        """应用时间轴视图设置"""
+        from model.project_data import TimelineViewMode
+        
+        # 设置视图模式
+        if self.project.timeline_view_mode == TimelineViewMode.LIST:
+            self.timeline.set_view_mode(TimelineViewMode.LIST)
+            self.list_view_action.setChecked(True)
+            self.grid_view_action.setChecked(False)
+        else:
+            self.timeline.set_view_mode(TimelineViewMode.GRID)
+            self.list_view_action.setChecked(False)
+            self.grid_view_action.setChecked(True)
+        
+        # 设置缩略图尺寸
+        self.timeline.set_thumbnail_size(self.project.grid_thumbnail_size)

@@ -2,6 +2,12 @@ import json
 import os
 from dataclasses import dataclass, field
 from typing import List, Tuple, Optional
+from enum import Enum
+
+class TimelineViewMode(Enum):
+    """Timeline view mode enumeration"""
+    LIST = "list"
+    GRID = "grid"
 
 @dataclass
 class FrameData:
@@ -99,6 +105,10 @@ class ProjectData:
     export_range_mode: str = "all" # "all", "selected", "custom"
     export_custom_range: str = ""
 
+    # Timeline View Settings
+    timeline_view_mode: TimelineViewMode = TimelineViewMode.LIST
+    grid_thumbnail_size: int = 128
+
     def to_json(self, project_file_path: Optional[str] = None):
         base_dir = os.path.abspath(os.path.dirname(project_file_path)) if project_file_path else None
         return json.dumps({
@@ -114,7 +124,9 @@ class ProjectData:
             "export_sheet_padding": self.export_sheet_padding,
             "export_bg_color": self.export_bg_color,
             "export_range_mode": self.export_range_mode,
-            "export_custom_range": self.export_custom_range
+            "export_custom_range": self.export_custom_range,
+            "timeline_view_mode": self.timeline_view_mode.value,
+            "grid_thumbnail_size": self.grid_thumbnail_size
         }, indent=4)
 
     @classmethod
@@ -138,5 +150,14 @@ class ProjectData:
         project.export_bg_color = tuple(data.get("export_bg_color", (0, 0, 0, 0)))
         project.export_range_mode = data.get("export_range_mode", "all")
         project.export_custom_range = data.get("export_custom_range", "")
+        
+        # Load timeline view settings
+        view_mode_str = data.get("timeline_view_mode", "list")
+        try:
+            project.timeline_view_mode = TimelineViewMode(view_mode_str)
+        except ValueError:
+            project.timeline_view_mode = TimelineViewMode.LIST
+            
+        project.grid_thumbnail_size = data.get("grid_thumbnail_size", 128)
         
         return project
