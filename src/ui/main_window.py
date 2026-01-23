@@ -19,6 +19,7 @@ from ui.export_dialog import ExportOptionsDialog
 from ui.onion_settings import OnionSettingsDialog
 from ui.reference_settings import ReferenceSettingsDialog
 from ui.raster_settings import RasterizationSettingsDialog
+from ui.timeline_settings_dialog import TimelineSettingsDialog
 from ui.utils.icon_generator import IconGenerator
 from i18n.manager import i18n
 
@@ -77,6 +78,9 @@ class MainWindow(QMainWindow):
         self.timeline.clear_reference_requested.connect(self.clear_reference_frame)
         self.timeline_dock.setWidget(self.timeline)
         self.addDockWidget(Qt.DockWidgetArea.BottomDockWidgetArea, self.timeline_dock)
+
+        # Set image cache reference for timeline grid view
+        self.timeline.set_image_cache(self.canvas.image_cache)
         
         # Dock Widget (Property Panel)
         self.property_dock = QDockWidget(i18n.t("dock_properties"), self)
@@ -121,7 +125,19 @@ class MainWindow(QMainWindow):
             self.raster_show_grid
         )
         self.update_rasterization_ui()
-        
+
+        # Load timeline settings
+        timeline_grid_enabled = self.settings.value("timeline_grid_view_enabled", False, type=bool)
+        timeline_thumb_width = self.settings.value("timeline_thumbnail_width", 120, type=int)
+        timeline_thumb_height = self.settings.value("timeline_thumbnail_height", 120, type=int)
+        timeline_filename_mode = self.settings.value("timeline_filename_line_mode", "single")
+        self.timeline.set_grid_view_config(
+            timeline_grid_enabled,
+            timeline_thumb_width,
+            timeline_thumb_height,
+            timeline_filename_mode
+        )
+
         # Playback
         self.timer = QTimer()
         self.timer.timeout.connect(self.next_frame)
@@ -649,6 +665,10 @@ class MainWindow(QMainWindow):
         # Reference Settings Action
         self.ref_settings_action = QAction(i18n.t("dlg_ref_settings"), self)
         self.ref_settings_action.triggered.connect(self.configure_reference_settings)
+
+        # Timeline Settings Action
+        self.timeline_settings_action = QAction(i18n.t("dialog_timeline_settings_title"), self)
+        self.timeline_settings_action.triggered.connect(self.configure_timeline_settings)
         
         # Set Reference Action
         self.set_ref_action = QAction(i18n.t("action_set_reference"), self)
@@ -907,6 +927,11 @@ class MainWindow(QMainWindow):
         view_menu.addAction(self.set_ref_action)
         view_menu.addAction(self.ref_settings_action)
         view_menu.addAction(self.clear_ref_action)
+
+        view_menu.addSeparator()
+
+        # Timeline Settings
+        view_menu.addAction(self.timeline_settings_action)
         
         view_menu.addSeparator()
         
@@ -2890,3 +2915,32 @@ class MainWindow(QMainWindow):
         self.recent_projects = []
         self.save_settings()
         self.update_recent_projects_menu()
+
+    def configure_timeline_settings(self):
+        """Open timeline settings dialog"""
+        # Load current settings
+        config = self.timeline.get_grid_view_config()
+
+        dlg = TimelineSettingsDialog(
+            self,
+            grid_view_enabled=config["grid_view_enabled"],
+            thumbnail_width=config["thumbnail_width"],
+            thumbnail_height=config["thumbnail_height"],
+            filename_line_mode=config["filename_line_mode"]
+        )
+
+        if dlg.exec():
+            # Apply new settings
+            settings = dlg.get_settings()
+            self.timeline.set_grid_view_config(
+                settings["grid_view_enabled"],
+                settings["thumbnail_width"],
+                settings["thumbnail_height"],
+                settings["filename_line_mode"]
+            )
+
+            # Save to QSettings for persistence
+            self.settings.setValue("timeline_grid_view_enabled", settings["grid_view_enabled"])
+            self.settings.setValue("timeline_thumbnail_width", settings["thumbnail_width"])
+            self.settings.setValue("timeline_thumbnail_height", settings["thumbnail_height"])
+            self.settings.setValue("timeline_filename_line_mode", settings["filename_line_mode"])

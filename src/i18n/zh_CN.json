@@ -253,5 +253,18 @@
     "menu_about": "关于 (&A)",
     "action_repo": "项目仓库",
     "action_version": "版本: {version}",
-    "action_build_date": "构建时间: {date}"
+    "action_build_date": "构建时间: {date}",
+    "dialog_timeline_settings_title": "时间轴设置",
+    "timeline_settings_group_grid": "网格视图",
+    "timeline_settings_enable_grid": "启用网格视图",
+    "timeline_settings_thumb_width": "缩略图宽度：",
+    "timeline_settings_thumb_height": "缩略图高度：",
+    "timeline_settings_group_filename": "文件名显示",
+    "timeline_settings_filename_mode": "文件名显示模式：",
+    "timeline_settings_filename_single": "单行（智能省略）",
+    "timeline_settings_filename_multi": "多行（自动换行）",
+    "timeline_settings_filename_tip": "单行模式将对长文件名显示序号和省略号。\n鼠标悬停可查看完整文件名。",
+    "timeline_view_list": "列表视图",
+    "timeline_view_grid": "网格视图",
+    "msg_no_image": "无图片"
 }

@@ -253,5 +253,18 @@
     "menu_about": "About (&A)",
     "action_repo": "Project Repository",
     "action_version": "Version: {version}",
-    "action_build_date": "Build Date: {date}"
+    "action_build_date": "Build Date: {date}",
+    "dialog_timeline_settings_title": "Timeline Settings",
+    "timeline_settings_group_grid": "Grid View",
+    "timeline_settings_enable_grid": "Enable Grid View",
+    "timeline_settings_thumb_width": "Thumbnail Width:",
+    "timeline_settings_thumb_height": "Thumbnail Height:",
+    "timeline_settings_group_filename": "Filename Display",
+    "timeline_settings_filename_mode": "Filename Display Mode:",
+    "timeline_settings_filename_single": "Single Line (Smart Ellipsis)",
+    "timeline_settings_filename_multi": "Multi Line (Wrap)",
+    "timeline_settings_filename_tip": "Single line mode will show frame number with ellipsis for long filenames.\nHover over filename to see full text.",
+    "timeline_view_list": "List View",
+    "timeline_view_grid": "Grid View",
+    "msg_no_image": "No Image"
 }
