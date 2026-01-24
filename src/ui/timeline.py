@@ -39,19 +39,6 @@ class TimelineWidget(QStackedWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
 
-        # Flag to ignore view selection changes when updating from model
-        self._updating_view_from_model = False
-
-        # Additional flag to prevent selection emission during view updates
-        self._view_update_in_progress = False
-
-        # Counter to detect update loops
-        self._model_update_count = 0
-
-        # Global protection flag to block ALL view->model selection updates for a period
-        self._view_to_model_selection_blocked = False
-        self._last_model_update_end_time = 0
-
         # Create data model
         self.model = TimelineModel()
 
@@ -304,61 +291,33 @@ class TimelineWidget(QStackedWidget):
 
         debug_log(f"Model selection changed: {selected_indices}, current mode={self.current_view_mode}")
 
-        # Detect loops - if we're updating too frequently, skip
-        self._model_update_count += 1
-        if self._model_update_count > 3:
-            debug_log(f"WARNING: Model update loop detected (count={self._model_update_count}), skipping update")
-            return
+        # Block signals and stop timers before updating
+        if self.current_view_mode == "list":
+            self.list_view._selection_debounce_timer.stop()
+            self.list_view.blockSignals(True)
+        else:
+            self.grid_view._selection_debounce_timer.stop()
+            self.grid_view.blockSignals(True)
 
-        debug_log(f"Model update count: {self._model_update_count}")
-
-        # Set flags to ignore view selection feedback during update
-        self._updating_view_from_model = True
-        self._view_update_in_progress = True
-        debug_log(f"Set _updating_view_from_model = True, _view_update_in_progress = True")
-
-        try:
-            # Stop any pending timers before updating
-            if self.current_view_mode == "list":
-                self.list_view._selection_debounce_timer.stop()
-                debug_log(f"Stopped list view debounce timer")
-                self.list_view.blockSignals(True)
-                debug_log(f"Blocked list view signals")
-            else:
-                self.grid_view._selection_debounce_timer.stop()
-                debug_log(f"Stopped grid view debounce timer")
-                self.grid_view.blockSignals(True)
-                debug_log(f"Blocked grid view signals")
-
-            # Only update the currently active view
-            if self.current_view_mode == "list":
-                # Update list view only
-                for idx in range(self.list_view.topLevelItemCount()):
-                    item = self.list_view.topLevelItem(idx)
-                    should_select = idx in selected_indices
-                    if item.isSelected() != should_select:
-                        item.setSelected(should_select)
-                debug_log(f"Updated list view selection to: {selected_indices}")
-                # DO NOT unblock signals yet - keep them blocked until flags are cleared
-            else:
-                # Grid mode - only update grid view
-                for idx in range(self.grid_view.count()):
-                    item = self.grid_view.item(idx)
-                    should_select = idx in selected_indices
-                    if item.isSelected() != should_select:
-                        item.setSelected(should_select)
-                debug_log(f"Updated grid view selection to: {selected_indices}")
-                # DO NOT unblock signals yet - keep them blocked until flags are cleared
-
-            # DO NOT emit selection_changed to main_window here
-            # The model selection is already correct, and emitting would cause a loop
-            # main_window will be notified via the view's selection_changed signal when user interacts
-            debug_log(f"Skipping emission of selection_changed to main_window (avoiding loop)")
-        finally:
-            # DO NOT clear flags immediately! Wait for Qt to process pending events
-            # Use a single-shot timer to clear flags after a short delay
-            QTimer.singleShot(100, self._clear_update_flags)
-            debug_log(f"Scheduled flag clearing in 100ms (signals remain blocked until then)")
+        # Only update the currently active view
+        if self.current_view_mode == "list":
+            # Update list view only
+            for idx in range(self.list_view.topLevelItemCount()):
+                item = self.list_view.topLevelItem(idx)
+                should_select = idx in selected_indices
+                if item.isSelected() != should_select:
+                    item.setSelected(should_select)
+            self.list_view.blockSignals(False)
+            debug_log(f"Updated list view selection to: {selected_indices}")
+        else:
+            # Grid mode - only update grid view
+            for idx in range(self.grid_view.count()):
+                item = self.grid_view.item(idx)
+                should_select = idx in selected_indices
+                if item.isSelected() != should_select:
+                    item.setSelected(should_select)
+            self.grid_view.blockSignals(False)
+            debug_log(f"Updated grid view selection to: {selected_indices}")
 
     # ========== Model access methods ==========
     def add_frame(self, filename: str, frame_data: FrameData, orig_width=0, orig_height=0):
@@ -519,8 +478,8 @@ class TimelineWidget(QStackedWidget):
     def refresh_all_grid_items(self):
         """Refresh all grid items (thumbnails and text)"""
         self.grid_view.refresh_all_items()
-    
-    def _clear_update_flags(self):
+
+    def on_selection_changed(self):
         """Clear update flags after a delay to allow Qt to process pending events"""
         # Stop all timers one more time before unblocking
         self.list_view._selection_debounce_timer.stop()
@@ -577,16 +536,6 @@ class TimelineWidget(QStackedWidget):
 
     def _on_view_selection_changed(self, frames):
         """Handle selection change from views and update model"""
-        # Ignore selection changes if we're updating from model
-        if self._updating_view_from_model:
-            debug_log(f"View selection changed but ignored (updating from model)")
-            return
-
-        # Check global protection flag
-        if self._view_to_model_selection_blocked:
-            debug_log(f"View selection changed but ignored (global protection active)")
-            return
-
         # Check if selection actually changed to avoid unnecessary updates
         current_indices = self.model.get_selected_indices()
         new_indices = []
@@ -601,17 +550,7 @@ class TimelineWidget(QStackedWidget):
             debug_log(f"Selection unchanged, skipping update")
             return  # No change, skip update
 
-        # Check if this selection update came from a timer during model update
-        # If we just finished updating model selection, ignore any immediate feedback
-        if hasattr(self, '_last_model_update_end_time'):
-            import time
-            if time.time() - self._last_model_update_end_time < 0.1:  # Ignore updates within 100ms
-                debug_log(f"Ignoring selection feedback (too soon after model update)")
-                return
-
         debug_log(f"Updating model selection to: {new_indices}")
-        import time
-        self._last_model_update_end_time = time.time()
         self.model.set_selection(new_indices)
 
     def on_selection_changed(self):
@@ -875,18 +814,6 @@ class TimelineListView(QTreeWidget, BaseTimelineView):
                     print(line.strip())
             return
 
-        # Check if parent TimelineWidget is updating from model
-        parent = self.parent()
-        if hasattr(parent, '_updating_view_from_model') and parent._updating_view_from_model:
-            if DEBUG_TIMELINE:
-                print(f"[TimelineListView] Selection change emission skipped (parent is updating from model)")
-            return
-
-        if hasattr(parent, '_view_update_in_progress') and parent._view_update_in_progress:
-            if DEBUG_TIMELINE:
-                print(f"[TimelineListView] Selection change emission skipped (view update in progress)")
-            return
-
         selected_items = self.selectedItems()
         selected_indices = [self.indexOfTopLevelItem(item) for item in selected_items]
         frames = [item.data(0, Qt.ItemDataRole.UserRole) for item in selected_items]
@@ -954,12 +881,6 @@ class TimelineListView(QTreeWidget, BaseTimelineView):
     def on_selection_changed(self):
         """Handle selection change"""
         if self._selection_blocked:
-            return
-
-        # Check if parent TimelineWidget is updating from model
-        parent = self.parent()
-        if hasattr(parent, '_updating_view_from_model') and parent._updating_view_from_model:
-            debug_log(f"[TimelineListView] Selection changed but ignored (parent is updating from model)")
             return
 
         self._selection_debounce_timer.start()

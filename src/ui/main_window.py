@@ -1973,7 +1973,12 @@ class MainWindow(QMainWindow):
             # Play selected only
             # Sort by visual order (index) to ensure correct sequence
             current_view = self.timeline.get_current_widget()
-            target_items = sorted(selected_items, key=lambda i: current_view.row(i))
+            if self.timeline.get_view_mode() == "list":
+                # List view uses indexOfTopLevelItem
+                target_items = sorted(selected_items, key=lambda i: self.timeline.indexOfTopLevelItem(i))
+            else:
+                # Grid view uses row
+                target_items = sorted(selected_items, key=lambda i: current_view.row(i))
         else:
             # Play all
             current_view = self.timeline.get_current_widget()
@@ -1985,13 +1990,13 @@ class MainWindow(QMainWindow):
                 # Grid view
                 target_items = [current_view.item(i) for i in range(current_view.count())]
 
-        # Filter disabled
+        # Filter disabled and store frame_data (not items) to avoid invalid references
         self.playlist = []
         for item in target_items:
             # Use unified interface to extract frame data
             data = self.timeline.extract_frame_data_from_item(item)
             if data and not data.is_disabled:
-                self.playlist.append(item)
+                self.playlist.append(data)
 
         # Reset index if out of bounds or empty?
         if self.playlist:
@@ -2094,9 +2099,8 @@ class MainWindow(QMainWindow):
         if self.timeline.get_frame_count() == 0 or not hasattr(self, 'playlist') or not self.playlist:
             return
 
-        # Advance
-        item = self.playlist[self.play_index]
-        frame_data = self.timeline.extract_frame_data_from_item(item)
+        # Get frame_data directly from playlist (playlist now stores frame_data, not items)
+        frame_data = self.playlist[self.play_index]
 
         # Show on canvas directly (Override selection visualization)
         self.canvas.set_selected_frames([frame_data])

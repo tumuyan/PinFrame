@@ -193,16 +193,6 @@ class TimelineGridWidget(QListWidget, BaseTimelineView):
                 debug_grid_log(line.strip())
             return
 
-        # Check if parent TimelineWidget is updating from model
-        parent = self.parent()
-        if hasattr(parent, '_updating_view_from_model') and parent._updating_view_from_model:
-            debug_grid_log("Selection change emission skipped (parent is updating from model)")
-            return
-
-        if hasattr(parent, '_view_update_in_progress') and parent._view_update_in_progress:
-            debug_grid_log("Selection change emission skipped (view update in progress)")
-            return
-
         selected_items = self.selectedItems()
         selected_indices = [self.row(item) for item in selected_items]
         frames = [item.data(Qt.ItemDataRole.UserRole) for item in selected_items]
@@ -213,13 +203,6 @@ class TimelineGridWidget(QListWidget, BaseTimelineView):
         for line in traceback.format_stack()[-6:-1]:
             debug_grid_log(line.strip())
 
-        self.selection_changed.emit(frames)
-
-        selected_items = self.selectedItems()
-        selected_indices = [self.row(item) for item in selected_items]
-        frames = [item.data(Qt.ItemDataRole.UserRole) for item in selected_items]
-
-        debug_grid_log(f"Emitting selection changed: indices={selected_indices}, count={len(selected_items)}")
         self.selection_changed.emit(frames)
     
     def create_thumbnail(self, image_path, frame_data, index):
@@ -396,16 +379,6 @@ class TimelineGridWidget(QListWidget, BaseTimelineView):
     def on_selection_changed(self):
         if self._selection_blocked:
             debug_grid_log("Selection changed but blocked, skipping")
-            return
-
-        # Check if parent TimelineWidget is updating from model
-        parent = self.parent()
-        if hasattr(parent, '_updating_view_from_model') and parent._updating_view_from_model:
-            debug_grid_log("Selection changed but ignored (parent is updating from model)")
-            return
-
-        if hasattr(parent, '_view_update_in_progress') and parent._view_update_in_progress:
-            debug_grid_log("Selection changed but ignored (view update in progress)")
             return
 
         debug_grid_log("Selection changed, starting debounce timer")
