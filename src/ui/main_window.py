@@ -47,7 +47,9 @@ class MainWindow(QMainWindow):
             self.setWindowIcon(QIcon(icon_path))
         
         self.setWindowTitle(i18n.t("app_title") + " - " + i18n.t("new_project"))
-        self.resize(1200, 800)
+        self.resize(1440, 900)
+        # 设置窗口为最大化状态
+        # self.setWindowState(Qt.WindowState.WindowMaximized)
         
         # Data
         self.project = ProjectData()
