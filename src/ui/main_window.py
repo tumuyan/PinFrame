@@ -1929,7 +1929,14 @@ class MainWindow(QMainWindow):
         # Update project frames from timeline model
         # TimelineWidget's model is now the single source of truth
         self.project.frames = self.timeline.get_all_frames()
-        self.timeline.refresh_current_items()  # Update numbers after drag&drop
+
+        # Refresh current items for both list and grid view (to update numbers)
+        if self.timeline.get_view_mode() == "list":
+            self.timeline.refresh_current_items()
+        else:
+            # Grid view: only refresh item numbers, not full thumbnails
+            self.timeline.grid_view.refresh_item_numbers()
+
         self.mark_dirty()
 
     def reverse_selected_frames(self):

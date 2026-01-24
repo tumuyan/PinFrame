@@ -53,9 +53,15 @@ chmod +x novnc_start.sh
 
 ### 4. 停止服务
 
+结束全部程序
 ```bash
 chmod +x novnc_stop.sh
 ./novnc_stop.sh
+```
+
+只停止Python程序
+```
+pkill -f "python.*main.py"
 ```
 
 ## 配置说明

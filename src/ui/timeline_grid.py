@@ -1,22 +1,11 @@
-from PyQt6.QtWidgets import (QListWidget, QListWidgetItem, QAbstractItemView,
-                             QWidget, QVBoxLayout, QHBoxLayout, QLabel, QSlider,
-                             QPushButton, QDialog, QSpinBox, QComboBox, QRadioButton,
-                             QButtonGroup, QColorDialog)
-from PyQt6.QtCore import Qt, pyqtSignal, QSize, QTimer, QEvent, QPoint, QRectF
-from PyQt6.QtGui import QColor, QImage, QPixmap, QPainter, QBrush, QPen, QFont, QImageReader, QIcon
+from PyQt6.QtWidgets import QListWidget, QListWidgetItem, QAbstractItemView, QMenu
+from PyQt6.QtCore import Qt, pyqtSignal, QSize, QTimer, QPoint, QRectF
+from PyQt6.QtGui import QColor, QImage, QPixmap, QPainter, QBrush, QPen, QFont, QIcon, QAction
 from i18n.manager import i18n
 from ui.timeline_base_view import BaseTimelineView
 from model.project_data import FrameData
 from typing import List, Optional
 import os
-
-# Debug flag
-DEBUG_GRID_VIEW = True
-
-def debug_grid_log(msg):
-    """Print debug message if debug mode is enabled"""
-    if DEBUG_GRID_VIEW:
-        print(f"[TimelineGridWidget] {msg}")
 
 class TimelineGridWidget(QListWidget, BaseTimelineView):
     """Grid view for timeline with thumbnail display"""
@@ -51,6 +40,8 @@ class TimelineGridWidget(QListWidget, BaseTimelineView):
         self.setMovement(QListWidget.Movement.Snap)
         self.setDragDropMode(QAbstractItemView.DragDropMode.DragDrop)
         self.setAcceptDrops(True)
+        self.setDefaultDropAction(Qt.DropAction.MoveAction)  # Enable internal move for drag&drop
+        self.setDropIndicatorShown(True)  # Show drop indicator during drag
         self.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.setUniformItemSizes(True)
         self.setSpacing(4)
@@ -69,10 +60,14 @@ class TimelineGridWidget(QListWidget, BaseTimelineView):
         
         self._selection_blocked = False
         self.itemSelectionChanged.connect(self.on_selection_changed)
-        
+
         self.reference_frame_data = None
         self.is_dark_theme = True
-        
+
+        # Drag position tracking
+        self._drag_insert_position = None  # (index, before) - where before is True if inserting before the item
+        self._is_dragging = False
+
         # Set item size based on thumbnail dimensions
         self.update_item_size()
     
@@ -127,13 +122,11 @@ class TimelineGridWidget(QListWidget, BaseTimelineView):
         if block:
             try:
                 self.itemSelectionChanged.disconnect(self.on_selection_changed)
-                debug_grid_log("Disconnected itemSelectionChanged from on_selection_changed")
             except TypeError:
                 # Already disconnected or never connected
-                debug_grid_log("Warning: itemSelectionChanged was not connected")
+                pass
         else:
             self.itemSelectionChanged.connect(self.on_selection_changed)
-            debug_grid_log("Reconnected itemSelectionChanged to on_selection_changed")
 
     def select_all_optimized(self):
         """Select all items efficiently"""
@@ -186,23 +179,10 @@ class TimelineGridWidget(QListWidget, BaseTimelineView):
 
     def _emit_selection_changed(self):
         if self._selection_blocked:
-            debug_grid_log("Emit selection changed but blocked, skipping")
-            import traceback
-            debug_grid_log("Blocked call stack:")
-            for line in traceback.format_stack()[-5:-1]:
-                debug_grid_log(line.strip())
             return
 
         selected_items = self.selectedItems()
-        selected_indices = [self.row(item) for item in selected_items]
         frames = [item.data(Qt.ItemDataRole.UserRole) for item in selected_items]
-
-        debug_grid_log(f"Emitting selection changed: indices={selected_indices}, count={len(selected_items)}")
-        import traceback
-        debug_grid_log("Call stack:")
-        for line in traceback.format_stack()[-6:-1]:
-            debug_grid_log(line.strip())
-
         self.selection_changed.emit(frames)
     
     def create_thumbnail(self, image_path, frame_data, index):
@@ -328,14 +308,9 @@ class TimelineGridWidget(QListWidget, BaseTimelineView):
     def update_frame(self, index, frame_data, filename):
         """Update frame at index"""
         if index < 0 or index >= self.count():
-            debug_grid_log(f"update_frame: invalid index {index}, count={self.count()}")
             return
 
         item = self.item(index)
-        was_selected = item.isSelected()
-        debug_grid_log(f"update_frame: index={index}, was_selected={was_selected}, filename={filename}")
-
-        # Update all item data in one go (batch updates reduce signal triggers)
         item.setData(Qt.ItemDataRole.UserRole, frame_data)
 
         # Recreate thumbnail
@@ -352,13 +327,6 @@ class TimelineGridWidget(QListWidget, BaseTimelineView):
 
         item.setText(fname)
         item.setToolTip(fname)
-
-        # Check selection after update
-        is_selected_after = item.isSelected()
-        debug_grid_log(f"update_frame: selection after update={is_selected_after}, was selected={was_selected}")
-
-        if was_selected != is_selected_after:
-            debug_grid_log(f"update_frame: WARNING! Selection state changed: {was_selected} -> {is_selected_after}")
     
     def refresh_all_items(self):
         """Refresh all items (thumbnails and text)"""
@@ -369,51 +337,205 @@ class TimelineGridWidget(QListWidget, BaseTimelineView):
             # Recreate thumbnail
             thumbnail = self.create_thumbnail(frame_data.file_path, frame_data, i)
             item.setIcon(QIcon(thumbnail))
-            
+
             # Update reference highlighting
             is_ref = (frame_data is self.reference_frame_data)
             font = item.font()
             font.setBold(is_ref)
             item.setFont(font)
+
+    def refresh_item_numbers(self):
+        """Refresh only the item numbers (index) without regenerating thumbnails"""
+        for i in range(self.count()):
+            item = self.item(i)
+            frame_data = item.data(Qt.ItemDataRole.UserRole)
+
+            # Recreate thumbnail with updated index
+            thumbnail = self.create_thumbnail(frame_data.file_path, frame_data, i)
+            item.setIcon(QIcon(thumbnail))
     
     def on_selection_changed(self):
         if self._selection_blocked:
-            debug_grid_log("Selection changed but blocked, skipping")
             return
-
-        debug_grid_log("Selection changed, starting debounce timer")
         self._selection_debounce_timer.start()
     
     def dragEnterEvent(self, event):
         if event.mimeData().hasUrls():
             event.accept()
         else:
-            super().dragEnterEvent(event)
-    
+            # Internal drag
+            self._is_dragging = True
+            event.acceptProposedAction()
+
     def dragMoveEvent(self, event):
         if event.mimeData().hasUrls():
             event.accept()
         else:
-            super().dragMoveEvent(event)
-    
+            # Internal drag: calculate and show insert position
+            drop_pos = event.position().toPoint()
+            drop_item = self.itemAt(drop_pos)
+
+            if drop_item:
+                drop_index = self.row(drop_item)
+                # Calculate if we're dropping before or after the target item
+                item_rect = self.visualItemRect(drop_item)
+                item_center = item_rect.center()
+
+                # Determine if drop is before or after based on position
+                if drop_pos.x() < item_center.x() and drop_pos.y() < item_center.y():
+                    self._drag_insert_position = (drop_index, True)  # Insert before
+                else:
+                    self._drag_insert_position = (drop_index, False)  # Insert after
+            else:
+                # Drop at the end
+                self._drag_insert_position = (self.count(), False)
+
+            # Trigger repaint to show insert indicator
+            self.viewport().update()
+            # Don't call super() - let Qt handle it naturally
+            event.acceptProposedAction()
+
+    def dragLeaveEvent(self, event):
+        self._is_dragging = False
+        self._drag_insert_position = None
+        self.viewport().update()
+        super().dragLeaveEvent(event)
+
+    def paintEvent(self, event):
+        # Draw the base list widget
+        super().paintEvent(event)
+
+        # Draw custom drag insert indicator
+        if self._is_dragging and self._drag_insert_position:
+            index, before = self._drag_insert_position
+
+            # Calculate which item will have the inserted items before it
+            # If before=True, insert before 'index'
+            # If before=False, insert after 'index', which means before 'index+1'
+            target_index = index if before else index + 1
+
+            # Don't draw blue box if inserting at the end (after last item)
+            if target_index < self.count():
+                item = self.item(target_index)
+                if item:
+                    rect = self.visualItemRect(item)
+
+                    # Draw insertion indicator on viewport
+                    painter = QPainter(self.viewport())
+                    painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+                    # Draw a blue rectangle around the target item
+                    indicator_rect = rect.adjusted(-3, -3, 3, 3)
+
+                    # Draw semi-transparent blue border
+                    painter.setPen(QPen(QColor(0, 120, 215, 200), 4))
+                    painter.drawRect(indicator_rect)
+
+                    painter.end()
+
     def dropEvent(self, event):
         if event.mimeData().hasUrls():
             links = []
             for url in event.mimeData().urls():
                 links.append(url.toLocalFile())
-            
+
             # Calculate insertion index
             item = self.itemAt(event.position().toPoint())
             if item:
                 final_index = self.row(item) + 1
             else:
                 final_index = -1
-            
+
             event.accept()
             self.files_dropped.emit(links, final_index)
         else:
-            super().dropEvent(event)
+            # Internal drag: manually handle reordering for IconMode
+            # Get selected items (being dragged)
+            selected_items = self.selectedItems()
+
+            if not selected_items:
+                super().dropEvent(event)
+                self._clear_drag_state()
+                return
+
+            # Use the calculated insert position from dragMoveEvent
+            if self._drag_insert_position:
+                insert_index, before = self._drag_insert_position
+                if not before:
+                    insert_index += 1
+            else:
+                # Fallback: recalculate if position not tracked
+                drop_pos = event.position().toPoint()
+                drop_item = self.itemAt(drop_pos)
+                if drop_item:
+                    drop_index = self.row(drop_item)
+                    item_rect = self.visualItemRect(drop_item)
+                    item_center = item_rect.center()
+                    if drop_pos.x() < item_center.x() or drop_pos.y() < item_center.y():
+                        insert_index = drop_index
+                    else:
+                        insert_index = drop_index + 1
+                else:
+                    insert_index = self.count()
+
+            # Get selected indices before any modifications
+            selected_indices = sorted([self.row(item) for item in selected_items])
+
+            # Don't process if drop position is the same
+            if insert_index == selected_indices[0]:
+                self._clear_drag_state()
+                event.ignore()
+                return
+
+            # Collect the dragged items' data
+            dragged_items_data = []
+            for item in selected_items:
+                dragged_items_data.append({
+                    'data': item.data(Qt.ItemDataRole.UserRole),
+                    'text': item.text(),
+                    'icon': item.icon(),
+                    'tooltip': item.toolTip(),
+                    'font': item.font(),
+                    'selected': item.isSelected()
+                })
+
+            # Remove items from current positions (in reverse order to maintain indices)
+            for item in reversed(selected_items):
+                self.takeItem(self.row(item))
+
+            # Calculate adjusted insert index after removal
+            # If dragged items were before the insert position, their removal shifts the insert index
+            dragged_before_count = sum(1 for idx in selected_indices if idx < insert_index)
+            adjusted_insert_index = insert_index - dragged_before_count
+
+            # Insert items at new position
+            for i, item_data in enumerate(dragged_items_data):
+                new_item = QListWidgetItem(item_data['text'])
+                new_item.setData(Qt.ItemDataRole.UserRole, item_data['data'])
+                new_item.setIcon(item_data['icon'])
+                new_item.setToolTip(item_data['tooltip'])
+                new_item.setFont(item_data['font'])
+                new_item.setSelected(item_data['selected'])
+                self.insertItem(adjusted_insert_index + i, new_item)
+
+            event.accept()
+
+            # Clear drag state
+            self._clear_drag_state()
+
+            # Update item numbers after drag is complete
+            self.refresh_item_numbers()
             self.order_changed.emit()
+
+    def _clear_drag_state(self):
+        """Clear drag state"""
+        self._is_dragging = False
+        self._drag_insert_position = None
+        self.viewport().update()
+
+    def startDrag(self, supportedActions):
+        # Override to ensure proper drag behavior
+        super().startDrag(supportedActions)
     
     def wheelEvent(self, event):
         """Handle mouse wheel for thumbnail size adjustment (with Ctrl key)"""
@@ -435,45 +557,42 @@ class TimelineGridWidget(QListWidget, BaseTimelineView):
             super().wheelEvent(event)
     
     def show_context_menu(self, position):
-        from PyQt6.QtWidgets import QMenu
-        from PyQt6.QtGui import QAction
-        
         menu = QMenu()
-        
+
         selected_items = self.selectedItems()
         has_selection = bool(selected_items)
-        
+
         copy_action = QAction(i18n.t("action_copy_props"), self)
         copy_action.triggered.connect(self.copy_properties_requested.emit)
         copy_action.setEnabled(has_selection)
-        
+
         paste_action = QAction(i18n.t("action_paste_props"), self)
         paste_action.triggered.connect(self.paste_properties_requested.emit)
-        
+
         dup_action = QAction(i18n.t("action_dup_frame"), self)
         dup_action.triggered.connect(self.duplicate_requested.emit)
         dup_action.setEnabled(has_selection)
-        
+
         rem_action = QAction(i18n.t("action_rem_frame"), self)
         rem_action.triggered.connect(self.remove_requested.emit)
         rem_action.setEnabled(has_selection)
-        
+
         disable_action = QAction(i18n.t("disable_frame_label", "Disable Frame(s)"), self)
         disable_action.triggered.connect(lambda: self.enable_requested.emit(False))
         disable_action.setEnabled(has_selection)
-        
+
         enable_action = QAction(i18n.t("enable_frame_label", "Enable Frame(s)"), self)
         enable_action.triggered.connect(lambda: self.enable_requested.emit(True))
         enable_action.setEnabled(has_selection)
-        
+
         reverse_action = QAction(i18n.t("action_reverse_order"), self)
         reverse_action.triggered.connect(self.reverse_order_requested.emit)
         reverse_action.setEnabled(len(selected_items) > 1)
-        
+
         int_action = QAction(i18n.t("action_integerize"), self)
         int_action.triggered.connect(self.integerize_offset_requested.emit)
         int_action.setEnabled(has_selection)
-        
+
         menu.addAction(copy_action)
         menu.addAction(paste_action)
         menu.addSeparator()
@@ -483,21 +602,21 @@ class TimelineGridWidget(QListWidget, BaseTimelineView):
         menu.addAction(enable_action)
         menu.addAction(reverse_action)
         menu.addSeparator()
-        
+
         ref_action = QAction(i18n.t("action_set_reference"), self)
         ref_action.triggered.connect(self.set_reference_requested.emit)
         ref_action.setEnabled(len(selected_items) == 1)
-        
+
         clear_ref_action = QAction(i18n.t("action_clear_reference"), self)
         clear_ref_action.triggered.connect(self.clear_reference_requested.emit)
-        
+
         menu.addAction(ref_action)
         menu.addAction(clear_ref_action)
         menu.addSeparator()
-        
+
         menu.addAction(dup_action)
         menu.addAction(rem_action)
-        
+
         menu.exec(self.viewport().mapToGlobal(position))
     
     def refresh_ui_text(self):
@@ -507,19 +626,15 @@ class TimelineGridWidget(QListWidget, BaseTimelineView):
     def refresh_current_items(self):
         self.refresh_all_items()
 
-    def update_item_display(self, item, frame_data, orig_w, orig_h):
+    def update_item_display(self, item, frame_data, _orig_w, _orig_h):
         """Update display of a single item (refreshes thumbnail and text)"""
         if item is None:
             return
 
-        # Get index for this item
         index = self.row(item)
-
-        # Update thumbnail
         thumbnail = self.create_thumbnail(frame_data.file_path, frame_data, index)
         item.setIcon(QIcon(thumbnail))
 
-        # Update text
         fname = os.path.basename(frame_data.file_path)
         if frame_data.crop_rect:
             x, y, w, h = frame_data.crop_rect
