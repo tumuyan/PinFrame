@@ -253,5 +253,20 @@
     "menu_about": "关于 (&A)",
     "action_repo": "项目仓库",
     "action_version": "版本: {version}",
-    "action_build_date": "构建时间: {date}"
+    "action_build_date": "构建时间: {date}",
+    "menu_timeline_view": "时间轴视图",
+    "action_timeline_list": "列表视图",
+    "action_timeline_grid": "网格视图",
+    "action_timeline_grid_settings": "网格视图设置...",
+    "dialog_timeline_grid_settings": "网格视图设置",
+    "grid_settings_thumbnail_size": "缩略图大小",
+    "grid_settings_width": "宽度:",
+    "grid_settings_height": "高度:",
+    "grid_settings_filename": "文件名显示",
+    "grid_settings_single_line": "单行显示",
+    "grid_settings_multi_line": "多行显示",
+    "grid_settings_filename_hint": "单行模式：显示省略后的文件名，鼠标悬停显示完整名称。",
+    "grid_settings_background": "预览背景",
+    "grid_settings_gray": "灰色",
+    "bg_transparent": "透明"
 }

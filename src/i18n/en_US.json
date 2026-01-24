@@ -253,5 +253,20 @@
     "menu_about": "About (&A)",
     "action_repo": "Project Repository",
     "action_version": "Version: {version}",
-    "action_build_date": "Build Date: {date}"
+    "action_build_date": "Build Date: {date}",
+    "menu_timeline_view": "Timeline View",
+    "action_timeline_list": "List View",
+    "action_timeline_grid": "Grid View",
+    "action_timeline_grid_settings": "Grid Settings...",
+    "dialog_timeline_grid_settings": "Grid View Settings",
+    "grid_settings_thumbnail_size": "Thumbnail Size",
+    "grid_settings_width": "Width:",
+    "grid_settings_height": "Height:",
+    "grid_settings_filename": "Filename Display",
+    "grid_settings_single_line": "Single Line",
+    "grid_settings_multi_line": "Multi Line",
+    "grid_settings_filename_hint": "Single line: Shows truncated filename with ellipsis. Hover for full name.",
+    "grid_settings_background": "Preview Background",
+    "grid_settings_gray": "Gray",
+    "bg_transparent": "Transparent"
 }

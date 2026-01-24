@@ -77,6 +77,7 @@ class MainWindow(QMainWindow):
         self.timeline.integerize_offset_requested.connect(self.integerize_selection_offset)
         self.timeline.set_reference_requested.connect(self.set_reference_frame_from_selection)
         self.timeline.clear_reference_requested.connect(self.clear_reference_frame)
+        self.timeline.thumbnail_size_changed.connect(self.on_grid_thumbnail_size_changed)
         self.timeline_dock.setWidget(self.timeline)
         self.addDockWidget(Qt.DockWidgetArea.BottomDockWidgetArea, self.timeline_dock)
         
@@ -108,6 +109,13 @@ class MainWindow(QMainWindow):
         except:
             self.raster_grid_color = (128, 128, 128)
         self.raster_scale_threshold = float(self.settings.value("raster_scale_threshold", 5.0))
+
+        # Load timeline view settings (before creating actions/menus)
+        self.timeline_view_mode = self.settings.value("timeline_view_mode", "list")
+        self.grid_thumb_width = self.settings.value("grid_thumb_width", 120, type=int)
+        self.grid_thumb_height = self.settings.value("grid_thumb_height", 120, type=int)
+        self.grid_show_multiline = self.settings.value("grid_show_multiline", False, type=bool)
+        self.grid_background_mode = self.settings.value("grid_background_mode", "checkerboard")
 
         # Menus & Toolbar
         self.create_actions()
@@ -802,6 +810,23 @@ class MainWindow(QMainWindow):
         compile_date = self.get_build_date()
         self.build_date_action = QAction(i18n.t("action_build_date").format(date=compile_date), self)
         self.build_date_action.setEnabled(False)
+        
+        # Timeline View Actions
+        self.timeline_view_group = QActionGroup(self)
+        
+        self.timeline_list_action = QAction(i18n.t("action_timeline_list"), self)
+        self.timeline_list_action.setCheckable(True)
+        self.timeline_list_action.setChecked(True)
+        self.timeline_list_action.triggered.connect(lambda: self.set_timeline_view("list"))
+        self.timeline_view_group.addAction(self.timeline_list_action)
+        
+        self.timeline_grid_action = QAction(i18n.t("action_timeline_grid"), self)
+        self.timeline_grid_action.setCheckable(True)
+        self.timeline_grid_action.triggered.connect(lambda: self.set_timeline_view("grid"))
+        self.timeline_view_group.addAction(self.timeline_grid_action)
+        
+        self.timeline_grid_settings_action = QAction(i18n.t("action_timeline_grid_settings"), self)
+        self.timeline_grid_settings_action.triggered.connect(self.open_timeline_grid_settings)
 
     def update_wheel_toggle_ui(self):
         # Sync the master toggle in toolbar based on current canvas mode
@@ -932,12 +957,33 @@ class MainWindow(QMainWindow):
         lang_menu = view_menu.addMenu(i18n.t("menu_lang"))
         lang_menu.addAction(self.lang_zh_action)
         lang_menu.addAction(self.lang_en_action)
+        
+        # Timeline View Menu
+        timeline_view_menu = view_menu.addMenu(i18n.t("menu_timeline_view"))
+        timeline_view_menu.addAction(self.timeline_list_action)
+        timeline_view_menu.addAction(self.timeline_grid_action)
+        timeline_view_menu.addSeparator()
+        timeline_view_menu.addAction(self.timeline_grid_settings_action)
 
         # About Menu
         about_menu = menubar.addMenu(i18n.t("menu_about"))
         about_menu.addAction(self.repo_action)
         about_menu.addAction(self.version_action)
         about_menu.addAction(self.build_date_action)
+        
+        # Apply saved timeline view settings
+        self.timeline.update_grid_settings(
+            self.grid_thumb_width,
+            self.grid_thumb_height,
+            self.grid_show_multiline,
+            self.grid_background_mode
+        )
+        
+        if self.timeline_view_mode == "grid":
+            self.timeline_grid_action.setChecked(True)
+            self.timeline.set_view_mode("grid")
+        else:
+            self.timeline_list_action.setChecked(True)
 
     def open_repo_url(self):
         try:
@@ -1208,23 +1254,26 @@ class MainWindow(QMainWindow):
         selected = self.timeline.selectedItems()
         if not selected:
             return
-            
+
         # Get indices of all selected items
         indices = []
         for item in selected:
-             indices.append(self.timeline.indexOfTopLevelItem(item))
-        
+            if isinstance(item, QTreeWidgetItem):
+                indices.append(self.timeline.indexOfTopLevelItem(item))
+            else:  # QListWidgetItem
+                indices.append(self.timeline.grid_view.row(item))
+
         indices.sort()  # Sort in ascending order
-        
+
         # Find the insertion point (after the last selected item)
         insert_pos = indices[-1] + 1
-        
+
         # Collect all duplicates first
         duplicates = []
         for idx in indices:
             # Get original data
             orig_data = self.project.frames[idx]
-            
+
             # Clone data
             new_data = FrameData(
                 file_path=orig_data.file_path,
@@ -1235,19 +1284,19 @@ class MainWindow(QMainWindow):
                 is_disabled=orig_data.is_disabled,
                 crop_rect=orig_data.crop_rect
             )
-            
+
             # Get original dimensions from timeline item
             item = self.timeline.topLevelItem(idx)
             orig_res = item.data(3, Qt.ItemDataRole.UserRole)
             w, h = orig_res if orig_res else (0, 0)
-            
+
             duplicates.append((new_data, w, h))
-        
+
         # Insert all duplicates at the end of selection
         for i, (new_data, w, h) in enumerate(duplicates):
             # Insert into project
             self.project.frames.insert(insert_pos + i, new_data)
-            
+
             # Create timeline item
             new_item = QTreeWidgetItem()
             new_item.setData(0, Qt.ItemDataRole.UserRole, new_data)
@@ -1256,7 +1305,7 @@ class MainWindow(QMainWindow):
             new_item.setText(2, os.path.basename(new_data.file_path))
             new_item.setFlags(new_item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
             new_item.setCheckState(1, Qt.CheckState.Checked if new_data.is_disabled else Qt.CheckState.Unchecked)
-            
+
             self.timeline.update_item_display(new_item, new_data, w, h)
             self.timeline.insertTopLevelItem(insert_pos + i, new_item)
             
@@ -1268,14 +1317,17 @@ class MainWindow(QMainWindow):
         selected = self.timeline.selectedItems()
         if not selected:
             return
-            
+
         # Multiple selection removal.
         # Need to remove from Project and Timeline.
         # Indices are safer.
-        
+
         indices = []
         for item in selected:
-            indices.append(self.timeline.indexOfTopLevelItem(item))
+            if isinstance(item, QTreeWidgetItem):
+                indices.append(self.timeline.indexOfTopLevelItem(item))
+            else:  # QListWidgetItem
+                indices.append(self.timeline.grid_view.row(item))
         
         indices.sort(reverse=True) # Remove from end first to keep indices valid
         
@@ -1304,14 +1356,27 @@ class MainWindow(QMainWindow):
         selected = self.timeline.selectedItems()
         if not selected:
             return
-            
+
         for item in selected:
-            data = item.data(0, Qt.ItemDataRole.UserRole)
+            # Handle both QTreeWidgetItem (list view) and QListWidgetItem (grid view)
+            if hasattr(item, 'column'):  # QTreeWidgetItem
+                data = item.data(0, Qt.ItemDataRole.UserRole)
+            else:  # QListWidgetItem
+                data = item.data(Qt.ItemDataRole.UserRole)
+
             is_disabled = not enable
             if data.is_disabled != is_disabled:
                 data.is_disabled = is_disabled
-                # Update UI checkbox
-                item.setCheckState(0, Qt.CheckState.Checked if is_disabled else Qt.CheckState.Unchecked)
+                # Update UI checkbox - different API for QTreeWidgetItem vs QListWidgetItem
+                if hasattr(item, 'setCheckState'):
+                    if hasattr(item, 'column'):  # QTreeWidgetItem needs column parameter
+                        item.setCheckState(0, Qt.CheckState.Checked if is_disabled else Qt.CheckState.Unchecked)
+                    else:  # QListWidgetItem - no column parameter
+                        item.setCheckState(Qt.CheckState.Checked if is_disabled else Qt.CheckState.Unchecked)
+
+        # Refresh grid view thumbnails to show/hide disabled overlay
+        if hasattr(self.timeline, 'grid_view'):
+            self.timeline.grid_view.refresh_all_items()
         
         self.mark_dirty()
         self.canvas.update()
@@ -1997,19 +2062,33 @@ class MainWindow(QMainWindow):
         if len(selected_items) > 1:
             # Play selected only
             # Sort by visual order (index) to ensure correct sequence
-            target_items = sorted(selected_items, key=lambda i: self.timeline.indexOfTopLevelItem(i))
+            if self.timeline.get_view_mode() == "list":
+                # List view
+                target_items = sorted(selected_items, key=lambda i: self.timeline.indexOfTopLevelItem(i))
+            else:
+                # Grid view - use row index
+                target_items = sorted(selected_items, key=lambda i: self.timeline.currentWidget().row(i))
         else:
             # Play all
-            root = self.timeline.invisibleRootItem()
-            target_items = [root.child(i) for i in range(root.childCount())]
-            
+            if self.timeline.get_view_mode() == "list":
+                # List view
+                root = self.timeline.list_view.invisibleRootItem()
+                target_items = [root.child(i) for i in range(root.childCount())]
+            else:
+                # Grid view
+                current_view = self.timeline.currentWidget()
+                target_items = [current_view.item(i) for i in range(current_view.count())]
+
         # Filter disabled
         self.playlist = []
         for item in target_items:
-            data = item.data(0, Qt.ItemDataRole.UserRole)
+            if isinstance(item, QTreeWidgetItem):  # QTreeWidgetItem
+                data = item.data(0, Qt.ItemDataRole.UserRole)
+            else:  # QListWidgetItem
+                data = item.data(Qt.ItemDataRole.UserRole)
             if not data.is_disabled:
                 self.playlist.append(item)
-            
+
         # Reset index if out of bounds or empty?
         if self.playlist:
             self.play_index = self.play_index % len(self.playlist)
@@ -2019,19 +2098,24 @@ class MainWindow(QMainWindow):
     def stop_playback(self):
         self.is_playing = False
         self.timer.stop()
-        
+
         from PyQt6.QtCore import QSignalBlocker
         with QSignalBlocker(self.play_action), QSignalBlocker(self.rev_play_action):
             self.play_action.setText(i18n.t("btn_play"))
             self.play_action.setChecked(False)
             self.rev_play_action.setText(i18n.t("btn_backward"))
             self.rev_play_action.setChecked(False)
-            
+
         self.statusBar().showMessage(i18n.t("msg_playback_stopped"))
-        
+
         # Restore selection
         selected_items = self.timeline.selectedItems()
-        frames = [item.data(0, Qt.ItemDataRole.UserRole) for item in selected_items]
+        frames = []
+        for item in selected_items:
+            if hasattr(item, 'column'):  # QTreeWidgetItem
+                frames.append(item.data(0, Qt.ItemDataRole.UserRole))
+            else:  # QListWidgetItem
+                frames.append(item.data(Qt.ItemDataRole.UserRole))
         self.canvas.set_selected_frames(frames)
         self.update_onion_state()
 
@@ -2111,22 +2195,25 @@ class MainWindow(QMainWindow):
     def next_frame(self):
         if not self.project.frames or not hasattr(self, 'playlist') or not self.playlist:
             return
-        
+
         # Advance
         item = self.playlist[self.play_index]
-        frame_data = item.data(0, Qt.ItemDataRole.UserRole)
-        
+        if isinstance(item, QTreeWidgetItem):  # QTreeWidgetItem
+            frame_data = item.data(0, Qt.ItemDataRole.UserRole)
+        else:  # QListWidgetItem
+            frame_data = item.data(Qt.ItemDataRole.UserRole)
+
         # Show on canvas directly (Override selection visualization)
         self.canvas.set_selected_frames([frame_data])
-        
+
         # Update Status
         self.statusBar().showMessage(i18n.t("msg_playback_playing").format(
-            index=self.play_index + 1, 
-            total=len(self.playlist), 
+            index=self.play_index + 1,
+            total=len(self.playlist),
             name=os.path.basename(frame_data.file_path),
             direction='[REV]' if self.playback_reverse else ''
         ))
-        
+
         # Increment/Decrement index
         step = -1 if self.playback_reverse else 1
         self.play_index = (self.play_index + step) % len(self.playlist)
@@ -2892,3 +2979,77 @@ class MainWindow(QMainWindow):
         self.recent_projects = []
         self.save_settings()
         self.update_recent_projects_menu()
+    
+    # --- Timeline View Methods ---
+    
+    def set_timeline_view(self, mode):
+        """Switch between list and grid view"""
+        # Save current selection before switching
+        current_items = self.timeline.get_current_widget().selectedItems()
+        selected_indices = []
+        if current_items:
+            if mode == "list":
+                # Currently in grid, save grid selection
+                selected_indices = [self.timeline.grid_view.row(item) for item in current_items]
+            else:
+                # Currently in list, save list selection
+                selected_indices = [self.timeline.list_view.indexOfTopLevelItem(item) for item in current_items]
+        
+        # Switch view
+        self.timeline.set_view_mode(mode)
+        
+        # Restore selection
+        if selected_indices:
+            if mode == "grid":
+                # Restore grid selection
+                for idx in selected_indices:
+                    if idx < self.timeline.grid_view.count():
+                        self.timeline.grid_view.item(idx).setSelected(True)
+            else:
+                # Restore list selection
+                for idx in selected_indices:
+                    if idx < self.timeline.list_view.topLevelItemCount():
+                        self.timeline.list_view.topLevelItem(idx).setSelected(True)
+        
+        # Save view mode preference
+        self.settings.setValue("timeline_view_mode", mode)
+    
+    def open_timeline_grid_settings(self):
+        """Open grid view settings dialog"""
+        from ui.timeline_grid_settings import TimelineGridSettingsDialog
+        
+        dlg = TimelineGridSettingsDialog(
+            self,
+            self.timeline.grid_thumbnail_width,
+            self.timeline.grid_thumbnail_height,
+            self.timeline.grid_show_multiline,
+            self.timeline.grid_background_mode
+        )
+        
+        if dlg.exec():
+            settings = dlg.get_settings()
+            
+            # Apply settings
+            self.timeline.update_grid_settings(
+                settings['width'],
+                settings['height'],
+                settings['multiline'],
+                settings['background']
+            )
+            
+            # Save settings
+            self.settings.setValue("grid_thumb_width", settings['width'])
+            self.settings.setValue("grid_thumb_height", settings['height'])
+            self.settings.setValue("grid_show_multiline", settings['multiline'])
+            self.settings.setValue("grid_background_mode", settings['background'])
+            
+            # If currently in grid view, refresh
+            if self.timeline.get_view_mode() == "grid":
+                self.timeline.refresh_all_grid_items()
+    
+    def on_grid_thumbnail_size_changed(self, width, height):
+        """Handle grid thumbnail size change"""
+        self.grid_thumb_width = width
+        self.grid_thumb_height = height
+        self.settings.setValue("grid_thumb_width", width)
+        self.settings.setValue("grid_thumb_height", height)
