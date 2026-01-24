@@ -273,8 +273,9 @@ class TimelineModel(QObject):
         if insert_position is None:
             insert_position = max(sorted_indices) + 1
 
-        # Duplicate frames
+        # Duplicate frames (batch operation - emit single signal at the end)
         new_indices = []
+        duplicates = []
         for idx in sorted_indices:
             original = self._frames[idx]
             duplicate = FrameData(
@@ -286,9 +287,18 @@ class TimelineModel(QObject):
                 is_disabled=original.is_disabled,
                 crop_rect=original.crop_rect if original.crop_rect else None
             )
-            new_idx = self.add_frame(duplicate, insert_position)
-            new_indices.append(new_idx)
-            insert_position += 1
+            duplicates.append(duplicate)
+
+        # Insert all duplicates at once and emit a single signal
+        if duplicates:
+            for duplicate in duplicates:
+                self._frames.insert(insert_position, duplicate)
+                new_indices.append(insert_position)
+                insert_position += 1
+
+            # Emit a single frames_inserted signal for all duplicates
+            if new_indices:
+                self.frames_inserted.emit(new_indices[0], len(new_indices))
 
         return new_indices
 

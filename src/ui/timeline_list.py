@@ -170,6 +170,15 @@ class TimelineListView(QTreeWidget, BaseTimelineView):
         frames = [item.data(0, Qt.ItemDataRole.UserRole) for item in selected_items]
         self.selection_changed.emit(frames)
 
+    def _apply_selection_from_set(self, selected_indices_set: set):
+        """Apply selection from a set of indices (O(n) complexity)"""
+        root = self.invisibleRootItem()
+        for i in range(root.childCount()):
+            item = root.child(i)
+            should_select = i in selected_indices_set
+            if item.isSelected() != should_select:
+                item.setSelected(should_select)
+
     def set_theme_mode(self, is_dark: bool):
         """Set theme mode (dark/light)"""
         self.is_dark_theme = is_dark

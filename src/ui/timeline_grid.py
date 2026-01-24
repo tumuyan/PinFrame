@@ -27,13 +27,13 @@ class TimelineGridWidget(QListWidget, BaseTimelineView):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        
+
         # View mode settings
         self.thumbnail_width = 120
         self.thumbnail_height = 120
         self.show_multiline = False
         self.background_mode = "checkerboard"  # black, white, gray, checkerboard, green
-        
+
         # Widget settings
         self.setViewMode(QListWidget.ViewMode.IconMode)
         self.setResizeMode(QListWidget.ResizeMode.Adjust)
@@ -47,17 +47,17 @@ class TimelineGridWidget(QListWidget, BaseTimelineView):
         self.setSpacing(4)
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
         self.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-        
+
         # Set context menu
         self.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.customContextMenuRequested.connect(self.show_context_menu)
-        
+
         # Selection debounce timer
         self._selection_debounce_timer = QTimer(self)
         self._selection_debounce_timer.setSingleShot(True)
         self._selection_debounce_timer.setInterval(50)
         self._selection_debounce_timer.timeout.connect(self._emit_selection_changed)
-        
+
         self._selection_blocked = False
         self.itemSelectionChanged.connect(self.on_selection_changed)
 
@@ -67,6 +67,9 @@ class TimelineGridWidget(QListWidget, BaseTimelineView):
         # Drag position tracking
         self._drag_insert_position = None  # (index, before) - where before is True if inserting before the item
         self._is_dragging = False
+
+        # Thumbnail cache to avoid recreating the same thumbnail repeatedly
+        self._thumbnail_cache = {}  # key: (file_path, crop_rect, index), value: QPixmap
 
         # Set item size based on thumbnail dimensions
         self.update_item_size()
@@ -87,9 +90,20 @@ class TimelineGridWidget(QListWidget, BaseTimelineView):
     
     def set_background_mode(self, mode):
         """Set background mode for thumbnails"""
-        self.background_mode = mode
-        self.refresh_all_items()
-    
+        if self.background_mode != mode:
+            self.background_mode = mode
+            self._clear_thumbnail_cache()
+            self.refresh_all_items()
+
+    def _get_cache_key(self, image_path, frame_data, index):
+        """Generate cache key for thumbnail"""
+        crop_key = tuple(frame_data.crop_rect) if frame_data.crop_rect else None
+        return (image_path, crop_key, self.background_mode, self.thumbnail_width, self.thumbnail_height, index)
+
+    def _clear_thumbnail_cache(self):
+        """Clear thumbnail cache"""
+        self._thumbnail_cache.clear()
+
     def update_item_size(self):
         """Update grid item size based on thumbnail dimensions"""
         label_height = 40 if self.show_multiline else 20
@@ -97,6 +111,8 @@ class TimelineGridWidget(QListWidget, BaseTimelineView):
         item_height = self.thumbnail_height + label_height + 8
         self.setIconSize(QSize(self.thumbnail_width, self.thumbnail_height))
         self.setGridSize(QSize(item_width, item_height))
+        # Clear cache when size changes
+        self._clear_thumbnail_cache()
     
     def set_theme_mode(self, is_dark):
         self.is_dark_theme = is_dark
@@ -186,7 +202,13 @@ class TimelineGridWidget(QListWidget, BaseTimelineView):
         self.selection_changed.emit(frames)
     
     def create_thumbnail(self, image_path, frame_data, index):
-        """Create thumbnail with overlay information"""
+        """Create thumbnail with overlay information (with caching)"""
+        cache_key = self._get_cache_key(image_path, frame_data, index)
+
+        # Check cache first
+        if cache_key in self._thumbnail_cache:
+            return self._thumbnail_cache[cache_key]
+
         # Create base image with background
         img = QImage(self.thumbnail_width, self.thumbnail_height, QImage.Format.Format_ARGB32)
         # Fill with transparent for all modes first
@@ -227,7 +249,12 @@ class TimelineGridWidget(QListWidget, BaseTimelineView):
         self.draw_overlays(painter, img.rect(), frame_data, index)
 
         painter.end()
-        return QPixmap.fromImage(img)
+        pixmap = QPixmap.fromImage(img)
+
+        # Cache the result
+        self._thumbnail_cache[cache_key] = pixmap
+
+        return pixmap
     
     def draw_background(self, painter, rect):
         """Draw background for thumbnail"""
@@ -346,6 +373,8 @@ class TimelineGridWidget(QListWidget, BaseTimelineView):
 
     def refresh_item_numbers(self):
         """Refresh only the item numbers (index) without regenerating thumbnails"""
+        # When frame numbers change, we need to clear cache since index is part of cache key
+        self._clear_thumbnail_cache()
         for i in range(self.count()):
             item = self.item(i)
             frame_data = item.data(Qt.ItemDataRole.UserRole)

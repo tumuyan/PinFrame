@@ -42,38 +42,11 @@ class TimelineWidget(QStackedWidget):
 
         # Create list view (tree widget)
         self.list_view = TimelineListView(self)
-        self.list_view.selection_changed.connect(self._on_view_selection_changed)
-        self.list_view.selection_changed.connect(self.selection_changed)
-        self.list_view.order_changed.connect(self.order_changed)
-        self.list_view.files_dropped.connect(self.files_dropped)
-        self.list_view.copy_properties_requested.connect(self.copy_properties_requested)
-        self.list_view.paste_properties_requested.connect(self.paste_properties_requested)
-        self.list_view.duplicate_requested.connect(self.duplicate_requested)
-        self.list_view.remove_requested.connect(self.remove_requested)
-        self.list_view.disabled_state_changed.connect(self.disabled_state_changed)
-        self.list_view.enable_requested.connect(self.enable_requested)
-        self.list_view.reverse_order_requested.connect(self.reverse_order_requested)
-        self.list_view.integerize_offset_requested.connect(self.integerize_offset_requested)
-        self.list_view.set_reference_requested.connect(self.set_reference_requested)
-        self.list_view.clear_reference_requested.connect(self.clear_reference_requested)
+        self._connect_view_signals(self.list_view)
 
         # Create grid view
         self.grid_view = TimelineGridWidget(self)
-        self.grid_view.selection_changed.connect(self._on_view_selection_changed)
-        self.grid_view.selection_changed.connect(self.selection_changed)
-        self.grid_view.order_changed.connect(self.order_changed)
-        self.grid_view.files_dropped.connect(self.files_dropped)
-        self.grid_view.copy_properties_requested.connect(self.copy_properties_requested)
-        self.grid_view.paste_properties_requested.connect(self.paste_properties_requested)
-        self.grid_view.duplicate_requested.connect(self.duplicate_requested)
-        self.grid_view.remove_requested.connect(self.remove_requested)
-        self.grid_view.disabled_state_changed.connect(self.disabled_state_changed)
-        self.grid_view.enable_requested.connect(self.enable_requested)
-        self.grid_view.reverse_order_requested.connect(self.reverse_order_requested)
-        self.grid_view.integerize_offset_requested.connect(self.integerize_offset_requested)
-        self.grid_view.set_reference_requested.connect(self.set_reference_requested)
-        self.grid_view.clear_reference_requested.connect(self.clear_reference_requested)
-        self.grid_view.thumbnail_size_changed.connect(self._on_grid_thumbnail_changed)
+        self._connect_view_signals(self.grid_view, is_grid=True)
 
         # Add both views to stacked widget
         self.addWidget(self.list_view)
@@ -93,6 +66,27 @@ class TimelineWidget(QStackedWidget):
         self.grid_view.set_show_multiline(self.grid_show_multiline)
         self.grid_view.set_background_mode(self.grid_background_mode)
 
+    def _connect_view_signals(self, view, is_grid=False):
+        """Connect common signals from a view to this widget"""
+        view.selection_changed.connect(self._on_view_selection_changed)
+        view.selection_changed.connect(self.selection_changed)
+        view.order_changed.connect(self.order_changed)
+        view.files_dropped.connect(self.files_dropped)
+        view.copy_properties_requested.connect(self.copy_properties_requested)
+        view.paste_properties_requested.connect(self.paste_properties_requested)
+        view.duplicate_requested.connect(self.duplicate_requested)
+        view.remove_requested.connect(self.remove_requested)
+        view.disabled_state_changed.connect(self.disabled_state_changed)
+        view.enable_requested.connect(self.enable_requested)
+        view.reverse_order_requested.connect(self.reverse_order_requested)
+        view.integerize_offset_requested.connect(self.integerize_offset_requested)
+        view.set_reference_requested.connect(self.set_reference_requested)
+        view.clear_reference_requested.connect(self.clear_reference_requested)
+
+        # Grid-specific signal
+        if is_grid:
+            view.thumbnail_size_changed.connect(self._on_grid_thumbnail_changed)
+
     def set_view_mode(self, mode):
         """Switch between list and grid view"""
         if mode == "list":
@@ -101,19 +95,13 @@ class TimelineWidget(QStackedWidget):
             # Sync selection from model to list view
             selected_indices = self.model.get_selected_indices()
             # Block ALL Qt signals first
-            self.list_view.blockSignals(True)
-            self.grid_view.blockSignals(True)
-            self.list_view.block_selection_signals_internal(True)
-            self.grid_view.block_selection_signals_internal(True)
+            self._block_all_signals()
             self.list_view.clearSelection()
             for idx in selected_indices:
                 if idx < self.list_view.topLevelItemCount():
                     item = self.list_view.topLevelItem(idx)
                     item.setSelected(True)
-            self.list_view.blockSignals(False)
-            self.grid_view.blockSignals(False)
-            self.list_view.block_selection_signals_internal(False)
-            self.grid_view.block_selection_signals_internal(False)
+            self._unblock_all_signals()
         elif mode == "grid":
             self.setCurrentWidget(self.grid_view)
             self.current_view_mode = "grid"
@@ -122,19 +110,13 @@ class TimelineWidget(QStackedWidget):
             # Sync selection from model to grid view
             selected_indices = self.model.get_selected_indices()
             # Block ALL Qt signals first
-            self.list_view.blockSignals(True)
-            self.grid_view.blockSignals(True)
-            self.list_view.block_selection_signals_internal(True)
-            self.grid_view.block_selection_signals_internal(True)
+            self._block_all_signals()
             self.grid_view.clearSelection()
             for idx in selected_indices:
                 if idx < self.grid_view.count():
                     item = self.grid_view.item(idx)
                     item.setSelected(True)
-            self.list_view.blockSignals(False)
-            self.grid_view.blockSignals(False)
-            self.list_view.block_selection_signals_internal(False)
-            self.grid_view.block_selection_signals_internal(False)
+            self._unblock_all_signals()
 
     def get_view_mode(self):
         """Return current view mode"""
@@ -219,11 +201,8 @@ class TimelineWidget(QStackedWidget):
         selection_before = self.model.get_selected_indices()
 
         # Only update the currently active view
+        self._block_all_signals()
         if self.current_view_mode == "list":
-            # Block ALL Qt signals to prevent itemSelectionChanged
-            self.list_view.blockSignals(True)
-            self.grid_view.blockSignals(True)
-
             for idx in range(start_index, end_index + 1):
                 frame_data = self.model.get_frame_at(idx)
                 if frame_data:
@@ -236,15 +215,8 @@ class TimelineWidget(QStackedWidget):
                     if idx < self.list_view.topLevelItemCount():
                         item = self.list_view.topLevelItem(idx)
                         self.list_view.update_item_display(item, frame_data, orig_w, orig_h)
-
-            self.list_view.blockSignals(False)
-            self.grid_view.blockSignals(False)
         else:
             # Grid mode - only update grid view
-            # Block ALL Qt signals to prevent itemSelectionChanged
-            self.list_view.blockSignals(True)
-            self.grid_view.blockSignals(True)
-
             for idx in range(start_index, end_index + 1):
                 frame_data = self.model.get_frame_at(idx)
                 if frame_data:
@@ -254,8 +226,7 @@ class TimelineWidget(QStackedWidget):
                     if idx < self.grid_view.count():
                         self.grid_view.update_frame(idx, frame_data, filename)
 
-            self.list_view.blockSignals(False)
-            self.grid_view.blockSignals(False)
+        self._unblock_all_signals()
 
         # Check selection after update
         selection_after = self.model.get_selected_indices()
@@ -266,7 +237,7 @@ class TimelineWidget(QStackedWidget):
     def _on_model_selection_changed(self):
         """Handle selection change from model"""
         # Get selected indices from model
-        selected_indices = self.model.get_selected_indices()
+        selected_indices = set(self.model.get_selected_indices())
 
         # Block signals and stop timers before updating
         if self.current_view_mode == "list":
@@ -277,21 +248,12 @@ class TimelineWidget(QStackedWidget):
             self.grid_view.blockSignals(True)
 
         # Only update the currently active view
+        self._apply_selection_to_view(selected_indices)
+
+        # Unblock signals
         if self.current_view_mode == "list":
-            # Update list view only
-            for idx in range(self.list_view.topLevelItemCount()):
-                item = self.list_view.topLevelItem(idx)
-                should_select = idx in selected_indices
-                if item.isSelected() != should_select:
-                    item.setSelected(should_select)
             self.list_view.blockSignals(False)
         else:
-            # Grid mode - only update grid view
-            for idx in range(self.grid_view.count()):
-                item = self.grid_view.item(idx)
-                should_select = idx in selected_indices
-                if item.isSelected() != should_select:
-                    item.setSelected(should_select)
             self.grid_view.blockSignals(False)
 
     # ========== Model access methods ==========
@@ -426,7 +388,7 @@ class TimelineWidget(QStackedWidget):
     def _rebuild_grid_view(self):
         """Rebuild grid view from model"""
         # Store selection before clearing
-        selected_indices = self.model.get_selected_indices()
+        selected_indices = set(self.model.get_selected_indices())
 
         self.grid_view.clear()
         total_frames = self.model.get_frame_count()
@@ -441,10 +403,7 @@ class TimelineWidget(QStackedWidget):
         if selected_indices:
             self.grid_view.blockSignals(True)
             self.grid_view.block_selection_signals_internal(True)
-            for idx in selected_indices:
-                if idx < self.grid_view.count():
-                    item = self.grid_view.item(idx)
-                    item.setSelected(True)
+            self._apply_selection_to_view(selected_indices)
             self.grid_view.blockSignals(False)
             self.grid_view.block_selection_signals_internal(False)
 
@@ -452,52 +411,37 @@ class TimelineWidget(QStackedWidget):
         """Refresh all grid items (thumbnails and text)"""
         self.grid_view.refresh_all_items()
 
-    def on_selection_changed(self):
-        """Clear update flags after a delay to allow Qt to process pending events"""
-        # Stop all timers one more time before unblocking
-        self.list_view._selection_debounce_timer.stop()
-        self.grid_view._selection_debounce_timer.stop()
+    def _block_all_signals(self):
+        """Block all signals from both views"""
+        self.list_view.blockSignals(True)
+        self.grid_view.blockSignals(True)
+        self.list_view.block_selection_signals_internal(True)
+        self.grid_view.block_selection_signals_internal(True)
 
-        # Reset update count
-        self._model_update_count = 0
+    def _unblock_all_signals(self):
+        """Unblock all signals from both views"""
+        self.list_view.blockSignals(False)
+        self.grid_view.blockSignals(False)
+        self.list_view.block_selection_signals_internal(False)
+        self.grid_view.block_selection_signals_internal(False)
 
-        # Unblock signals FIRST, before clearing flags
-        # This way, any selection changes triggered by unblocking will be caught by flags
-        QTimer.singleShot(10, self._unblock_signals_while_flags_still_set)
-
-    def _unblock_signals_while_flags_still_set(self):
-        """Unblock signals while flags are still set to catch any immediate selection changes"""
+    def _apply_selection_to_view(self, selected_indices):
+        """Apply selection indices to the current view"""
         if self.current_view_mode == "list":
-            if self.list_view.signalsBlocked():
-                self.list_view.blockSignals(False)
+            # Use optimized set-based method for list view
+            if isinstance(selected_indices, set):
+                self.list_view._apply_selection_from_set(selected_indices)
+            else:
+                self.list_view._apply_selection_from_set(set(selected_indices))
         else:
-            if self.grid_view.signalsBlocked():
-                self.grid_view.blockSignals(False)
-
-        # Now clear flags after a longer delay to ensure Qt has processed everything
-        # 200ms delay gives Qt enough time to process all pending events
-        QTimer.singleShot(200, self._clear_flags_after_unblock)
-
-    def _clear_flags_after_unblock(self):
-        """Clear flags a short time after unblocking signals"""
-        # Store the expected selection before clearing flags
-        expected_selection = self.model.get_selected_indices()
-
-        # Clear flags
-        self._updating_view_from_model = False
-        self._view_update_in_progress = False
-
-        # Schedule a check to restore selection if it was changed by Qt
-        QTimer.singleShot(50, lambda: self._restore_selection_if_needed(expected_selection))
-
-    def _restore_selection_if_needed(self, expected_selection):
-        """Restore model selection if it was changed by Qt after unblock"""
-        # Check if selection was changed by Qt after unblock
-        current_selection = self.model.get_selected_indices()
-        if current_selection != expected_selection:
-            print(f"WARNING: Selection was changed by Qt after unblock: {expected_selection} -> {current_selection}, restoring...")
-            # Restore the expected selection without triggering another model update
-            self.model._selected_indices = expected_selection
+            # Grid view: iterate through items
+            item_count = self.grid_view.count()
+            selected_set = selected_indices if isinstance(selected_indices, set) else set(selected_indices)
+            for idx in range(item_count):
+                item = self.grid_view.item(idx)
+                should_select = idx in selected_set
+                if item.isSelected() != should_select:
+                    item.setSelected(should_select)
 
     def _on_view_selection_changed(self, frames):
         """Handle selection change from views and update model"""
@@ -513,12 +457,6 @@ class TimelineWidget(QStackedWidget):
             return  # No change, skip update
 
         self.model.set_selection(new_indices)
-
-    def on_selection_changed(self):
-        """Handle selection change from views and update model"""
-        # This method is now called directly from _on_view_selection_changed
-        # or can be called from other places if needed
-        pass
 
     # ========== Property accessors for compatibility ==========
     @property
