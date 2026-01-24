@@ -117,11 +117,19 @@ class MainWindow(QMainWindow):
         self.grid_show_multiline = self.settings.value("grid_show_multiline", False, type=bool)
         self.grid_background_mode = self.settings.value("grid_background_mode", "checkerboard")
 
+        # Playback (must be initialized before create_menus to avoid AttributeError)
+        self.timer = QTimer()
+        self.timer.timeout.connect(self.next_frame)
+        self.is_playing = False
+        self.playback_reverse = False
+        self.playlist = []
+        self.play_index = 0
+
         # Menus & Toolbar
         self.create_actions()
         self.create_menus()
         self.create_toolbar()
-        
+
         # Apply initial raster settings to canvas
         grid_color = QColor(*self.raster_grid_color)
         self.canvas.set_rasterization_settings(
@@ -131,14 +139,6 @@ class MainWindow(QMainWindow):
             self.raster_show_grid
         )
         self.update_rasterization_ui()
-        
-        # Playback
-        self.timer = QTimer()
-        self.timer.timeout.connect(self.next_frame)
-        self.is_playing = False
-        self.playback_reverse = False
-        self.playlist = []
-        self.play_index = 0
         
         # Status Bar
         self.statusBar().showMessage(i18n.t("ready"))
@@ -1160,108 +1160,74 @@ class MainWindow(QMainWindow):
             
             new_items.append((os.path.basename(f), frame_data, w, h))
             added_count += 1
-            
+
         if added_count == 0:
             return
 
-        # Insert logic
-        # index is user provided. If -1, append.
-        # MainWindow needs to update Timeline AND Project Data.
-        # Timeline usually manages its own view, but here we manually add.
-        # Actually logic is split. Timeline `add_frame` appends.
-        # We need an insertion method.
-        
-        if index == -1 or index >= len(self.project.frames):
-            # Append
+        # Insert logic - now uses TimelineModel
+        # TimelineWidget handles both data and view updates
+        if index == -1 or index >= self.timeline.get_frame_count():
+            # Append all frames
             for name, data, w, h in new_items:
-                self.project.frames.append(data)
                 self.timeline.add_frame(name, data, w, h)
         else:
-            # Insert at Index
-            # Timeline logic now provides the exact insertion index.
-            # So we use it directly.
-            
-            target_idx = index
-            
-            # Slice insertion for project data
-            frames_to_insert = [x[1] for x in new_items]
-            self.project.frames[target_idx:target_idx] = frames_to_insert
-            
-            # Timeline insertion
-            for i, (name, data, w, h) in enumerate(new_items):
-                item = QTreeWidgetItem()
-                item.setData(0, Qt.ItemDataRole.UserRole, data)
-                item.setData(3, Qt.ItemDataRole.UserRole, (w, h))
-                item.setText(0, "") # Updated by refresh
-                item.setText(2, name)
-                
-                # Checkbox flags
-                item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
-                # Checked = Disabled, Unchecked = Enabled
-                item.setCheckState(1, Qt.CheckState.Checked if data.is_disabled else Qt.CheckState.Unchecked)
-                
-                self.timeline.update_item_display(item, data, w, h)
-                self.timeline.insertTopLevelItem(target_idx + i, item)
-                
+            # Insert at specific index - insert in reverse order to maintain correct positions
+            for i in range(len(new_items) - 1, -1, -1):
+                name, data, w, h = new_items[i]
+                self.timeline.add_frame(name, data, w, h)  # Model handles insertion at index
+
         self.mark_dirty()
         self.timeline.refresh_current_items()
 
     def copy_frame_properties(self):
-        selected = self.timeline.selectedItems()
-        if not selected:
+        # Use unified interface to get selected frames
+        selected_frames = self.timeline.get_selected_frames()
+        if not selected_frames:
             return
-            
-        # Copy from the first selected item (Primary)
-        item = selected[0]
-        frame_data = item.data(0, Qt.ItemDataRole.UserRole)
-        
-        self.clipboard_frame_properties = {
-            "scale": frame_data.scale,
-            "position": frame_data.position,
-            "target_resolution": frame_data.target_resolution
-        }
-        self.statusBar().showMessage(i18n.t("msg_props_copied"), 3000)
+
+        # Copy from the first selected frame (Primary)
+        frame_data = selected_frames[0]
+        if frame_data:
+            self.clipboard_frame_properties = {
+                "scale": frame_data.scale,
+                "position": frame_data.position,
+                "target_resolution": frame_data.target_resolution
+            }
+            self.statusBar().showMessage(i18n.t("msg_props_copied"), 3000)
 
     def paste_frame_properties(self):
         if not self.clipboard_frame_properties:
             self.statusBar().showMessage(i18n.t("msg_clipboard_empty"), 3000)
             return
-            
-        selected = self.timeline.selectedItems()
-        if not selected:
+
+        # Use unified interface to get selected frames and indices
+        selected_frames = self.timeline.get_selected_frames()
+        if not selected_frames:
             return
-            
+
+        selected_indices = self.timeline.get_selected_indices_from_current_view()
+
         count = 0
-        for item in selected:
-            frame_data = item.data(0, Qt.ItemDataRole.UserRole)
-            
+        for frame_data in selected_frames:
             frame_data.scale = self.clipboard_frame_properties["scale"]
             frame_data.position = self.clipboard_frame_properties["position"]
             frame_data.target_resolution = self.clipboard_frame_properties["target_resolution"]
-            
-            # Update View
-            orig_res = item.data(3, Qt.ItemDataRole.UserRole)
-            w, h = orig_res if orig_res else (0, 0)
-            self.timeline.update_item_display(item, frame_data, w, h)
             count += 1
-            
+
+        # Update view using indices
+        for idx in selected_indices:
+            self.timeline.update_frame_data(idx)
+
         self.canvas.update()
         self.property_panel.update_ui_from_selection()
         self.mark_dirty()
         self.statusBar().showMessage(i18n.t("msg_props_pasted").format(count=count), 3000)
 
     def duplicate_frame(self):
-        selected = self.timeline.selectedItems()
-        if not selected:
+        # Use unified interface to get selected indices
+        indices = self.timeline.get_selected_indices_from_current_view()
+        if not indices:
             return
-
-        # Get indices of all selected items
-        indices = []
-        for item in selected:
-            if isinstance(item, QTreeWidgetItem):
-                indices.append(self.timeline.indexOfTopLevelItem(item))
-            else:  # QListWidgetItem
-                indices.append(self.timeline.grid_view.row(item))
 
         indices.sort()  # Sort in ascending order
 
@@ -1271,8 +1237,8 @@ class MainWindow(QMainWindow):
         # Collect all duplicates first
         duplicates = []
         for idx in indices:
-            # Get original data
-            orig_data = self.project.frames[idx]
+            # Get original data from timeline model
+            orig_data = self.timeline.get_frame_at(idx)
 
             # Clone data
             new_data = FrameData(
@@ -1285,55 +1251,26 @@ class MainWindow(QMainWindow):
                 crop_rect=orig_data.crop_rect
             )
 
-            # Get original dimensions from timeline item
-            item = self.timeline.topLevelItem(idx)
-            orig_res = item.data(3, Qt.ItemDataRole.UserRole)
-            w, h = orig_res if orig_res else (0, 0)
+            duplicates.append(new_data)
 
-            duplicates.append((new_data, w, h))
+        # Insert all duplicates at the end of selection through model
+        for i, new_data in enumerate(duplicates):
+            # Use timeline model to add frames
+            filename = os.path.basename(new_data.file_path)
+            self.timeline.add_frame(filename, new_data)
 
-        # Insert all duplicates at the end of selection
-        for i, (new_data, w, h) in enumerate(duplicates):
-            # Insert into project
-            self.project.frames.insert(insert_pos + i, new_data)
-
-            # Create timeline item
-            new_item = QTreeWidgetItem()
-            new_item.setData(0, Qt.ItemDataRole.UserRole, new_data)
-            new_item.setData(3, Qt.ItemDataRole.UserRole, (w, h))
-            new_item.setText(0, "") # Will be updated by refresh_current_items
-            new_item.setText(2, os.path.basename(new_data.file_path))
-            new_item.setFlags(new_item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
-            new_item.setCheckState(1, Qt.CheckState.Checked if new_data.is_disabled else Qt.CheckState.Unchecked)
-
-            self.timeline.update_item_display(new_item, new_data, w, h)
-            self.timeline.insertTopLevelItem(insert_pos + i, new_item)
-            
         self.mark_dirty()
         self.timeline.refresh_current_items()
         self.statusBar().showMessage(i18n.t("msg_frames_duplicated").format(count=len(duplicates)), 3000)
 
     def remove_frame(self):
-        selected = self.timeline.selectedItems()
-        if not selected:
+        # Use unified interface to get selected indices
+        indices = self.timeline.get_selected_indices_from_current_view()
+        if not indices:
             return
 
-        # Multiple selection removal.
-        # Need to remove from Project and Timeline.
-        # Indices are safer.
-
-        indices = []
-        for item in selected:
-            if isinstance(item, QTreeWidgetItem):
-                indices.append(self.timeline.indexOfTopLevelItem(item))
-            else:  # QListWidgetItem
-                indices.append(self.timeline.grid_view.row(item))
-        
-        indices.sort(reverse=True) # Remove from end first to keep indices valid
-        
-        for idx in indices:
-            del self.project.frames[idx]
-            self.timeline.takeTopLevelItem(idx)
+        # Remove through timeline model
+        self.timeline.remove_frames_at(indices)
             
         self.mark_dirty()
         self.timeline.refresh_current_items() # Update numbers after removal
@@ -1357,33 +1294,23 @@ class MainWindow(QMainWindow):
         if not selected:
             return
 
+        is_disabled = not enable
         for item in selected:
-            # Handle both QTreeWidgetItem (list view) and QListWidgetItem (grid view)
-            if hasattr(item, 'column'):  # QTreeWidgetItem
-                data = item.data(0, Qt.ItemDataRole.UserRole)
-            else:  # QListWidgetItem
-                data = item.data(Qt.ItemDataRole.UserRole)
+            # Use unified interface to extract frame data
+            frame_data = self.timeline.extract_frame_data_from_item(item)
+            if frame_data and frame_data.is_disabled != is_disabled:
+                frame_data.is_disabled = is_disabled
 
-            is_disabled = not enable
-            if data.is_disabled != is_disabled:
-                data.is_disabled = is_disabled
-                # Update UI checkbox - different API for QTreeWidgetItem vs QListWidgetItem
-                if hasattr(item, 'setCheckState'):
-                    if hasattr(item, 'column'):  # QTreeWidgetItem needs column parameter
-                        item.setCheckState(0, Qt.CheckState.Checked if is_disabled else Qt.CheckState.Unchecked)
-                    else:  # QListWidgetItem - no column parameter
-                        item.setCheckState(Qt.CheckState.Checked if is_disabled else Qt.CheckState.Unchecked)
+                # Update UI checkbox in list view
+                if hasattr(item, 'setCheckState') and hasattr(item, 'column'):
+                    # QTreeWidgetItem needs column parameter
+                    item.setCheckState(0, Qt.CheckState.Checked if is_disabled else Qt.CheckState.Unchecked)
 
-        # Refresh grid view thumbnails to show/hide disabled overlay
-        if hasattr(self.timeline, 'grid_view'):
-            self.timeline.grid_view.refresh_all_items()
-        
+        # Refresh current view to show/hide disabled overlay
+        self.timeline.refresh_current_items()
+
         self.mark_dirty()
         self.canvas.update()
-        if self.is_playing:
-            self.update_playlist()
-        self.statusBar().showMessage(i18n.t("msg_frames_enabled_disabled").format(action=i18n.t("action_enabled") if enable else i18n.t("action_disabled"), count=len(selected)), 3000)
-
         if self.is_playing:
             self.update_playlist()
         self.statusBar().showMessage(i18n.t("msg_frames_enabled_disabled").format(action=i18n.t("action_enabled") if enable else i18n.t("action_disabled"), count=len(selected)), 3000)
@@ -1733,12 +1660,12 @@ class MainWindow(QMainWindow):
             self.update_onion_state()
 
     def set_reference_frame_from_selection(self):
-        selected = self.timeline.selectedItems()
-        if len(selected) != 1:
+        selected_frames = self.timeline.get_selected_frames()
+        if len(selected_frames) != 1:
             return
-            
-        frame_data = selected[0].data(0, Qt.ItemDataRole.UserRole)
-        
+
+        frame_data = selected_frames[0]
+
         # Toggle / Cancel if already Ref
         if self.reference_frame and frame_data == self.reference_frame:
              self.clear_reference_frame()
@@ -1759,7 +1686,7 @@ class MainWindow(QMainWindow):
         
         # update UI indication
         self.update_reference_view()
-        self.timeline.viewport().update()
+        self.timeline.get_current_widget().viewport().update()
         
         self.update_onion_state()
         
@@ -1767,7 +1694,7 @@ class MainWindow(QMainWindow):
         self.reference_frame = None
         if update:
             self.update_reference_view()
-            self.timeline.viewport().update()
+            self.timeline.get_current_widget().viewport().update()
             
         self.update_onion_state()
 
@@ -1778,28 +1705,31 @@ class MainWindow(QMainWindow):
     def calculate_onion_skins(self):
         onion_skins = []
         if self.onion_enabled and (self.onion_prev > 0 or self.onion_next > 0):
-            # Find current frame index
-            current_item = self.timeline.currentItem()
-            if current_item:
-                index = self.timeline.indexOfTopLevelItem(current_item)
-                
-                # Previous Frames
+            # Find current frame index using unified interface
+            selected_indices = self.timeline.get_selected_indices_from_current_view()
+            if selected_indices:
+                index = selected_indices[0]  # Use first selected frame
+
+                # Get frame count from model
+                frame_count = self.timeline.get_frame_count()
+
+                # Previous Frames - use model to get data directly
                 for i in range(1, self.onion_prev + 1):
                     target_idx = index - i
                     if target_idx >= 0:
-                        item = self.timeline.topLevelItem(target_idx)
-                        data = item.data(0, Qt.ItemDataRole.UserRole)
-                        opacity = max(0.05, 1.0 - (i * self.onion_opacity_step))
-                        onion_skins.append((data, opacity))
-                
-                # Next Frames
+                        data = self.timeline.get_frame_at(target_idx)
+                        if data:
+                            opacity = max(0.05, 1.0 - (i * self.onion_opacity_step))
+                            onion_skins.append((data, opacity))
+
+                # Next Frames - use model to get data directly
                 for i in range(1, self.onion_next + 1):
                     target_idx = index + i
-                    if target_idx < self.timeline.topLevelItemCount():
-                        item = self.timeline.topLevelItem(target_idx)
-                        data = item.data(0, Qt.ItemDataRole.UserRole)
-                        opacity = max(0.05, 1.0 - (i * self.onion_opacity_step))
-                        onion_skins.append((data, opacity))
+                    if target_idx < frame_count:
+                        data = self.timeline.get_frame_at(target_idx)
+                        if data:
+                            opacity = max(0.05, 1.0 - (i * self.onion_opacity_step))
+                            onion_skins.append((data, opacity))
 
         self.canvas.set_onion_skins(onion_skins)
 
@@ -1913,19 +1843,19 @@ class MainWindow(QMainWindow):
         self.mark_dirty()
 
     def apply_relative_move(self, dx, dy, update_last=True):
-        selected_items = self.timeline.selectedItems()
-        if not selected_items:
+        # Use unified interface to get selected frames
+        selected_frames = self.timeline.get_selected_frames()
+        if not selected_frames:
             return
-            
-        for item in selected_items:
-            frame_data = item.data(0, Qt.ItemDataRole.UserRole)
+
+        for frame_data in selected_frames:
             frame_data.position = (frame_data.position[0] + dx, frame_data.position[1] + dy)
-            
-            # Update Timeline display
-            orig_res = item.data(3, Qt.ItemDataRole.UserRole)
-            w, h = orig_res if orig_res else (0, 0)
-            self.timeline.update_item_display(item, frame_data, w, h)
-            
+
+        # Update timeline display
+        selected_indices = self.timeline.get_selected_indices_from_current_view()
+        for idx in selected_indices:
+            self.timeline.update_frame_data(idx)
+
         if update_last:
             self.last_relative_offset = (dx, dy)
             self.property_panel.set_repeat_enabled(True)
@@ -1950,20 +1880,20 @@ class MainWindow(QMainWindow):
         self.apply_relative_move(-dx, -dy, update_last=False)
 
     def integerize_selection_offset(self):
-        selected_items = self.timeline.selectedItems()
-        if not selected_items:
+        # Use unified interface to get selected frames
+        selected_frames = self.timeline.get_selected_frames()
+        if not selected_frames:
             return
-            
-        for item in selected_items:
-            frame_data = item.data(0, Qt.ItemDataRole.UserRole)
+
+        for frame_data in selected_frames:
             x, y = frame_data.position
             frame_data.position = (float(round(x)), float(round(y)))
-            
-            # Update Timeline display
-            orig_res = item.data(3, Qt.ItemDataRole.UserRole)
-            w, h = orig_res if orig_res else (0, 0)
-            self.timeline.update_item_display(item, frame_data, w, h)
-            
+
+        # Update timeline display
+        selected_indices = self.timeline.get_selected_indices_from_current_view()
+        for idx in selected_indices:
+            self.timeline.update_frame_data(idx)
+
         self.canvas.update()
         self.property_panel.update_ui_from_selection()
         self.mark_dirty()
@@ -1974,19 +1904,19 @@ class MainWindow(QMainWindow):
         self.canvas.update()
         
     def adjust_selection_scale(self, factor):
-        selected_items = self.timeline.selectedItems()
-        if not selected_items:
+        # Use unified interface to get selected frames
+        selected_frames = self.timeline.get_selected_frames()
+        if not selected_frames:
             return
-            
-        for item in selected_items:
-            frame_data = item.data(0, Qt.ItemDataRole.UserRole)
+
+        for frame_data in selected_frames:
             frame_data.scale *= factor
-            
-            # Update Timeline display
-            orig_res = item.data(3, Qt.ItemDataRole.UserRole)
-            w, h = orig_res if orig_res else (0, 0)
-            self.timeline.update_item_display(item, frame_data, w, h)
-            
+
+        # Update timeline display
+        selected_indices = self.timeline.get_selected_indices_from_current_view()
+        for idx in selected_indices:
+            self.timeline.update_frame_data(idx)
+
         self.canvas.update()
         self.property_panel.update_ui_from_selection()
         self.mark_dirty()
@@ -1996,54 +1926,34 @@ class MainWindow(QMainWindow):
         self.property_panel.apply_rel_scale(factor)
 
     def on_order_changed(self):
-        # Rebuild project frames list based on timeline order
-        new_frames = []
-        for i in range(self.timeline.topLevelItemCount()):
-            item = self.timeline.topLevelItem(i)
-            new_frames.append(item.data(0, Qt.ItemDataRole.UserRole))
-        self.project.frames = new_frames
-        self.timeline.refresh_current_items() # Update numbers after drag&drop
+        # Update project frames from timeline model
+        # TimelineWidget's model is now the single source of truth
+        self.project.frames = self.timeline.get_all_frames()
+        self.timeline.refresh_current_items()  # Update numbers after drag&drop
         self.mark_dirty()
 
     def reverse_selected_frames(self):
-        selected = self.timeline.selectedItems()
-        if len(selected) < 2:
+        # Use unified interface to get selected indices
+        indices = self.timeline.get_selected_indices_from_current_view()
+        if len(indices) < 2:
             return
-            
-        # Get indices
-        indices = []
-        for item in selected:
-            indices.append(self.timeline.indexOfTopLevelItem(item))
-        
-        indices.sort() # Ensure they are in order (e.g. [1, 3, 4, 10])
-        
-        # Get selected frames data
-        selected_frames = [self.project.frames[idx] for idx in indices]
-        
-        # Reverse them
-        selected_frames.reverse()
-        
-        # Put them back
-        for i, idx in enumerate(indices):
-            self.project.frames[idx] = selected_frames[i]
-            
-        # Refresh UI
-        # We need to refresh the Timeline items to reflect the change
-        # Easiest is to Clear and Reload, but we can also just update the data/text of existing items
-        for i, idx in enumerate(indices):
-            item = self.timeline.topLevelItem(idx)
-            frame_data = self.project.frames[idx]
-            
-            # Update item data
-            item.setData(0, Qt.ItemDataRole.UserRole, frame_data)
-            
-            # Update display (including name via update_item_display)
-            orig_res = item.data(3, Qt.ItemDataRole.UserRole)
-            w, h = orig_res if orig_res else (0, 0)
-            self.timeline.update_item_display(item, frame_data, w, h)
-            item.setCheckState(0, Qt.CheckState.Checked if frame_data.is_disabled else Qt.CheckState.Unchecked)
-            
+
+        # Reverse selected frames through model
+        from ui.timeline_model import TimelineModel
+        if isinstance(self.timeline.model, TimelineModel):
+            self.timeline.model.reverse_frames(indices)
+        else:
+            # Fallback to manual reversal
+            selected_frames = [self.timeline.get_frame_at(idx) for idx in indices]
+            selected_frames.reverse()
+
+            # Put them back by replacing in model
+            for i, idx in enumerate(indices):
+                frame_data = selected_frames[i]
+                self.timeline.model.replace_frame_at(idx, frame_data)
+
         self.mark_dirty()
+        self.timeline.refresh_current_items()
         self.canvas.update()
         self.property_panel.update_ui_from_selection()
         self.statusBar().showMessage(f"Reversed {len(indices)} frames.", 3000)
@@ -2062,31 +1972,25 @@ class MainWindow(QMainWindow):
         if len(selected_items) > 1:
             # Play selected only
             # Sort by visual order (index) to ensure correct sequence
-            if self.timeline.get_view_mode() == "list":
-                # List view
-                target_items = sorted(selected_items, key=lambda i: self.timeline.indexOfTopLevelItem(i))
-            else:
-                # Grid view - use row index
-                target_items = sorted(selected_items, key=lambda i: self.timeline.currentWidget().row(i))
+            current_view = self.timeline.get_current_widget()
+            target_items = sorted(selected_items, key=lambda i: current_view.row(i))
         else:
             # Play all
+            current_view = self.timeline.get_current_widget()
             if self.timeline.get_view_mode() == "list":
-                # List view
+                # List view - get all top level items
                 root = self.timeline.list_view.invisibleRootItem()
                 target_items = [root.child(i) for i in range(root.childCount())]
             else:
                 # Grid view
-                current_view = self.timeline.currentWidget()
                 target_items = [current_view.item(i) for i in range(current_view.count())]
 
         # Filter disabled
         self.playlist = []
         for item in target_items:
-            if isinstance(item, QTreeWidgetItem):  # QTreeWidgetItem
-                data = item.data(0, Qt.ItemDataRole.UserRole)
-            else:  # QListWidgetItem
-                data = item.data(Qt.ItemDataRole.UserRole)
-            if not data.is_disabled:
+            # Use unified interface to extract frame data
+            data = self.timeline.extract_frame_data_from_item(item)
+            if data and not data.is_disabled:
                 self.playlist.append(item)
 
         # Reset index if out of bounds or empty?
@@ -2108,15 +2012,9 @@ class MainWindow(QMainWindow):
 
         self.statusBar().showMessage(i18n.t("msg_playback_stopped"))
 
-        # Restore selection
-        selected_items = self.timeline.selectedItems()
-        frames = []
-        for item in selected_items:
-            if hasattr(item, 'column'):  # QTreeWidgetItem
-                frames.append(item.data(0, Qt.ItemDataRole.UserRole))
-            else:  # QListWidgetItem
-                frames.append(item.data(Qt.ItemDataRole.UserRole))
-        self.canvas.set_selected_frames(frames)
+        # Restore selection using unified interface
+        selected_frames = self.timeline.get_selected_frames()
+        self.canvas.set_selected_frames(selected_frames)
         self.update_onion_state()
 
     def handle_space_shortcut(self):
@@ -2193,15 +2091,12 @@ class MainWindow(QMainWindow):
             self.update_onion_state()
 
     def next_frame(self):
-        if not self.project.frames or not hasattr(self, 'playlist') or not self.playlist:
+        if self.timeline.get_frame_count() == 0 or not hasattr(self, 'playlist') or not self.playlist:
             return
 
         # Advance
         item = self.playlist[self.play_index]
-        if isinstance(item, QTreeWidgetItem):  # QTreeWidgetItem
-            frame_data = item.data(0, Qt.ItemDataRole.UserRole)
-        else:  # QListWidgetItem
-            frame_data = item.data(Qt.ItemDataRole.UserRole)
+        frame_data = self.timeline.extract_frame_data_from_item(item)
 
         # Show on canvas directly (Override selection visualization)
         self.canvas.set_selected_frames([frame_data])
@@ -2297,12 +2192,14 @@ class MainWindow(QMainWindow):
                         w, h = size.width(), size.height()
                 
                 self.timeline.add_frame(os.path.basename(frame.file_path), frame, w, h)
-                
+
             if self.project.frames:
-                # Select first by default
-                if self.timeline.topLevelItemCount() > 0:
-                    self.timeline.setCurrentItem(self.timeline.topLevelItem(0))
-                    
+                # Select first by default - use unified interface
+                if self.timeline.get_frame_count() > 0:
+                    # Select first frame
+                    first_frame = self.timeline.get_frame_at(0)
+                    if first_frame:
+                        self.timeline.set_reference_frame(first_frame)
             self.is_dirty = False
             self.update_title()
             self.update_onion_state()
@@ -2698,7 +2595,6 @@ class MainWindow(QMainWindow):
             # 只加载一次图片（用于验证）
             for crop in crops:
                 frame = FrameData(file_path=file, crop_rect=crop)
-                self.project.frames.append(frame)
                 self.timeline.add_frame(os.path.basename(file), frame, crop[2], crop[3])
                 
         else:
@@ -2717,9 +2613,8 @@ class MainWindow(QMainWindow):
                 part = src.crop((x, y, x + w, y + h))
                 out_path = os.path.join(slice_dir, f"{base_name}_{i:03d}.png")
                 part.save(out_path)
-                
+
                 frame = FrameData(file_path=out_path)
-                self.project.frames.append(frame)
                 self.timeline.add_frame(os.path.basename(out_path), frame, w, h)
                 
         self.mark_dirty()
@@ -2747,10 +2642,9 @@ class MainWindow(QMainWindow):
                 png_frame = frame.convert("RGBA")
                 out_path = os.path.join(frames_dir, f"{base_name}_{i:03d}.png")
                 png_frame.save(out_path)
-                
-                # Add to project
+
+                # Add to project through timeline model
                 f_data = FrameData(file_path=out_path)
-                self.project.frames.append(f_data)
                 self.timeline.add_frame(os.path.basename(out_path), f_data, png_frame.width, png_frame.height)
                 count += 1
                 
@@ -2769,17 +2663,14 @@ class MainWindow(QMainWindow):
     def _get_export_indices(self, range_mode, custom_range):
         """Helper to get list of indices based on mode."""
         if range_mode == "selected":
-            selected = self.timeline.selectedItems()
-            indices = []
-            for item in selected:
-                indices.append(self.timeline.indexOfTopLevelItem(item))
-            return sorted(indices)
+            # Use unified interface to get selected indices
+            return sorted(self.timeline.get_selected_indices_from_current_view())
         elif range_mode == "custom":
             from utils.exporter import Exporter
-            return Exporter.parse_range_string(custom_range, len(self.project.frames))
+            return Exporter.parse_range_string(custom_range, self.timeline.get_frame_count())
         else: # "all"
             # Return all non-disabled frames' indices
-            return [i for i, f in enumerate(self.project.frames) if not f.is_disabled]
+            return [i for i, f in enumerate(self.timeline.get_all_frames()) if not f.is_disabled]
 
     def export_sprite_sheet(self):
         from ui.export_dialog import SpriteSheetExportDialog
@@ -2985,19 +2876,15 @@ class MainWindow(QMainWindow):
     def set_timeline_view(self, mode):
         """Switch between list and grid view"""
         # Save current selection before switching
-        current_items = self.timeline.get_current_widget().selectedItems()
+        current_view = self.timeline.get_current_widget()
         selected_indices = []
-        if current_items:
-            if mode == "list":
-                # Currently in grid, save grid selection
-                selected_indices = [self.timeline.grid_view.row(item) for item in current_items]
-            else:
-                # Currently in list, save list selection
-                selected_indices = [self.timeline.list_view.indexOfTopLevelItem(item) for item in current_items]
-        
+
+        # Get selected indices using unified interface
+        selected_indices = current_view.get_selected_indices()
+
         # Switch view
         self.timeline.set_view_mode(mode)
-        
+
         # Restore selection
         if selected_indices:
             if mode == "grid":
@@ -3010,7 +2897,7 @@ class MainWindow(QMainWindow):
                 for idx in selected_indices:
                     if idx < self.timeline.list_view.topLevelItemCount():
                         self.timeline.list_view.topLevelItem(idx).setSelected(True)
-        
+
         # Save view mode preference
         self.settings.setValue("timeline_view_mode", mode)
     

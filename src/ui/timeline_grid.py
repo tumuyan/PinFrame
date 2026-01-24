@@ -5,11 +5,22 @@ from PyQt6.QtWidgets import (QListWidget, QListWidgetItem, QAbstractItemView,
 from PyQt6.QtCore import Qt, pyqtSignal, QSize, QTimer, QEvent, QPoint, QRectF
 from PyQt6.QtGui import QColor, QImage, QPixmap, QPainter, QBrush, QPen, QFont, QImageReader, QIcon
 from i18n.manager import i18n
+from ui.timeline_base_view import BaseTimelineView
+from model.project_data import FrameData
+from typing import List, Optional
 import os
 
-class TimelineGridWidget(QListWidget):
+# Debug flag
+DEBUG_GRID_VIEW = True
+
+def debug_grid_log(msg):
+    """Print debug message if debug mode is enabled"""
+    if DEBUG_GRID_VIEW:
+        print(f"[TimelineGridWidget] {msg}")
+
+class TimelineGridWidget(QListWidget, BaseTimelineView):
     """Grid view for timeline with thumbnail display"""
-    
+
     selection_changed = pyqtSignal(list)
     order_changed = pyqtSignal()
     files_dropped = pyqtSignal(list, int)
@@ -24,7 +35,7 @@ class TimelineGridWidget(QListWidget):
     set_reference_requested = pyqtSignal()
     clear_reference_requested = pyqtSignal()
     thumbnail_size_changed = pyqtSignal(int, int)  # width, height
-    
+
     def __init__(self, parent=None):
         super().__init__(parent)
         
@@ -64,15 +75,6 @@ class TimelineGridWidget(QListWidget):
         
         # Set item size based on thumbnail dimensions
         self.update_item_size()
-    
-    def update_item_size(self):
-        """Update grid item size based on thumbnail dimensions"""
-        # Calculate item size: thumbnail + spacing + label height
-        label_height = 40 if self.show_multiline else 20
-        item_width = self.thumbnail_width + 8
-        item_height = self.thumbnail_height + label_height + 8
-        self.setIconSize(QSize(self.thumbnail_width, self.thumbnail_height))
-        self.setGridSize(QSize(item_width, item_height))
     
     def set_thumbnail_size(self, width, height):
         """Set thumbnail size"""
@@ -114,21 +116,110 @@ class TimelineGridWidget(QListWidget):
             self.set_visual_reference_frame(self.reference_frame_data)
     
     def block_selection_signals(self, block: bool):
+        """Block or unblock selection change signals (auto-emit on unblock)"""
         self._selection_blocked = block
         if not block:
             self._emit_selection_changed()
-    
+
+    def block_selection_signals_internal(self, block: bool):
+        """Block or unblock selection change signals AND Qt's itemSelectionChanged"""
+        self._selection_blocked = block
+        if block:
+            try:
+                self.itemSelectionChanged.disconnect(self.on_selection_changed)
+                debug_grid_log("Disconnected itemSelectionChanged from on_selection_changed")
+            except TypeError:
+                # Already disconnected or never connected
+                debug_grid_log("Warning: itemSelectionChanged was not connected")
+        else:
+            self.itemSelectionChanged.connect(self.on_selection_changed)
+            debug_grid_log("Reconnected itemSelectionChanged to on_selection_changed")
+
     def select_all_optimized(self):
+        """Select all items efficiently"""
         self._selection_blocked = True
         self.selectAll()
         self._selection_blocked = False
         self._emit_selection_changed()
-    
+
+    # BaseTimelineView abstract methods implementation
+    def get_selected_indices(self) -> List[int]:
+        """Get indices of selected items"""
+        selected_items = self.selectedItems()
+        return [self.row(item) for item in selected_items]
+
+    def get_selected_items(self):
+        """Get selected items"""
+        return self.selectedItems()
+
+    def get_frame_data_at_index(self, index: int) -> Optional[FrameData]:
+        """Get frame data at specified index"""
+        if 0 <= index < self.count():
+            item = self.item(index)
+            return item.data(Qt.ItemDataRole.UserRole)
+        return None
+
+    def add_frame_to_view(self, filename: str, frame_data: FrameData, index: int):
+        """Add a frame to the view at specified index"""
+        self.add_frame(filename, frame_data, index)
+
+    def remove_frame_from_view(self, index: int):
+        """Remove frame from view at specified index"""
+        if 0 <= index < self.count():
+            self.takeItem(index)
+
+    def update_frame_in_view(self, index: int, frame_data: FrameData, filename: str):
+        """Update frame in view at specified index"""
+        self.update_frame(index, frame_data, filename)
+
+    def refresh_view(self):
+        """Refresh the entire view"""
+        self.refresh_all_items()
+
+    def clear_view(self):
+        """Clear all items from view"""
+        self.clear()
+
+    def get_item_count(self) -> int:
+        """Get total number of items in view"""
+        return self.count()
+
     def _emit_selection_changed(self):
         if self._selection_blocked:
+            debug_grid_log("Emit selection changed but blocked, skipping")
+            import traceback
+            debug_grid_log("Blocked call stack:")
+            for line in traceback.format_stack()[-5:-1]:
+                debug_grid_log(line.strip())
             return
+
+        # Check if parent TimelineWidget is updating from model
+        parent = self.parent()
+        if hasattr(parent, '_updating_view_from_model') and parent._updating_view_from_model:
+            debug_grid_log("Selection change emission skipped (parent is updating from model)")
+            return
+
+        if hasattr(parent, '_view_update_in_progress') and parent._view_update_in_progress:
+            debug_grid_log("Selection change emission skipped (view update in progress)")
+            return
+
         selected_items = self.selectedItems()
+        selected_indices = [self.row(item) for item in selected_items]
         frames = [item.data(Qt.ItemDataRole.UserRole) for item in selected_items]
+
+        debug_grid_log(f"Emitting selection changed: indices={selected_indices}, count={len(selected_items)}")
+        import traceback
+        debug_grid_log("Call stack:")
+        for line in traceback.format_stack()[-6:-1]:
+            debug_grid_log(line.strip())
+
+        self.selection_changed.emit(frames)
+
+        selected_items = self.selectedItems()
+        selected_indices = [self.row(item) for item in selected_items]
+        frames = [item.data(Qt.ItemDataRole.UserRole) for item in selected_items]
+
+        debug_grid_log(f"Emitting selection changed: indices={selected_indices}, count={len(selected_items)}")
         self.selection_changed.emit(frames)
     
     def create_thumbnail(self, image_path, frame_data, index):
@@ -254,15 +345,20 @@ class TimelineGridWidget(QListWidget):
     def update_frame(self, index, frame_data, filename):
         """Update frame at index"""
         if index < 0 or index >= self.count():
+            debug_grid_log(f"update_frame: invalid index {index}, count={self.count()}")
             return
 
         item = self.item(index)
+        was_selected = item.isSelected()
+        debug_grid_log(f"update_frame: index={index}, was_selected={was_selected}, filename={filename}")
+
+        # Update all item data in one go (batch updates reduce signal triggers)
         item.setData(Qt.ItemDataRole.UserRole, frame_data)
 
         # Recreate thumbnail
         thumbnail = self.create_thumbnail(frame_data.file_path, frame_data, index)
         item.setIcon(QIcon(thumbnail))
-        
+
         # Update text
         fname = os.path.basename(filename)
         if frame_data.crop_rect:
@@ -270,9 +366,16 @@ class TimelineGridWidget(QListWidget):
             col = x // w
             row = y // h
             fname += f" [{col},{row}]"
-        
+
         item.setText(fname)
         item.setToolTip(fname)
+
+        # Check selection after update
+        is_selected_after = item.isSelected()
+        debug_grid_log(f"update_frame: selection after update={is_selected_after}, was selected={was_selected}")
+
+        if was_selected != is_selected_after:
+            debug_grid_log(f"update_frame: WARNING! Selection state changed: {was_selected} -> {is_selected_after}")
     
     def refresh_all_items(self):
         """Refresh all items (thumbnails and text)"""
@@ -292,7 +395,20 @@ class TimelineGridWidget(QListWidget):
     
     def on_selection_changed(self):
         if self._selection_blocked:
+            debug_grid_log("Selection changed but blocked, skipping")
             return
+
+        # Check if parent TimelineWidget is updating from model
+        parent = self.parent()
+        if hasattr(parent, '_updating_view_from_model') and parent._updating_view_from_model:
+            debug_grid_log("Selection changed but ignored (parent is updating from model)")
+            return
+
+        if hasattr(parent, '_view_update_in_progress') and parent._view_update_in_progress:
+            debug_grid_log("Selection changed but ignored (view update in progress)")
+            return
+
+        debug_grid_log("Selection changed, starting debounce timer")
         self._selection_debounce_timer.start()
     
     def dragEnterEvent(self, event):
@@ -414,6 +530,29 @@ class TimelineGridWidget(QListWidget):
     def refresh_ui_text(self):
         # Grid view doesn't have text labels to refresh
         pass
-    
+
     def refresh_current_items(self):
         self.refresh_all_items()
+
+    def update_item_display(self, item, frame_data, orig_w, orig_h):
+        """Update display of a single item (refreshes thumbnail and text)"""
+        if item is None:
+            return
+
+        # Get index for this item
+        index = self.row(item)
+
+        # Update thumbnail
+        thumbnail = self.create_thumbnail(frame_data.file_path, frame_data, index)
+        item.setIcon(QIcon(thumbnail))
+
+        # Update text
+        fname = os.path.basename(frame_data.file_path)
+        if frame_data.crop_rect:
+            x, y, w, h = frame_data.crop_rect
+            col = x // w
+            row = y // h
+            fname += f" [{col},{row}]"
+
+        item.setText(fname)
+        item.setToolTip(fname)
