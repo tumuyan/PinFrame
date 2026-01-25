@@ -97,6 +97,11 @@ git fetch github main
 git reset --hard github/main
 ```
 
+4. 推送本地分支到 github 开发分支
+```
+git push -u github HEAD:cnb_***
+```
+
 ## 错误处理
 
 ### 中文显示为空心方块

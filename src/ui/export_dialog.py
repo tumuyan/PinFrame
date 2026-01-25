@@ -1,17 +1,17 @@
 from PyQt6.QtWidgets import (QDialog, QVBoxLayout, QCheckBox, QPushButton, 
                              QHBoxLayout, QLabel, QSpinBox, QRadioButton, 
-                             QButtonGroup, QLineEdit, QColorDialog, QFrame,
-                             QComboBox)
+                             QButtonGroup, QLineEdit)
 from PyQt6.QtGui import QColor, QPalette
 from i18n.manager import i18n
+from .color_picker import ColorPickerWidget
 
 class CommonExportSettings(QVBoxLayout):
     def __init__(self, parent=None):
         super().__init__()
         self.parent_dlg = parent
         
-        # Preset Color Mapping
-        self.presets = {
+        # Preset Color Mapping for background
+        bg_presets = {
             "trans": (0, 0, 0, 0),
             "white": (255, 255, 255, 255),
             "green": (0, 255, 0, 255),
@@ -56,79 +56,25 @@ class CommonExportSettings(QVBoxLayout):
         
         bg_layout = QHBoxLayout()
         
-        self.color_combo = QComboBox()
-        self.color_combo.addItem(i18n.t("export_color_trans"), "trans")
-        self.color_combo.addItem(i18n.t("export_color_white"), "white")
-        self.color_combo.addItem(i18n.t("export_color_green"), "green")
-        self.color_combo.addItem(i18n.t("export_color_red"), "red")
-        self.color_combo.addItem(i18n.t("export_color_black"), "black")
-        self.color_combo.addItem(i18n.t("export_color_custom"), "custom")
-        self.color_combo.currentIndexChanged.connect(self.on_combo_changed)
-        bg_layout.addWidget(self.color_combo)
-        
-        self.color_swatch = QFrame()
-        self.color_swatch.setFixedSize(20, 20)
-        self.color_swatch.setFrameStyle(QFrame.Shape.Box | QFrame.Shadow.Sunken)
-        self.color_swatch.setAutoFillBackground(True)
-        bg_layout.addWidget(self.color_swatch)
-
-        # Color Info Label
-        self.color_info_label = QLabel()
-        self.color_info_label.setStyleSheet("color: gray; font-size: 11px;")
-        bg_layout.addWidget(self.color_info_label)
-        
-        self.color_btn = QPushButton(i18n.t("btn_pick", "Pick..."))
-        self.color_btn.clicked.connect(self.pick_color)
-        self.color_btn.setVisible(False)
-        bg_layout.addWidget(self.color_btn)
-        
+        # Use ColorPickerWidget
+        self.color_picker = ColorPickerWidget(parent, bg_presets, show_alpha=True)
+        bg_layout.addLayout(self.color_picker)
         bg_layout.addStretch()
         bg_main_layout.addLayout(bg_layout)
         
         self.addLayout(bg_main_layout)
         self.addSpacing(10)
-        
-        self.set_swatch_color(QColor(0, 0, 0, 0))
-
-    def on_combo_changed(self, index):
-        data = self.color_combo.currentData()
-        if data in self.presets:
-            self.color_btn.setVisible(False)
-            self.set_swatch_color(QColor(*self.presets[data]))
-        else:
-            self.color_btn.setVisible(True)
-            self.update_info_label()
-
-    def update_info_label(self):
-        c = self.current_color
-        text = i18n.t("label_color_info").format(r=c.red(), g=c.green(), b=c.blue(), a=c.alpha())
-        self.color_info_label.setText(text)
-
-    def set_swatch_color(self, color):
-        self.current_color = color
-        # Use stylesheet for reliability across themes
-        r, g, b, a = color.red(), color.green(), color.blue(), color.alpha()
-        rgba_str = f"rgba({r}, {g}, {b}, {a/255.0})"
-        # If the swatch is too transparent, we might want to show something? 
-        # But for now, just the color.
-        self.color_swatch.setStyleSheet(f"background-color: {rgba_str}; border: 1px solid #888; border-radius: 2px;")
-        self.update_info_label()
-
-    def pick_color(self):
-        color = QColorDialog.getColor(self.current_color, self.parent_dlg, i18n.t("dlg_pick_color", "Pick Background Color"), QColorDialog.ColorDialogOption.ShowAlphaChannel)
-        if color.isValid():
-            self.set_swatch_color(color)
 
     def get_settings(self):
         mode = "all"
         if self.range_selected.isChecked(): mode = "selected"
         elif self.range_custom.isChecked(): mode = "custom"
         
-        color = self.current_color
+        color = self.color_picker.get_color_tuple()
         return {
             "range_mode": mode,
             "custom_range": self.custom_range_edit.text(),
-            "bg_color": (color.red(), color.green(), color.blue(), color.alpha())
+            "bg_color": color
         }
 
     def set_settings(self, mode, custom_range, bg_color_tuple):
@@ -138,21 +84,8 @@ class CommonExportSettings(QVBoxLayout):
         
         self.custom_range_edit.setText(custom_range)
         
-        # Match color to preset or set custom
-        found = False
-        color_tuple = tuple(bg_color_tuple)
-        for key, val in self.presets.items():
-            if val == color_tuple:
-                idx = self.color_combo.findData(key)
-                if idx >= 0:
-                    self.color_combo.setCurrentIndex(idx)
-                    found = True
-                    break
-        
-        if not found:
-            idx = self.color_combo.findData("custom")
-            self.color_combo.setCurrentIndex(idx)
-            self.set_swatch_color(QColor(*bg_color_tuple))
+        # Use ColorPickerWidget to set color
+        self.color_picker.match_to_preset(bg_color_tuple)
 
 
 class ExportOptionsDialog(QDialog):

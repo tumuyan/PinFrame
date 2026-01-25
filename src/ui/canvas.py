@@ -67,11 +67,25 @@ class CanvasWidget(QWidget):
         self.raster_scale_threshold = 5.0
         self.rasterization_show_grid = True
         
+        # Canvas Border Settings
+        self.border_inner_color = QColor(255, 255, 255)
+        self.border_inner_width = 2
+        self.border_outer_color = QColor(0, 0, 0)
+        self.border_outer_width = 1
+        
     def set_rasterization_settings(self, enabled, grid_color, scale_threshold, show_grid):
         self.raster_enabled = enabled
         self.raster_grid_color = grid_color
         self.raster_scale_threshold = scale_threshold
         self.rasterization_show_grid = show_grid
+        self.update()
+    
+    def set_border_settings(self, inner_color, inner_width, outer_color, outer_width):
+        """Set canvas border settings."""
+        self.border_inner_color = inner_color
+        self.border_inner_width = inner_width
+        self.border_outer_color = outer_color
+        self.border_outer_width = outer_width
         self.update()
 
     def set_wheel_mode(self, mode):
@@ -435,21 +449,54 @@ class CanvasWidget(QWidget):
 
         # Draw Canvas Border (Sharp UI Layer, Outer Stroke)
         painter.save()
-        pen_width = 2
-        painter.setPen(QPen(Qt.GlobalColor.white, pen_width / self.view_scale))
-        painter.setBrush(Qt.BrushStyle.NoBrush)
         
-        # Adjust rect to be OUTSIDE the canvas area by half the pen width on each side
-        # in screen space. In world space, that's (pen_width / 2) / view_scale.
-        half_pen_world = (pen_width / 2) / self.view_scale
+        # Use border settings from CanvasWidget
+        inner_color = self.border_inner_color
+        inner_width = self.border_inner_width
+        outer_color = self.border_outer_color
+        outer_width = self.border_outer_width
         
-        # Round the screen-space position to prevent thickness variation
-        bx = round((-self.project_width / 2) * self.view_scale - pen_width / 2) / self.view_scale
-        by = round((-self.project_height / 2) * self.view_scale - pen_width / 2) / self.view_scale
-        bw = round(self.project_width * self.view_scale + pen_width) / self.view_scale
-        bh = round(self.project_height * self.view_scale + pen_width) / self.view_scale
+        # Calculate border rectangles
+        # Inner border: aligns with canvas outer edge (like original implementation)
+        # Outer border: drawn outside the inner border
         
-        painter.drawRect(QRectF(bx, by, bw, bh))
+        canvas_half_w = self.project_width / 2
+        canvas_half_h = self.project_height / 2
+        
+        # Draw outer border first (if width > 0)
+        # We draw outer first, then inner on top (inner will be closer to canvas)
+        if outer_width > 0:
+            outer_pen_width = outer_width / self.view_scale
+            painter.setPen(QPen(outer_color, outer_pen_width))
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            
+            # Outer border center is at: canvas_edge + inner_width + outer_width/2
+            # This makes the outer border's inner edge touch the inner border's outer edge
+            total_offset = inner_width + outer_width / 2
+            
+            # Round screen-space position
+            bx_outer = round((-canvas_half_w) * self.view_scale - total_offset) / self.view_scale
+            by_outer = round((-canvas_half_h) * self.view_scale - total_offset) / self.view_scale
+            bw_outer = round(self.project_width * self.view_scale + total_offset * 2) / self.view_scale
+            bh_outer = round(self.project_height * self.view_scale + total_offset * 2) / self.view_scale
+            
+            painter.drawRect(QRectF(bx_outer, by_outer, bw_outer, bh_outer))
+        
+        # Draw inner border (if width > 0)
+        if inner_width > 0:
+            inner_pen_width = inner_width / self.view_scale
+            painter.setPen(QPen(inner_color, inner_pen_width))
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            
+            # Inner border aligns with canvas edge (like original)
+            # Center line is at canvas_edge - inner_width/2
+            bx_inner = round((-canvas_half_w) * self.view_scale - inner_width / 2) / self.view_scale
+            by_inner = round((-canvas_half_h) * self.view_scale - inner_width / 2) / self.view_scale
+            bw_inner = round(self.project_width * self.view_scale + inner_width) / self.view_scale
+            bh_inner = round(self.project_height * self.view_scale + inner_width) / self.view_scale
+            
+            painter.drawRect(QRectF(bx_inner, by_inner, bw_inner, bh_inner))
+        
         painter.restore()
 
         # Draw Custom Anchor
