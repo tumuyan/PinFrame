@@ -132,6 +132,7 @@ class MainWindow(QMainWindow):
         self.grid_thumb_width = self.settings.value("grid_thumb_width", 120, type=int)
         self.grid_thumb_height = self.settings.value("grid_thumb_height", 120, type=int)
         self.grid_show_multiline = self.settings.value("grid_show_multiline", False, type=bool)
+        self.grid_multiline_label_height = self.settings.value("grid_multiline_label_height", 36, type=int)
         self.grid_background_mode = self.settings.value("grid_background_mode", "checkerboard")
 
         # Playback (must be initialized before create_menus to avoid AttributeError)
@@ -1056,6 +1057,7 @@ class MainWindow(QMainWindow):
             self.grid_thumb_width,
             self.grid_thumb_height,
             self.grid_show_multiline,
+            self.grid_multiline_label_height,
             self.grid_background_mode
         )
         
@@ -3176,32 +3178,35 @@ class MainWindow(QMainWindow):
     def open_timeline_grid_settings(self):
         """Open grid view settings dialog"""
         from ui.timeline_grid_settings import TimelineGridSettingsDialog
-        
+
         dlg = TimelineGridSettingsDialog(
             self,
             self.timeline.grid_thumbnail_width,
             self.timeline.grid_thumbnail_height,
             self.timeline.grid_show_multiline,
+            self.timeline.grid_multiline_label_height,
             self.timeline.grid_background_mode
         )
-        
+
         if dlg.exec():
             settings = dlg.get_settings()
-            
+
             # Apply settings
             self.timeline.update_grid_settings(
                 settings['width'],
                 settings['height'],
                 settings['multiline'],
+                settings['multiline_label_height'],
                 settings['background']
             )
-            
+
             # Save settings
             self.settings.setValue("grid_thumb_width", settings['width'])
             self.settings.setValue("grid_thumb_height", settings['height'])
             self.settings.setValue("grid_show_multiline", settings['multiline'])
+            self.settings.setValue("grid_multiline_label_height", settings['multiline_label_height'])
             self.settings.setValue("grid_background_mode", settings['background'])
-            
+
             # If currently in grid view, refresh
             if self.timeline.get_view_mode() == "grid":
                 self.timeline.refresh_all_grid_items()

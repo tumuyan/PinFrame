@@ -34,6 +34,7 @@ class TimelineGridWidget(QListWidget, BaseTimelineView):
         self.thumbnail_width = 120
         self.thumbnail_height = 120
         self.show_multiline = False
+        self.multiline_label_height = 36  # Custom height for multiline text area (default 36px)
         self.background_mode = "checkerboard"  # black, white, gray, checkerboard, green
 
         # Widget settings
@@ -90,9 +91,20 @@ class TimelineGridWidget(QListWidget, BaseTimelineView):
     def set_show_multiline(self, multiline):
         """Set whether to show multiline filename"""
         self.show_multiline = multiline
+        # Update delegate's multiline setting
+        delegate = self.itemDelegate()
+        if hasattr(delegate, 'set_show_multiline'):
+            delegate.set_show_multiline(multiline)
         self.update_item_size()
         self.refresh_all_items()
-    
+
+    def set_multiline_label_height(self, height: int):
+        """Set the height of text area in multiline mode (in pixels)"""
+        if self.multiline_label_height != height and height > 0:
+            self.multiline_label_height = height
+            self.update_item_size()
+            self.refresh_all_items()
+
     def set_background_mode(self, mode):
         """Set background mode for thumbnails"""
         if self.background_mode != mode:
@@ -112,7 +124,7 @@ class TimelineGridWidget(QListWidget, BaseTimelineView):
 
     def update_item_size(self):
         """Update grid item size based on thumbnail dimensions"""
-        label_height = 40 if self.show_multiline else 20
+        label_height = self.multiline_label_height if self.show_multiline else 20
         item_width = self.thumbnail_width + 8
         item_height = self.thumbnail_height + label_height + 8
         self.setIconSize(QSize(self.thumbnail_width, self.thumbnail_height))

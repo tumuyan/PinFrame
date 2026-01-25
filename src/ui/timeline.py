@@ -60,11 +60,13 @@ class TimelineWidget(QStackedWidget):
         self.grid_thumbnail_width = 120
         self.grid_thumbnail_height = 120
         self.grid_show_multiline = False
+        self.grid_multiline_label_height = 36
         self.grid_background_mode = "checkerboard"
 
         # Apply settings to grid view
         self.grid_view.set_thumbnail_size(self.grid_thumbnail_width, self.grid_thumbnail_height)
         self.grid_view.set_show_multiline(self.grid_show_multiline)
+        self.grid_view.set_multiline_label_height(self.grid_multiline_label_height)
         self.grid_view.set_background_mode(self.grid_background_mode)
 
     def _connect_view_signals(self, view, is_grid=False):
@@ -130,15 +132,17 @@ class TimelineWidget(QStackedWidget):
         self.grid_thumbnail_height = height
         self.thumbnail_size_changed.emit(width, height)
 
-    def update_grid_settings(self, width, height, multiline, background):
+    def update_grid_settings(self, width, height, multiline, multiline_label_height, background):
         """Update grid view settings"""
         self.grid_thumbnail_width = width
         self.grid_thumbnail_height = height
         self.grid_show_multiline = multiline
+        self.grid_multiline_label_height = multiline_label_height
         self.grid_background_mode = background
 
         self.grid_view.set_thumbnail_size(width, height)
         self.grid_view.set_show_multiline(multiline)
+        self.grid_view.set_multiline_label_height(multiline_label_height)
         self.grid_view.set_background_mode(background)
 
     def get_current_widget(self):
