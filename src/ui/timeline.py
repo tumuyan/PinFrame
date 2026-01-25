@@ -150,10 +150,18 @@ class TimelineWidget(QStackedWidget):
         for i in range(count):
             frame_data = self.model.get_frame_at(index + i)
             if frame_data:
-                # Determine original resolution if available
+                # Determine dimensions for display
                 orig_w, orig_h = 0, 0
-                if hasattr(frame_data, 'target_resolution') and frame_data.target_resolution:
-                    orig_w, orig_h = frame_data.target_resolution
+                if frame_data.crop_rect:
+                    # Use crop rect size for virtual sliced frames
+                    orig_w, orig_h = frame_data.crop_rect[2], frame_data.crop_rect[3]
+                elif os.path.exists(frame_data.file_path):
+                    # Read original image size
+                    from PyQt6.QtGui import QImageReader
+                    reader = QImageReader(frame_data.file_path)
+                    if reader.canRead():
+                        size = reader.size()
+                        orig_w, orig_h = size.width(), size.height()
 
                 # Add to both views
                 filename = os.path.basename(frame_data.file_path)

@@ -1314,7 +1314,7 @@ class MainWindow(QMainWindow):
 
         # Remove through timeline model
         self.timeline.remove_frames_at(indices)
-            
+
         self.mark_dirty()
         self.timeline.refresh_current_items() # Update numbers after removal
         self.canvas.set_selected_frames([])
@@ -1969,10 +1969,6 @@ class MainWindow(QMainWindow):
         self.property_panel.apply_rel_scale(factor)
 
     def on_order_changed(self):
-        # Update project frames from timeline model
-        # TimelineWidget's model is now the single source of truth
-        self.project.frames = self.timeline.get_all_frames()
-
         # Refresh current items for both list and grid view (to update numbers)
         if self.timeline.get_view_mode() == "list":
             self.timeline.refresh_current_items()
@@ -2198,6 +2194,9 @@ class MainWindow(QMainWindow):
 
     def _save_to_path(self, path):
         try:
+            # Sync frames from timeline model to project before saving
+            self.project.frames = self.timeline.get_all_frames()
+
             with open(path, 'w') as f:
                 f.write(self.project.to_json(path))
             self.current_project_path = path
@@ -2247,8 +2246,12 @@ class MainWindow(QMainWindow):
                     if reader.canRead():
                         size = reader.size()
                         w, h = size.width(), size.height()
-                
+
                 self.timeline.add_frame(os.path.basename(frame.file_path), frame, w, h)
+
+            # Clear thumbnail cache after loading project and refresh grid view
+            self.timeline.grid_view._clear_thumbnail_cache()
+            self.timeline.grid_view.refresh_all_items()
 
             if self.project.frames:
                 # Select first by default - use unified interface
@@ -2719,7 +2722,7 @@ class MainWindow(QMainWindow):
 
                 frame = FrameData(file_path=out_path)
                 self.timeline.add_frame(os.path.basename(out_path), frame, w, h)
-                
+
         self.mark_dirty()
         self.timeline.refresh_current_items()
         self.statusBar().showMessage(i18n.t("msg_imported_slices").format(count=len(crops)), 3000)
@@ -2750,7 +2753,7 @@ class MainWindow(QMainWindow):
                 f_data = FrameData(file_path=out_path)
                 self.timeline.add_frame(os.path.basename(out_path), f_data, png_frame.width, png_frame.height)
                 count += 1
-                
+
             self.mark_dirty()
             self.timeline.refresh_current_items()
             self.statusBar().showMessage(i18n.t("msg_imported_gif").format(count=count), 3000)

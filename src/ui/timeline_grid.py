@@ -187,7 +187,13 @@ class TimelineGridWidget(QListWidget, BaseTimelineView):
 
     def clear_view(self):
         """Clear all items from view"""
+        self._clear_thumbnail_cache()
         self.clear()
+
+    def clear(self):
+        """Override QListWidget.clear() to also clear thumbnail cache"""
+        self._clear_thumbnail_cache()
+        super().clear()
 
     def get_item_count(self) -> int:
         """Get total number of items in view"""

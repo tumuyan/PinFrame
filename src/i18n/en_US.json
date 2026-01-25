@@ -215,6 +215,7 @@
     "ref_show_playback": "Show During Playback",
     "label_ref_prefix": "[REF] ",
     "msg_project_saved": "Project saved to {path}",
+    "msg_project_loaded": "Loaded project {path}",
     "msg_no_selection": "No Selection",
     "msg_imported_slices": "Imported {count} slices",
     "export_range_title": "Export Range:",

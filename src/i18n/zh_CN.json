@@ -209,6 +209,7 @@
     "btn_export": "导出",
     "label_ref_prefix": "[参考] ",
     "msg_project_saved": "项目已保存至 {path}",
+    "msg_project_loaded": "已加载项目 {path}",
     "msg_no_selection": "未选中",
     "msg_imported_slices": "已导入 {count} 个切片",
     "export_range_title": "导出范围：",

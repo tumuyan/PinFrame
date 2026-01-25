@@ -358,16 +358,19 @@ class TimelineListView(QTreeWidget, BaseTimelineView):
 
     def add_frame(self, filename, frame_data, orig_width=0, orig_height=0):
         item = QTreeWidgetItem(self)
-        item.setData(0, Qt.ItemDataRole.UserRole, frame_data)
 
+        item.setData(0, Qt.ItemDataRole.UserRole, frame_data)
         item.setData(3, Qt.ItemDataRole.UserRole, (orig_width, orig_height))
 
+        # IMPORTANT: Set checkState BEFORE setting text to avoid triggering itemChanged signal
+        # which would incorrectly reset is_disabled to False
+        item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+        item.setCheckState(1, Qt.CheckState.Checked if frame_data.is_disabled else Qt.CheckState.Unchecked)
+
+        # Now set the text
         item.setText(0, str(self.topLevelItemCount()))
         item.setText(1, "")
         item.setText(2, filename)
-
-        item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
-        item.setCheckState(1, Qt.CheckState.Checked if frame_data.is_disabled else Qt.CheckState.Unchecked)
 
         self.update_item_display(item, frame_data, orig_width, orig_height)
 
