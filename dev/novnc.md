@@ -43,7 +43,12 @@ chmod +x novnc_start.sh
 1. Xvfb 虚拟显示器 (分辨率 1280x720x24)
 2. x11vnc 服务器 (端口 5900)
 3. websockify 代理 (端口 6080)
-4. PyQt6 应用程序
+
+
+启动Python程序
+```
+export DISPLAY=:99 && python main.py 
+```
 
 ### 3. 访问 GUI
 
@@ -138,10 +143,7 @@ DISPLAY=:99 xeyes &
 ```
 ~~ 如果能看到眼睛图标, 说明 Xvfb 正常。~~
 
-手动启动程序
-```
-export DISPLAY=:99 && python main.py 
-```
+
 
 ### 4. 应用程序启动失败
 

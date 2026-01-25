@@ -3,6 +3,7 @@ from PyQt6.QtCore import Qt, pyqtSignal, QSize, QTimer, QPoint, QRectF
 from PyQt6.QtGui import QColor, QImage, QPixmap, QPainter, QBrush, QPen, QFont, QIcon, QAction
 from i18n.manager import i18n
 from ui.timeline_base_view import BaseTimelineView
+from ui.timeline_grid_delegate import TimelineGridDelegate
 from model.project_data import FrameData
 from typing import List, Optional
 import os
@@ -16,6 +17,7 @@ class TimelineGridWidget(QListWidget, BaseTimelineView):
     copy_properties_requested = pyqtSignal()
     paste_properties_requested = pyqtSignal()
     duplicate_requested = pyqtSignal()
+    duplicate_dialog_requested = pyqtSignal()
     remove_requested = pyqtSignal()
     disabled_state_changed = pyqtSignal(object, bool)
     enable_requested = pyqtSignal(bool)
@@ -68,6 +70,9 @@ class TimelineGridWidget(QListWidget, BaseTimelineView):
         self._drag_insert_position = None  # (index, before) - where before is True if inserting before the item
         self._is_dragging = False
 
+        # Set custom delegate for drawing frame numbers
+        self.setItemDelegate(TimelineGridDelegate(self))
+
         # Thumbnail cache to avoid recreating the same thumbnail repeatedly
         self._thumbnail_cache = {}  # key: (file_path, crop_rect, index), value: QPixmap
 
@@ -98,7 +103,8 @@ class TimelineGridWidget(QListWidget, BaseTimelineView):
     def _get_cache_key(self, image_path, frame_data, index):
         """Generate cache key for thumbnail"""
         crop_key = tuple(frame_data.crop_rect) if frame_data.crop_rect else None
-        return (image_path, crop_key, self.background_mode, self.thumbnail_width, self.thumbnail_height, index)
+        # Frame number (index) is no longer part of cache key since it's drawn by delegate
+        return (image_path, crop_key, self.background_mode, self.thumbnail_width, self.thumbnail_height, frame_data.is_disabled)
 
     def _clear_thumbnail_cache(self):
         """Clear thumbnail cache"""
@@ -187,7 +193,13 @@ class TimelineGridWidget(QListWidget, BaseTimelineView):
 
     def clear_view(self):
         """Clear all items from view"""
+        self._clear_thumbnail_cache()
         self.clear()
+
+    def clear(self):
+        """Override QListWidget.clear() to also clear thumbnail cache"""
+        self._clear_thumbnail_cache()
+        super().clear()
 
     def get_item_count(self) -> int:
         """Get total number of items in view"""
@@ -245,8 +257,8 @@ class TimelineGridWidget(QListWidget, BaseTimelineView):
             painter.setPen(QColor(150, 150, 150))
             painter.drawText(img.rect(), Qt.AlignmentFlag.AlignCenter, "N/A")
 
-        # Draw overlays
-        self.draw_overlays(painter, img.rect(), frame_data, index)
+        # Draw overlays (only disabled state, frame number is drawn by delegate)
+        self.draw_overlays(painter, img.rect(), frame_data, index, draw_frame_number=False)
 
         painter.end()
         pixmap = QPixmap.fromImage(img)
@@ -278,30 +290,27 @@ class TimelineGridWidget(QListWidget, BaseTimelineView):
             # Don't draw any background - keep it truly transparent
             pass
     
-    def draw_overlays(self, painter, rect, frame_data, index):
+    def draw_overlays(self, painter, rect, frame_data, index, draw_frame_number=False):
         """Draw overlay information on thumbnail"""
         # Draw disabled overlay
         if frame_data.is_disabled:
             overlay_color = QColor(0, 0, 0, 120)
             painter.fillRect(rect, overlay_color)
 
-            # Draw disabled icon/text
-            painter.setPen(QColor(255, 100, 100))
-            painter.setFont(QFont("Arial", 12, QFont.Weight.Bold))
-            painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, "🚫")
+        # Draw frame number (optional - frame numbers are now drawn by delegate by default)
+        # This parameter is kept for compatibility and can be enabled if needed
+        if draw_frame_number:
+            painter.setPen(QColor(255, 255, 255))
+            painter.setFont(QFont("Arial", 10, QFont.Weight.Bold))
 
-        # Draw frame number
-        painter.setPen(QColor(255, 255, 255))
-        painter.setFont(QFont("Arial", 10, QFont.Weight.Bold))
+            # Add semi-transparent background for text readability
+            text_bg_rect = QRectF(rect.width() - 30, rect.height() - 25, 28, 20)
+            painter.setBrush(QBrush(QColor(0, 0, 0, 150)))
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.drawRoundedRect(text_bg_rect, 3, 3)
 
-        # Add semi-transparent background for text readability
-        text_bg_rect = QRectF(rect.width() - 30, rect.height() - 25, 28, 20)
-        painter.setBrush(QBrush(QColor(0, 0, 0, 150)))
-        painter.setPen(Qt.PenStyle.NoPen)
-        painter.drawRoundedRect(text_bg_rect, 3, 3)
-
-        painter.setPen(QColor(255, 255, 255))
-        painter.drawText(text_bg_rect.toRect(), Qt.AlignmentFlag.AlignCenter, str(index + 1))
+            painter.setPen(QColor(255, 255, 255))
+            painter.drawText(text_bg_rect.toRect(), Qt.AlignmentFlag.AlignCenter, str(index + 1))
     
     def add_frame(self, filename, frame_data, index):
         """Add a frame to the grid"""
@@ -329,8 +338,9 @@ class TimelineGridWidget(QListWidget, BaseTimelineView):
             font = item.font()
             font.setBold(True)
             item.setFont(font)
-        
-        self.addItem(item)
+
+        # Insert item at specified index
+        self.insertItem(index, item)
     
     def update_frame(self, index, frame_data, filename):
         """Update frame at index"""
@@ -373,15 +383,9 @@ class TimelineGridWidget(QListWidget, BaseTimelineView):
 
     def refresh_item_numbers(self):
         """Refresh only the item numbers (index) without regenerating thumbnails"""
-        # When frame numbers change, we need to clear cache since index is part of cache key
-        self._clear_thumbnail_cache()
-        for i in range(self.count()):
-            item = self.item(i)
-            frame_data = item.data(Qt.ItemDataRole.UserRole)
-
-            # Recreate thumbnail with updated index
-            thumbnail = self.create_thumbnail(frame_data.file_path, frame_data, i)
-            item.setIcon(QIcon(thumbnail))
+        # Frame numbers are now drawn by delegate, so we just need to trigger a repaint
+        # No need to clear cache or recreate thumbnails
+        self.viewport().update()
     
     def on_selection_changed(self):
         if self._selection_blocked:
@@ -602,6 +606,10 @@ class TimelineGridWidget(QListWidget, BaseTimelineView):
         dup_action.triggered.connect(self.duplicate_requested.emit)
         dup_action.setEnabled(has_selection)
 
+        dup_dialog_action = QAction(i18n.t("action_dup_frames_dialog"), self)
+        dup_dialog_action.triggered.connect(self.duplicate_dialog_requested.emit)
+        dup_dialog_action.setEnabled(has_selection)
+
         rem_action = QAction(i18n.t("action_rem_frame"), self)
         rem_action.triggered.connect(self.remove_requested.emit)
         rem_action.setEnabled(has_selection)
@@ -644,6 +652,7 @@ class TimelineGridWidget(QListWidget, BaseTimelineView):
         menu.addSeparator()
 
         menu.addAction(dup_action)
+        menu.addAction(dup_dialog_action)
         menu.addAction(rem_action)
 
         menu.exec(self.viewport().mapToGlobal(position))

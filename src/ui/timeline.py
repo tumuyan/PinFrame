@@ -18,6 +18,7 @@ class TimelineWidget(QStackedWidget):
     copy_properties_requested = pyqtSignal()
     paste_properties_requested = pyqtSignal()
     duplicate_requested = pyqtSignal()
+    duplicate_dialog_requested = pyqtSignal()
     remove_requested = pyqtSignal()
     disabled_state_changed = pyqtSignal(object, bool)
     enable_requested = pyqtSignal(bool)
@@ -75,6 +76,7 @@ class TimelineWidget(QStackedWidget):
         view.copy_properties_requested.connect(self.copy_properties_requested)
         view.paste_properties_requested.connect(self.paste_properties_requested)
         view.duplicate_requested.connect(self.duplicate_requested)
+        view.duplicate_dialog_requested.connect(self.duplicate_dialog_requested)
         view.remove_requested.connect(self.remove_requested)
         view.disabled_state_changed.connect(self.disabled_state_changed)
         view.enable_requested.connect(self.enable_requested)
@@ -150,14 +152,22 @@ class TimelineWidget(QStackedWidget):
         for i in range(count):
             frame_data = self.model.get_frame_at(index + i)
             if frame_data:
-                # Determine original resolution if available
+                # Determine dimensions for display
                 orig_w, orig_h = 0, 0
-                if hasattr(frame_data, 'target_resolution') and frame_data.target_resolution:
-                    orig_w, orig_h = frame_data.target_resolution
+                if frame_data.crop_rect:
+                    # Use crop rect size for virtual sliced frames
+                    orig_w, orig_h = frame_data.crop_rect[2], frame_data.crop_rect[3]
+                elif os.path.exists(frame_data.file_path):
+                    # Read original image size
+                    from PyQt6.QtGui import QImageReader
+                    reader = QImageReader(frame_data.file_path)
+                    if reader.canRead():
+                        size = reader.size()
+                        orig_w, orig_h = size.width(), size.height()
 
                 # Add to both views
                 filename = os.path.basename(frame_data.file_path)
-                self.list_view.add_frame(filename, frame_data, orig_w, orig_h)
+                self.list_view.add_frame(filename, frame_data, orig_w, orig_h, index=index + i)
                 self.grid_view.add_frame(filename, frame_data, index + i)
 
     def _on_frames_removed(self, index: int, count: int):
@@ -185,7 +195,7 @@ class TimelineWidget(QStackedWidget):
                 if hasattr(frame_data, 'target_resolution') and frame_data.target_resolution:
                     orig_w, orig_h = frame_data.target_resolution
                 filename = os.path.basename(frame_data.file_path)
-                self.list_view.add_frame(filename, frame_data, orig_w, orig_h)
+                self.list_view.add_frame(filename, frame_data, orig_w, orig_h, index=i)
 
         # Rebuild grid view
         self.grid_view.clear()
@@ -257,9 +267,9 @@ class TimelineWidget(QStackedWidget):
             self.grid_view.blockSignals(False)
 
     # ========== Model access methods ==========
-    def add_frame(self, filename: str, frame_data: FrameData, orig_width=0, orig_height=0):
+    def add_frame(self, filename: str, frame_data: FrameData, orig_width=0, orig_height=0, index: Optional[int] = None):
         """Add frame through model"""
-        self.model.add_frame(frame_data)
+        self.model.add_frame(frame_data, index)
 
     def get_frame_at(self, index: int) -> Optional[FrameData]:
         """Get frame data from model"""
@@ -380,10 +390,41 @@ class TimelineWidget(QStackedWidget):
     def refresh_current_items(self):
         """Refresh all items in current view"""
         if self.current_view_mode == "list":
-            self.list_view.refresh_current_items()
+            # Rebuild list view from model
+            self._rebuild_list_view()
         else:
             # Rebuild grid view from model
             self._rebuild_grid_view()
+
+    def _rebuild_list_view(self):
+        """Rebuild list view from model"""
+        # Store selection before clearing
+        selected_indices = set(self.model.get_selected_indices())
+
+        self.list_view.clear()
+        total_frames = self.model.get_frame_count()
+
+        for i in range(total_frames):
+            frame_data = self.model.get_frame_at(i)
+            if frame_data:
+                # Determine dimensions for display
+                orig_w, orig_h = 0, 0
+                if frame_data.crop_rect:
+                    orig_w, orig_h = frame_data.crop_rect[2], frame_data.crop_rect[3]
+                elif os.path.exists(frame_data.file_path):
+                    from PyQt6.QtGui import QImageReader
+                    reader = QImageReader(frame_data.file_path)
+                    if reader.canRead():
+                        size = reader.size()
+                        orig_w, orig_h = size.width(), size.height()
+                filename = os.path.basename(frame_data.file_path)
+                self.list_view.add_frame(filename, frame_data, orig_w, orig_h, index=i)
+
+        # Restore selection after rebuild (block signals to avoid triggering model update)
+        if selected_indices:
+            self.list_view.blockSignals(True)
+            self._apply_selection_to_view(selected_indices)
+            self.list_view.blockSignals(False)
 
     def _rebuild_grid_view(self):
         """Rebuild grid view from model"""

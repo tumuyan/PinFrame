@@ -301,8 +301,6 @@ class PropertyPanel(QWidget):
         self.updating_ui = False
 
     def refresh_ui_text(self):
-        from src.i18n.manager import i18n
-        
         # Groups
         self.transform_group.setTitle(i18n.t("prop_transform"))
         self.mirror_group.setTitle(i18n.t("prop_mirror"))

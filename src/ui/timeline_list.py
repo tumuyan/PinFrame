@@ -20,6 +20,7 @@ class TimelineListView(QTreeWidget, BaseTimelineView):
     copy_properties_requested = pyqtSignal()
     paste_properties_requested = pyqtSignal()
     duplicate_requested = pyqtSignal()
+    duplicate_dialog_requested = pyqtSignal()
     remove_requested = pyqtSignal()
     disabled_state_changed = pyqtSignal(object, bool)
     enable_requested = pyqtSignal(bool)
@@ -108,7 +109,7 @@ class TimelineListView(QTreeWidget, BaseTimelineView):
 
     def add_frame_to_view(self, filename: str, frame_data: FrameData, index: int):
         """Add a frame to view at specified index"""
-        self.add_frame(filename, frame_data)
+        self.add_frame(filename, frame_data, index=index)
 
     def remove_frame_from_view(self, index: int):
         """Remove frame from view at specified index"""
@@ -302,6 +303,10 @@ class TimelineListView(QTreeWidget, BaseTimelineView):
         dup_action.triggered.connect(self.duplicate_requested.emit)
         dup_action.setEnabled(has_selection)
 
+        dup_dialog_action = QAction(i18n.t("action_dup_frames_dialog"), self)
+        dup_dialog_action.triggered.connect(self.duplicate_dialog_requested.emit)
+        dup_dialog_action.setEnabled(has_selection)
+
         rem_action = QAction(i18n.t("action_rem_frame"), self)
         rem_action.triggered.connect(self.remove_requested.emit)
         rem_action.setEnabled(has_selection)
@@ -344,6 +349,7 @@ class TimelineListView(QTreeWidget, BaseTimelineView):
         menu.addSeparator()
 
         menu.addAction(dup_action)
+        menu.addAction(dup_dialog_action)
         menu.addAction(rem_action)
 
         menu.exec(self.viewport().mapToGlobal(position))
@@ -356,18 +362,26 @@ class TimelineListView(QTreeWidget, BaseTimelineView):
                 frame_data.is_disabled = is_disabled
                 self.disabled_state_changed.emit(frame_data, is_disabled)
 
-    def add_frame(self, filename, frame_data, orig_width=0, orig_height=0):
-        item = QTreeWidgetItem(self)
-        item.setData(0, Qt.ItemDataRole.UserRole, frame_data)
+    def add_frame(self, filename, frame_data, orig_width=0, orig_height=0, index=None):
+        # If index is specified, create item first, then insert it at position
+        if index is not None:
+            item = QTreeWidgetItem()
+            self.insertTopLevelItem(index, item)
+        else:
+            item = QTreeWidgetItem(self)
 
+        item.setData(0, Qt.ItemDataRole.UserRole, frame_data)
         item.setData(3, Qt.ItemDataRole.UserRole, (orig_width, orig_height))
 
-        item.setText(0, str(self.topLevelItemCount()))
-        item.setText(1, "")
-        item.setText(2, filename)
-
+        # IMPORTANT: Set checkState BEFORE setting text to avoid triggering itemChanged signal
+        # which would incorrectly reset is_disabled to False
         item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
         item.setCheckState(1, Qt.CheckState.Checked if frame_data.is_disabled else Qt.CheckState.Unchecked)
+
+        # Now set the text
+        item.setText(0, str(self.indexOfTopLevelItem(item) + 1))
+        item.setText(1, "")
+        item.setText(2, filename)
 
         self.update_item_display(item, frame_data, orig_width, orig_height)
 

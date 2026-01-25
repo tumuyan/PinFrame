@@ -1,8 +1,8 @@
 
-from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
-                             QDockWidget, QToolBar, QFileDialog, QSpinBox, 
+from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
+                             QDockWidget, QToolBar, QFileDialog, QSpinBox,
                              QLabel, QPushButton, QInputDialog, QTreeWidgetItem, QMenu, QStyle,
-                             QMessageBox)
+                             QMessageBox, QDialog)
 from PyQt6.QtGui import QAction, QIcon, QKeySequence, QImage, QActionGroup, QImageReader, QDesktopServices, QColor
 from PyQt6.QtCore import Qt, QTimer, QSettings, QByteArray, QUrl, QDateTime, QLocale
 import subprocess
@@ -70,6 +70,7 @@ class MainWindow(QMainWindow):
         self.timeline.copy_properties_requested.connect(self.copy_frame_properties)
         self.timeline.paste_properties_requested.connect(self.paste_frame_properties)
         self.timeline.duplicate_requested.connect(self.duplicate_frame)
+        self.timeline.duplicate_dialog_requested.connect(self.duplicate_frames_dialog)
         self.timeline.remove_requested.connect(self.remove_frame)
         self.timeline.disabled_state_changed.connect(self.on_frame_disabled_state_changed)
         self.timeline.enable_requested.connect(self.toggle_enable_disable)
@@ -125,6 +126,25 @@ class MainWindow(QMainWindow):
         self.playlist = []
         self.play_index = 0
 
+        # Onion Skin & Reference State (must be initialized before create_actions)
+        self.onion_enabled = False
+        self.onion_prev = self.settings.value("onion_prev", 1, type=int)
+        self.onion_next = self.settings.value("onion_next", 0, type=int)
+        self.onion_opacity_step = self.settings.value("onion_opacity_step", 0.2, type=float)
+        self.onion_ref_exclusive = self.settings.value("onion_exclusive", False, type=bool)
+        self.onion_suppressed = False
+
+        # Reference Frame Settings (must be initialized before create_actions)
+        self.reference_frame = None
+        self.ref_opacity = self.settings.value("ref_opacity", 0.5, type=float)
+        self.ref_layer = self.settings.value("ref_layer", "top", type=str)
+        self.ref_show_on_playback = self.settings.value("ref_show_on_playback", False, type=bool)
+
+        # Apply initial reference settings to canvas
+        self.canvas.ref_opacity = self.ref_opacity
+        self.canvas.ref_layer = self.ref_layer
+        self.canvas.ref_show_on_playback = self.ref_show_on_playback
+
         # Menus & Toolbar
         self.create_actions()
         self.create_menus()
@@ -169,26 +189,6 @@ class MainWindow(QMainWindow):
 
         # Recent Projects
         self.recent_projects = self.settings.value("recent_projects", [], type=list)
-
-        # Onion Skin & Reference State
-        self.onion_enabled = False
-        self.onion_prev = self.settings.value("onion_prev", 1, type=int)
-        self.onion_next = self.settings.value("onion_next", 0, type=int)
-        self.onion_opacity_step = self.settings.value("onion_opacity_step", 0.2, type=float)
-        self.onion_ref_exclusive = self.settings.value("onion_exclusive", False, type=bool)
-        self.onion_ref_exclusive = self.settings.value("onion_exclusive", False, type=bool)
-        self.onion_suppressed = False # New suppression state
-        
-        # Reference Frame Settings
-        self.reference_frame = None # FrameData
-        self.ref_opacity = self.settings.value("ref_opacity", 0.5, type=float)
-        self.ref_layer = self.settings.value("ref_layer", "top", type=str)
-        self.ref_show_on_playback = self.settings.value("ref_show_on_playback", False, type=bool)
-        
-        # Apply initial reference settings to canvas
-        self.canvas.ref_opacity = self.ref_opacity
-        self.canvas.ref_layer = self.ref_layer
-        self.canvas.ref_show_on_playback = self.ref_show_on_playback
 
     def set_repeat_action_checked(self, ms):
         if not hasattr(self, 'repeat_actions'):
@@ -563,13 +563,23 @@ class MainWindow(QMainWindow):
         self.copy_assets_action = QAction(i18n.t("action_copy_assets"), self)
         self.copy_assets_action.triggered.connect(self.copy_assets_to_local)
 
-        
+        self.reload_images_action = QAction(i18n.t("action_reload_images"), self)
+        self.reload_images_action.triggered.connect(self.reload_image_resources)
+
+        self.exit_action = QAction(i18n.t("action_exit"), self)
+        self.exit_action.setIcon(style.standardIcon(QStyle.StandardPixmap.SP_DialogCloseButton))
+        self.exit_action.triggered.connect(self.close)
+        self.exit_action.setShortcut(QKeySequence.StandardKey.Quit)
+
         self.export_action = QAction(i18n.t("action_export"), self)
         self.export_action.setIcon(style.standardIcon(QStyle.StandardPixmap.SP_DialogApplyButton))
         self.export_action.triggered.connect(self.export_sequence)
 
         self.export_sheet_action = QAction(i18n.t("action_export_sheet"), self)
         self.export_sheet_action.triggered.connect(self.export_sprite_sheet)
+
+        # Set labels for file/image related actions
+        self.refresh_file_action_labels()
 
         # Edit Actions
         self.copy_props_action = QAction(i18n.t("action_copy_props"), self)
@@ -583,13 +593,20 @@ class MainWindow(QMainWindow):
         self.dup_frame_action = QAction(i18n.t("action_dup_frame"), self)
         self.dup_frame_action.setShortcut("Ctrl+D")
         self.dup_frame_action.triggered.connect(self.duplicate_frame)
-        
+
+        self.dup_frames_dialog_action = QAction(i18n.t("action_dup_frames_dialog"), self)
+        self.dup_frames_dialog_action.setShortcut("Ctrl+Shift+D")
+        self.dup_frames_dialog_action.triggered.connect(self.duplicate_frames_dialog)
+
         self.rem_frame_action = QAction(i18n.t("action_rem_frame"), self)
         self.rem_frame_action.setShortcut(QKeySequence.StandardKey.Delete)
         self.rem_frame_action.triggered.connect(self.remove_frame)
 
         self.reverse_order_action = QAction(i18n.t("action_reverse_order"), self)
         self.reverse_order_action.triggered.connect(self.reverse_selected_frames)
+
+        # Set labels for edit related actions
+        self.refresh_edit_action_labels()
 
         # Background Actions
         self.bg_group = QActionGroup(self)
@@ -610,7 +627,7 @@ class MainWindow(QMainWindow):
         self.reset_view_action = QAction(i18n.t("action_reset_view"), self)
         self.reset_view_action.setShortcut("Ctrl+1")
         self.reset_view_action.triggered.connect(self.canvas.reset_view)
-        
+
         # Onion Skin Actions
         self.onion_action = QAction(i18n.t("action_onion_skin"), self)
         self.onion_action.setCheckable(True)
@@ -628,6 +645,9 @@ class MainWindow(QMainWindow):
         self.onion_toolbar_action.setIcon(onion_icon)
         self.onion_toolbar_action.setCheckable(True)
         self.onion_toolbar_action.triggered.connect(self.toggle_onion_skin)
+
+        # Set labels for onion skin actions
+        self.refresh_onion_action_labels()
         
         self.addAction(self.reset_view_action)
 
@@ -655,7 +675,10 @@ class MainWindow(QMainWindow):
         self.scale_down_action.setShortcut("Ctrl+-")
         self.scale_down_action.triggered.connect(lambda: self.adjust_selection_scale(0.9))
         self.addAction(self.scale_down_action)
-        
+
+        # Set labels for view related actions (after zoom/scale actions are created)
+        self.refresh_view_action_labels()
+
         # Reference Settings Action
         self.ref_settings_action = QAction(i18n.t("dlg_ref_settings"), self)
         self.ref_settings_action.triggered.connect(self.configure_reference_settings)
@@ -669,6 +692,9 @@ class MainWindow(QMainWindow):
         # Clear Reference Action
         self.clear_ref_action = QAction(i18n.t("action_cancel_reference"), self)
         self.clear_ref_action.triggered.connect(self.clear_reference_frame)
+
+        # Set labels for reference actions
+        self.refresh_reference_action_labels()
 
         # Play/Pause Shortcut (Global Space)
         self.play_pause_action = QAction(i18n.t("action_play_pause"), self)
@@ -702,6 +728,9 @@ class MainWindow(QMainWindow):
         self.theme_light_action = QAction(i18n.t("theme_light"), self)
         self.theme_light_action.setCheckable(True)
         self.theme_light_action.triggered.connect(lambda: self.apply_theme("light"))
+
+        # Set labels for theme and playback actions
+        self.refresh_theme_playback_action_labels()
         
         # Ensure only one theme is checked
         self.theme_group = QActionGroup(self)
@@ -744,10 +773,13 @@ class MainWindow(QMainWindow):
         self.layout_stack_rpt_action = QAction(i18n.t("preset_stack_rpt"), self)
         self.layout_stack_rpt_action.triggered.connect(lambda: self.apply_layout_preset("stack_rpt"))
 
+        # Set labels for layout actions
+        self.refresh_layout_action_labels()
+
         # Auto-Repeat Settings
         self.repeat_group = QActionGroup(self)
         self.repeat_actions = {}
-        
+
         intervals = [
             (i18n.t("lang_disabled"), 0),
             ("100ms", 100),
@@ -755,22 +787,25 @@ class MainWindow(QMainWindow):
             ("500ms", 500),
             ("1000ms", 1000)
         ]
-        
+
         for name, ms in intervals:
             action = QAction(name, self)
             action.setCheckable(True)
             action.triggered.connect(lambda checked, m=ms: self.update_repeat_interval(m))
             self.repeat_group.addAction(action)
             self.repeat_actions[ms] = action
-            
+
+        # Set labels for repeat actions
+        self.refresh_repeat_action_labels()
+
         # Wheel Mode Actions
         self.wheel_mode_group = QActionGroup(self)
-        
+
         self.action_wheel_zoom_view = QAction(i18n.t("action_wheel_zoom_view"), self)
         self.action_wheel_zoom_view.setCheckable(True)
         self.action_wheel_zoom_view.triggered.connect(lambda: self.set_wheel_mode_actual(self.canvas.WHEEL_ZOOM))
         self.wheel_mode_group.addAction(self.action_wheel_zoom_view)
-        
+
         self.action_wheel_scale_image = QAction(i18n.t("action_wheel_scale_image"), self)
         self.action_wheel_scale_image.setCheckable(True)
         self.action_wheel_scale_image.triggered.connect(lambda: self.set_wheel_mode_actual(self.canvas.WHEEL_SCALE))
@@ -784,6 +819,9 @@ class MainWindow(QMainWindow):
         # Initial State
         self.action_wheel_zoom_view.setChecked(True)
         self.update_wheel_toggle_ui()
+
+        # Set labels for wheel mode actions
+        self.refresh_wheel_mode_action_labels()
 
         # Rasterization Preview Actions
         self.raster_toolbar_action = QAction(i18n.t("toolbar_raster_off"))
@@ -799,34 +837,43 @@ class MainWindow(QMainWindow):
         self.raster_settings_action.setIcon(settings_icon)
         self.raster_settings_action.triggered.connect(self.configure_rasterization_settings)
 
+        # Set labels for rasterization actions
+        self.refresh_rasterization_action_labels()
+
         # About Actions
         self.repo_action = QAction(i18n.t("action_repo"), self)
         self.repo_action.triggered.connect(self.open_repo_url)
-        
+
         version_str = self.get_git_version()
         self.version_action = QAction(i18n.t("action_version").format(version=version_str), self)
         self.version_action.setEnabled(False)
-        
+
         compile_date = self.get_build_date()
         self.build_date_action = QAction(i18n.t("action_build_date").format(date=compile_date), self)
         self.build_date_action.setEnabled(False)
-        
+
         # Timeline View Actions
         self.timeline_view_group = QActionGroup(self)
-        
+
         self.timeline_list_action = QAction(i18n.t("action_timeline_list"), self)
         self.timeline_list_action.setCheckable(True)
         self.timeline_list_action.setChecked(True)
         self.timeline_list_action.triggered.connect(lambda: self.set_timeline_view("list"))
         self.timeline_view_group.addAction(self.timeline_list_action)
-        
+
         self.timeline_grid_action = QAction(i18n.t("action_timeline_grid"), self)
         self.timeline_grid_action.setCheckable(True)
         self.timeline_grid_action.triggered.connect(lambda: self.set_timeline_view("grid"))
         self.timeline_view_group.addAction(self.timeline_grid_action)
-        
+
         self.timeline_grid_settings_action = QAction(i18n.t("action_timeline_grid_settings"), self)
         self.timeline_grid_settings_action.triggered.connect(self.open_timeline_grid_settings)
+
+        # Set labels for timeline view actions
+        self.refresh_timeline_view_action_labels()
+
+        # Set labels for about actions
+        self.refresh_about_action_labels()
 
     def update_wheel_toggle_ui(self):
         # Sync the master toggle in toolbar based on current canvas mode
@@ -850,37 +897,38 @@ class MainWindow(QMainWindow):
 
     def create_menus(self):
         menubar = self.menuBar()
-        
+
         # File Menu
         file_menu = menubar.addMenu(i18n.t("menu_file"))
-        file_menu.addAction(self.import_action)
-        file_menu.addAction(self.import_slice_action)
-        file_menu.addAction(self.import_gif_action)
-        file_menu.addSeparator()
         file_menu.addAction(self.load_action)
         file_menu.addAction(self.save_action)
         file_menu.addAction(self.save_as_action)
         file_menu.addSeparator()
         file_menu.addAction(self.close_action)
         file_menu.addAction(self.reload_action)
-        
+
         self.recent_menu = file_menu.addMenu(i18n.t("menu_recent_projects"))
         self.update_recent_projects_menu()
-        
+
         file_menu.addAction(self.copy_assets_action)
         file_menu.addSeparator()
         file_menu.addAction(self.action_open_dir)
         file_menu.addSeparator()
-        
-        self.reload_images_action = QAction(i18n.t("action_reload_images"), self)
-        self.reload_images_action.triggered.connect(self.reload_image_resources)
         file_menu.addAction(self.reload_images_action)
-        
+
         file_menu.addSeparator()
         file_menu.addAction(self.settings_action)
         file_menu.addSeparator()
         file_menu.addAction(self.export_action)
         file_menu.addAction(self.export_sheet_action)
+        file_menu.addSeparator()
+        file_menu.addAction(self.exit_action)
+
+        # Image Menu
+        image_menu = menubar.addMenu(i18n.t("menu_image"))
+        image_menu.addAction(self.import_action)
+        image_menu.addAction(self.import_slice_action)
+        image_menu.addAction(self.import_gif_action)
         
         # Onion & Reference Submenu
         # View Menu
@@ -892,6 +940,7 @@ class MainWindow(QMainWindow):
         edit_menu.addAction(self.paste_props_action)
         edit_menu.addSeparator()
         edit_menu.addAction(self.dup_frame_action)
+        edit_menu.addAction(self.dup_frames_dialog_action)
         edit_menu.addAction(self.rem_frame_action)
         edit_menu.addSeparator()
         edit_menu.addAction(self.reverse_order_action)
@@ -1231,8 +1280,8 @@ class MainWindow(QMainWindow):
 
         indices.sort()  # Sort in ascending order
 
-        # Find the insertion point (after the last selected item)
-        insert_pos = indices[-1] + 1
+        # Find the insertion point (BEFORE the first selected item)
+        insert_pos = indices[0]
 
         # Collect all duplicates first
         duplicates = []
@@ -1253,15 +1302,104 @@ class MainWindow(QMainWindow):
 
             duplicates.append(new_data)
 
-        # Insert all duplicates at the end of selection through model
+        # Insert all duplicates at once before the selection
         for i, new_data in enumerate(duplicates):
-            # Use timeline model to add frames
             filename = os.path.basename(new_data.file_path)
-            self.timeline.add_frame(filename, new_data)
+            # Use model directly to insert at specific position
+            self.timeline.model.add_frame(new_data, insert_pos + i)
+
+        # Calculate new indices for original frames (shifted right by number of duplicates)
+        original_indices_after_dup = [idx + len(duplicates) for idx in indices]
+
+        # Restore selection to original frames
+        self.timeline.model.set_selection(original_indices_after_dup)
 
         self.mark_dirty()
         self.timeline.refresh_current_items()
         self.statusBar().showMessage(i18n.t("msg_frames_duplicated").format(count=len(duplicates)), 3000)
+
+    def duplicate_frames_dialog(self):
+        """Show dialog for advanced duplication with count and mode options"""
+        from ui.duplicate_dialog import DuplicateFramesDialog
+
+        # Use unified interface to get selected indices
+        indices = self.timeline.get_selected_indices_from_current_view()
+        if not indices:
+            return
+
+        indices.sort()  # Sort in ascending order
+
+        # Show dialog
+        dialog = DuplicateFramesDialog(self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+
+        options = dialog.get_options()
+        count = options['count']
+        mode = options['mode']
+
+        # Find the insertion point (BEFORE the first selected item)
+        insert_pos = indices[0]
+
+        # Collect all duplicates based on mode
+        frames_to_insert = []
+
+        if mode == "ABAB":
+            # ABAB mode: repeat the entire selected sequence
+            # Example: selected A,B, count=3 -> A,B,A,B,A,B,A,B
+            for repeat in range(count):
+                for idx in indices:
+                    # Get original data from timeline model
+                    orig_data = self.timeline.get_frame_at(idx)
+
+                    # Clone data
+                    new_data = FrameData(
+                        file_path=orig_data.file_path,
+                        scale=orig_data.scale,
+                        position=orig_data.position,
+                        rotation=orig_data.rotation,
+                        target_resolution=orig_data.target_resolution,
+                        is_disabled=orig_data.is_disabled,
+                        crop_rect=orig_data.crop_rect
+                    )
+
+                    frames_to_insert.append(new_data)
+        else:  # AABB mode
+            # AABB mode: repeat each selected frame individually
+            # Example: selected A,B, count=3 -> A,A,A,B,B,B
+            for idx in indices:
+                # Get original data from timeline model
+                orig_data = self.timeline.get_frame_at(idx)
+
+                # Repeat this frame 'count' times
+                for repeat in range(count):
+                    new_data = FrameData(
+                        file_path=orig_data.file_path,
+                        scale=orig_data.scale,
+                        position=orig_data.position,
+                        rotation=orig_data.rotation,
+                        target_resolution=orig_data.target_resolution,
+                        is_disabled=orig_data.is_disabled,
+                        crop_rect=orig_data.crop_rect
+                    )
+
+                    frames_to_insert.append(new_data)
+
+        # Insert all frames at once before the selection
+        for i, frame_data in enumerate(frames_to_insert):
+            filename = os.path.basename(frame_data.file_path)
+            # Use model directly to insert at specific position
+            self.timeline.model.add_frame(frame_data, insert_pos + i)
+
+        # Calculate new indices for original frames (shifted right by number of inserted frames)
+        original_indices_after_dup = [idx + len(frames_to_insert) for idx in indices]
+
+        # Restore selection to original frames
+        self.timeline.model.set_selection(original_indices_after_dup)
+
+        self.mark_dirty()
+        self.timeline.refresh_current_items()
+        self.statusBar().showMessage(i18n.t("msg_frames_duplicated").format(count=len(frames_to_insert)), 3000)
 
     def remove_frame(self):
         # Use unified interface to get selected indices
@@ -1271,7 +1409,7 @@ class MainWindow(QMainWindow):
 
         # Remove through timeline model
         self.timeline.remove_frames_at(indices)
-            
+
         self.mark_dirty()
         self.timeline.refresh_current_items() # Update numbers after removal
         self.canvas.set_selected_frames([])
@@ -1926,10 +2064,6 @@ class MainWindow(QMainWindow):
         self.property_panel.apply_rel_scale(factor)
 
     def on_order_changed(self):
-        # Update project frames from timeline model
-        # TimelineWidget's model is now the single source of truth
-        self.project.frames = self.timeline.get_all_frames()
-
         # Refresh current items for both list and grid view (to update numbers)
         if self.timeline.get_view_mode() == "list":
             self.timeline.refresh_current_items()
@@ -2134,6 +2268,9 @@ class MainWindow(QMainWindow):
         path, _ = QFileDialog.getSaveFileName(self, i18n.t("dlg_save_title"), "", i18n.t("dlg_filter_json"))
         if not path:
             return
+        # Automatically add .json extension if not present
+        if not path.lower().endswith('.json'):
+            path += '.json'
         self._save_to_path(path)
 
     def save_settings(self):
@@ -2152,6 +2289,9 @@ class MainWindow(QMainWindow):
 
     def _save_to_path(self, path):
         try:
+            # Sync frames from timeline model to project before saving
+            self.project.frames = self.timeline.get_all_frames()
+
             with open(path, 'w') as f:
                 f.write(self.project.to_json(path))
             self.current_project_path = path
@@ -2201,8 +2341,12 @@ class MainWindow(QMainWindow):
                     if reader.canRead():
                         size = reader.size()
                         w, h = size.width(), size.height()
-                
+
                 self.timeline.add_frame(os.path.basename(frame.file_path), frame, w, h)
+
+            # Clear thumbnail cache after loading project and refresh grid view
+            self.timeline.grid_view._clear_thumbnail_cache()
+            self.timeline.grid_view.refresh_all_items()
 
             if self.project.frames:
                 # Select first by default - use unified interface
@@ -2440,23 +2584,31 @@ class MainWindow(QMainWindow):
         
         self.refresh_ui_text()
 
-    def refresh_ui_text(self):
-        # Refresh Actions
+    def refresh_file_action_labels(self):
         self.import_action.setText(i18n.t("action_import"))
         self.import_slice_action.setText(i18n.t("action_import_slice"))
         self.import_gif_action.setText(i18n.t("action_import_gif"))
         self.save_action.setText(i18n.t("action_save"))
         self.save_as_action.setText(i18n.t("action_save_as"))
         self.load_action.setText(i18n.t("action_load"))
+        self.action_open_dir.setText(i18n.t("action_open_dir"))
         self.close_action.setText(i18n.t("action_close"))
         self.reload_action.setText(i18n.t("action_reload"))
+        self.copy_assets_action.setText(i18n.t("action_copy_assets"))
+        self.reload_images_action.setText(i18n.t("action_reload_images"))
+        self.exit_action.setText(i18n.t("action_exit"))
         self.export_action.setText(i18n.t("action_export"))
         self.export_sheet_action.setText(i18n.t("action_export_sheet"))
+
+    def refresh_edit_action_labels(self):
         self.copy_props_action.setText(i18n.t("action_copy_props"))
         self.paste_props_action.setText(i18n.t("action_paste_props"))
         self.dup_frame_action.setText(i18n.t("action_dup_frame"))
+        self.dup_frames_dialog_action.setText(i18n.t("action_dup_frames_dialog"))
         self.rem_frame_action.setText(i18n.t("action_rem_frame"))
         self.reverse_order_action.setText(i18n.t("action_reverse_order"))
+
+    def refresh_view_action_labels(self):
         self.settings_action.setText(i18n.t("action_settings"))
         self.reset_view_action.setText(i18n.t("action_reset_view"))
         self.zoom_in_action.setText(i18n.t("action_zoom_in"))
@@ -2464,16 +2616,26 @@ class MainWindow(QMainWindow):
         self.zoom_fit_action.setText(i18n.t("action_zoom_fit"))
         self.scale_up_action.setText(i18n.t("action_scale_up"))
         self.scale_down_action.setText(i18n.t("action_scale_down"))
-        
-        # Wheel Mode
-        self.action_wheel_zoom_view.setText(i18n.t("action_wheel_zoom_view"))
-        self.action_wheel_scale_image.setText(i18n.t("action_wheel_scale_image"))
-        self.update_wheel_toggle_ui()
-        
+
         # Background Actions
         for mode, action in self.bg_actions.items():
             action.setText(i18n.t(f"bg_{mode}"))
-        
+
+    def refresh_onion_action_labels(self):
+        self.onion_action.setText(i18n.t("action_onion_skin"))
+        self.onion_settings_action.setText(i18n.t("action_onion_settings"))
+        self.onion_toolbar_action.setText(i18n.t("toolbar_onion_off" if not self.onion_enabled else "toolbar_onion_on"))
+
+    def refresh_reference_action_labels(self):
+        self.set_ref_action.setText(i18n.t("action_set_reference"))
+        self.set_ref_action.setToolTip(i18n.t("action_set_reference"))
+        self.clear_ref_action.setText(i18n.t("action_cancel_reference"))
+        self.ref_settings_action.setText(i18n.t("dlg_ref_settings"))
+
+    def refresh_theme_playback_action_labels(self):
+        self.theme_dark_action.setText(i18n.t("theme_dark"))
+        self.theme_light_action.setText(i18n.t("theme_light"))
+
         # Playback buttons (conditional)
         if self.is_playing:
             if self.playback_reverse:
@@ -2485,76 +2647,105 @@ class MainWindow(QMainWindow):
         else:
             self.play_action.setText(i18n.t("btn_play"))
             self.rev_play_action.setText(i18n.t("btn_backward"))
-            
-        # Layouts
+
+    def refresh_layout_action_labels(self):
         self.layout_std_action.setText(i18n.t("preset_std"))
         self.layout_side_action.setText(i18n.t("preset_side"))
         self.layout_stack_ltp_action.setText(i18n.t("preset_stack_ltp"))
         self.layout_stack_lpt_action.setText(i18n.t("preset_stack_lpt"))
         self.layout_stack_rtp_action.setText(i18n.t("preset_stack_rtp"))
         self.layout_stack_rpt_action.setText(i18n.t("preset_stack_rpt"))
-        
-        # Misc
-        self.theme_dark_action.setText(i18n.t("theme_dark"))
-        self.theme_light_action.setText(i18n.t("theme_light"))
 
-        # About
-        self.repo_action.setText(i18n.t("action_repo"))
-        version_str = self.get_git_version()
-        self.version_action.setText(i18n.t("action_version").format(version=version_str))
-        build_date = self.get_build_date()
-        self.build_date_action.setText(i18n.t("action_build_date").format(date=build_date))
-        
-        # Repeat Actions
+    def refresh_repeat_action_labels(self):
         for ms, action in self.repeat_actions.items():
             if ms == 0:
                 action.setText(i18n.t("lang_disabled"))
             elif ms == 250:
                 action.setText(i18n.t("lang_250_default", "250ms (Default)"))
-        
+
+    def refresh_timeline_view_action_labels(self):
+        self.timeline_list_action.setText(i18n.t("action_timeline_list"))
+        self.timeline_grid_action.setText(i18n.t("action_timeline_grid"))
+        self.timeline_grid_settings_action.setText(i18n.t("action_timeline_grid_settings"))
+
+    def refresh_about_action_labels(self):
+        self.repo_action.setText(i18n.t("action_repo"))
+        version_str = self.get_git_version()
+        self.version_action.setText(i18n.t("action_version").format(version=version_str))
+        build_date = self.get_build_date()
+        self.build_date_action.setText(i18n.t("action_build_date").format(date=build_date))
+
+    def refresh_wheel_mode_action_labels(self):
+        self.action_wheel_zoom_view.setText(i18n.t("action_wheel_zoom_view"))
+        self.action_wheel_scale_image.setText(i18n.t("action_wheel_scale_image"))
+        self.update_wheel_toggle_ui()
+
+    def refresh_rasterization_action_labels(self):
+        self.raster_toolbar_action.setText(i18n.t("toolbar_raster_off" if not self.raster_enabled else "toolbar_raster_on"))
+        self.raster_settings_action.setText(i18n.t("btn_raster_settings"))
+
+    def refresh_ui_text(self):
+        # Refresh all action labels using grouped functions
+        self.refresh_file_action_labels()
+        self.refresh_edit_action_labels()
+        self.refresh_view_action_labels()
+        self.refresh_onion_action_labels()
+        self.refresh_reference_action_labels()
+        self.refresh_wheel_mode_action_labels()
+        self.refresh_theme_playback_action_labels()
+        self.refresh_layout_action_labels()
+        self.refresh_repeat_action_labels()
+        self.refresh_timeline_view_action_labels()
+        self.refresh_rasterization_action_labels()
+        self.refresh_about_action_labels()
+
         # Update Docks
         self.timeline_dock.setWindowTitle(i18n.t("dock_timeline"))
         self.property_dock.setWindowTitle(i18n.t("dock_properties"))
-        # Assuming t_state and p_state are defined elsewhere or this is a partial snippet
-        # self.timeline.restoreState(QByteArray.fromHex(t_state.encode()))
-        # self.property_panel.restoreState(QByteArray.fromHex(p_state.encode()))
-        
+
         self.update_menu_state()
 
-        
+
         menubar = self.menuBar()
         menubar.clear()
         self.create_menus()
-        
+
         # After re-creating menus, sync the checked states
         self.lang_zh_action.setChecked(self.current_lang == "zh_CN")
         self.lang_en_action.setChecked(self.current_lang == "en_US")
-        
+
         # Also sync theme actions if needed (theme is persistent too)
         self.theme_dark_action.setChecked(self.current_theme == "dark")
         self.theme_light_action.setChecked(self.current_theme == "light")
-        
+
         # Sync background actions
         if hasattr(self, 'bg_actions'):
             bg_mode = self.settings.value("background_mode", "checkerboard")
             if bg_mode in self.bg_actions:
                 self.bg_actions[bg_mode].setChecked(True)
-        
+
+        # Sync timeline view actions
+        if hasattr(self, 'timeline_view_group'):
+            if self.timeline_view_mode == "grid":
+                self.timeline_grid_action.setChecked(True)
+            else:
+                self.timeline_list_action.setChecked(True)
+
         # Update Toolbar
         self.create_toolbar()
 
         # Update Sub-widgets
         self.property_panel.refresh_ui_text()
-        self.timeline.setHeaderLabels([
+        self.timeline.list_view.setHeaderLabels([
             i18n.t("col_index"),
-            i18n.t("col_disabled"), 
-            i18n.t("col_filename"), 
-            i18n.t("col_scale"), 
-            i18n.t("col_position"), 
+            i18n.t("col_disabled"),
+            i18n.t("col_filename"),
+            i18n.t("col_scale"),
+            i18n.t("col_position"),
             i18n.t("col_res_combined")
         ])
         self.timeline.refresh_current_items()
-        
+
         # This is enough for now. A restart is always safer.
         self.update_title()
         self.statusBar().showMessage(i18n.t("ready"))
@@ -2627,7 +2818,7 @@ class MainWindow(QMainWindow):
 
                 frame = FrameData(file_path=out_path)
                 self.timeline.add_frame(os.path.basename(out_path), frame, w, h)
-                
+
         self.mark_dirty()
         self.timeline.refresh_current_items()
         self.statusBar().showMessage(i18n.t("msg_imported_slices").format(count=len(crops)), 3000)
@@ -2658,7 +2849,7 @@ class MainWindow(QMainWindow):
                 f_data = FrameData(file_path=out_path)
                 self.timeline.add_frame(os.path.basename(out_path), f_data, png_frame.width, png_frame.height)
                 count += 1
-                
+
             self.mark_dirty()
             self.timeline.refresh_current_items()
             self.statusBar().showMessage(i18n.t("msg_imported_gif").format(count=count), 3000)
