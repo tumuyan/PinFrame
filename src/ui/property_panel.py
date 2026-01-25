@@ -208,17 +208,19 @@ class PropertyPanel(QWidget):
         self.custom_anchor_widget = QWidget()
         ca_layout = QHBoxLayout(self.custom_anchor_widget)
         ca_layout.setContentsMargins(10, 0, 10, 5)
-        ca_layout.addWidget(QLabel(i18n.t("prop_anchor_x")))
+        self.label_anchor_x = QLabel(i18n.t("prop_anchor_x"))
+        ca_layout.addWidget(self.label_anchor_x)
         self.ca_x_spin = QDoubleSpinBox()
         self.ca_x_spin.setRange(-9999, 9999)
         self.ca_x_spin.valueChanged.connect(self.on_custom_anchor_ui_changed)
         ca_layout.addWidget(self.ca_x_spin)
-        ca_layout.addWidget(QLabel(i18n.t("prop_anchor_y")))
+        self.label_anchor_y = QLabel(i18n.t("prop_anchor_y"))
+        ca_layout.addWidget(self.label_anchor_y)
         self.ca_y_spin = QDoubleSpinBox()
         self.ca_y_spin.setRange(-9999, 9999)
         self.ca_y_spin.valueChanged.connect(self.on_custom_anchor_ui_changed)
         ca_layout.addWidget(self.ca_y_spin)
-        self.custom_anchor_widget.setEnabled(False) 
+        self.custom_anchor_widget.setEnabled(False)
         layout.addWidget(self.custom_anchor_widget)
 
         # 3. Relative Transform
@@ -230,48 +232,51 @@ class PropertyPanel(QWidget):
         
         # Row 0: Move
         # [Step] [Left] [Right] [Up] [Down]
-        
-        op_grid.addWidget(QLabel(i18n.t("prop_move_step", "Step:")), 0, 0)
-        
+
+        self.label_move_step = QLabel(i18n.t("prop_move_step", "Step:"))
+        op_grid.addWidget(self.label_move_step, 0, 0)
+
         self.step_move_spin = QDoubleSpinBox()
         self.step_move_spin.setRange(0, 9999)
         self.step_move_spin.setValue(10.0)
         op_grid.addWidget(self.step_move_spin, 0, 1)
-        
+
         self.btn_move_left = QPushButton("←")
         self.btn_move_left.clicked.connect(lambda: self.apply_rel_move(-self.step_move_spin.value(), 0))
         op_grid.addWidget(self.btn_move_left, 0, 2)
-        
+
         self.btn_move_right = QPushButton("→")
         self.btn_move_right.clicked.connect(lambda: self.apply_rel_move(self.step_move_spin.value(), 0))
         op_grid.addWidget(self.btn_move_right, 0, 3)
-        
+
         self.btn_move_up = QPushButton("↑")
         self.btn_move_up.clicked.connect(lambda: self.apply_rel_move(0, -self.step_move_spin.value()))
         op_grid.addWidget(self.btn_move_up, 0, 4)
-        
+
         self.btn_move_down = QPushButton("↓")
         self.btn_move_down.clicked.connect(lambda: self.apply_rel_move(0, self.step_move_spin.value()))
         op_grid.addWidget(self.btn_move_down, 0, 5)
 
         # Row 1: Scale
-        op_grid.addWidget(QLabel(i18n.t("prop_scale_step")), 1, 0)
+        self.label_scale_step = QLabel(i18n.t("prop_scale_step"))
+        op_grid.addWidget(self.label_scale_step, 1, 0)
         self.step_scale_spin = QDoubleSpinBox()
         self.step_scale_spin.setRange(1.01, 10.0)
         self.step_scale_spin.setSingleStep(0.1)
         self.step_scale_spin.setValue(1.1)
         op_grid.addWidget(self.step_scale_spin, 1, 1)
-        
+
         self.btn_scale_up = QPushButton(i18n.t("btn_scale_up"))
         self.btn_scale_up.clicked.connect(lambda: self.apply_rel_scale(self.step_scale_spin.value()))
         op_grid.addWidget(self.btn_scale_up, 1, 2, 1, 2)
-        
+
         self.btn_scale_down = QPushButton(i18n.t("btn_scale_down"))
         self.btn_scale_down.clicked.connect(lambda: self.apply_rel_scale(1.0 / self.step_scale_spin.value()))
         op_grid.addWidget(self.btn_scale_down, 1, 4, 1, 2)
-        
+
         # Row 2: Rotate
-        op_grid.addWidget(QLabel(i18n.t("prop_rotate_step")), 2, 0)
+        self.label_rotate_step = QLabel(i18n.t("prop_rotate_step"))
+        op_grid.addWidget(self.label_rotate_step, 2, 0)
         self.step_rotate_spin = QDoubleSpinBox()
         self.step_rotate_spin.setRange(1, 180)
         self.step_rotate_spin.setValue(15)
@@ -325,48 +330,63 @@ class PropertyPanel(QWidget):
         self.updating_ui = False
 
     def refresh_ui_text(self):
-        from src.i18n.manager import i18n
-        
         # Groups
         self.transform_group.setTitle(i18n.t("prop_transform"))
         self.mirror_group.setTitle(i18n.t("prop_mirror"))
         self.size_group.setTitle(i18n.t("prop_size_resolution"))
         self.rel_trans_group.setTitle(i18n.t("prop_rel_trans"))
         self.align_group.setTitle(i18n.t("prop_alignment"))
-        
+        self.anchor_group.setTitle(i18n.t("prop_anchor"))
+
         # Labels
         self.label_scale.setText(i18n.t("prop_scale_label"))
         self.label_rotation.setText(i18n.t("prop_rotation_label"))
+        self.label_x.setText(i18n.t("prop_pos_x"))
+        self.label_y.setText(i18n.t("prop_pos_y"))
         self.label_target_res.setText(i18n.t("prop_target_res"))
         self.t_res_lock.setText(i18n.t("prop_res_lock"))
         self.btn_reset_ar.setText(i18n.t("prop_res_reset"))
-        
+
         # Buttons
         self.btn_flip_h.setText(i18n.t("prop_mirror_h"))
         self.btn_flip_v.setText(i18n.t("prop_mirror_v"))
-        
+
         self.btn_fit_w.setText(i18n.t("btn_fit_width"))
         self.btn_fit_h.setText(i18n.t("btn_fit_height"))
-        
+
         self.btn_scale_up.setText(i18n.t("btn_scale_up"))
         self.btn_scale_down.setText(i18n.t("btn_scale_down"))
         self.btn_rotate_cw.setText(i18n.t("btn_rotate_cw"))
         self.btn_rotate_ccw.setText(i18n.t("btn_rotate_ccw"))
-        
+
         # Anchor
         self.rb_anchor_canvas.setText(i18n.t("prop_anchor_canvas"))
         self.rb_anchor_image.setText(i18n.t("prop_anchor_image"))
         self.rb_anchor_custom_canvas.setText(i18n.t("prop_anchor_custom_canvas"))
         self.rb_anchor_custom_image.setText(i18n.t("prop_anchor_custom_image"))
-        
+
+        # Anchor labels
+        if hasattr(self, 'label_anchor_x'):
+            self.label_anchor_x.setText(i18n.t("prop_anchor_x"))
+        if hasattr(self, 'label_anchor_y'):
+            self.label_anchor_y.setText(i18n.t("prop_anchor_y"))
+
+        # Relative transform labels
+        if hasattr(self, 'label_move_step'):
+            self.label_move_step.setText(i18n.t("prop_move_step", "Step:"))
+        if hasattr(self, 'label_scale_step'):
+            self.label_scale_step.setText(i18n.t("prop_scale_step"))
+        if hasattr(self, 'label_rotate_step'):
+            self.label_rotate_step.setText(i18n.t("prop_rotate_step"))
+
         # Special value text
         self.t_w_spin.setSpecialValueText(i18n.t("prop_res_none"))
         self.t_h_spin.setSpecialValueText(i18n.t("prop_res_none"))
-            
+
         # Preview label if no selection
         if not self.selected_frames:
             self.preview_label.setText(i18n.t("msg_no_selection"))
-            
+
         self.update_ui_from_selection()
 
     def set_project_info(self, w, h):

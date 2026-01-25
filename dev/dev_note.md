@@ -53,6 +53,7 @@ sudo dnf install \
     libXi
 ```
 
+## 远程测试
 ### 激活虚拟环境
 ```
 python3 -m venv venv
@@ -80,3 +81,48 @@ xvfb-run -a python main.py
 
 ### 在novnc中显示GUI
 见 [novnc文档](./novnc.md)
+
+## 分支管理
+1. 添加 github remote
+```
+git remote add github https://github.com/tumuyan/PinFrame.git
+```
+2. 拉取 github 的 main 分支
+```
+git fetch github main
+```
+
+3. 强制重置本地 main 分支到 github/main
+```
+git reset --hard github/main
+```
+
+## 错误处理
+
+### 中文显示为空心方块
+
+如果应用程序中的中文显示为空心方块，说明系统中没有安装中文字体。
+
+解决方案：
+
+**方法 1: 使用字体安装脚本**
+```bash
+chmod +x install_fonts.sh
+./install_fonts.sh
+```
+
+**方法 2: 手动安装中文字体**
+```bash
+apt-get update
+apt-get install -y fonts-noto-cjk fonts-wqy-zenhei fontconfig
+fc-cache -fv
+```
+
+**验证字体**
+
+```bash
+fc-list :lang=zh-cn
+```
+
+
+安装完成后，重启应用程序即可正常显示中文。

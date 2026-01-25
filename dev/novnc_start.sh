@@ -34,6 +34,10 @@ fi
 export DISPLAY=:99
 echo "DISPLAY 环境变量设置为: $DISPLAY"
 
+# 刷新字体缓存 (确保新安装的中文字体生效)
+echo "刷新字体缓存..."
+fc-cache -fv > /dev/null 2>&1
+
 # 启动 x11vnc
 if pgrep -x "x11vnc" > /dev/null; then
     echo -e "${YELLOW}x11vnc 已经在运行${NC}"
@@ -74,14 +78,14 @@ else
 fi
 
 # 启动 PyQt6 应用
-if pgrep -f "python.*main.py" > /dev/null; then
-    echo -e "${YELLOW}PyQt6 应用已经在运行${NC}"
-else
-    echo "启动 PyQt6 应用..."
-    cd /workspace
-    python main.py &
-    echo -e "${GREEN}PyQt6 应用启动成功${NC}"
-fi
+# if pgrep -f "python.*main.py" > /dev/null; then
+#     echo -e "${YELLOW}PyQt6 应用已经在运行${NC}"
+# else
+#     echo "启动 PyQt6 应用..."
+#     cd /workspace
+#     python main.py &
+#     echo -e "${GREEN}PyQt6 应用启动成功${NC}"
+# fi
 
 echo ""
 echo -e "${GREEN}=== 启动完成 ===${NC}"
