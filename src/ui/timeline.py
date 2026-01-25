@@ -1,430 +1,547 @@
-from PyQt6.QtWidgets import (QTreeWidget, QTreeWidgetItem, QAbstractItemView, 
-                             QHeaderView)
-from PyQt6.QtCore import Qt, pyqtSignal, QSize, QTimer
-from PyQt6.QtGui import QColor, QFont
+from PyQt6.QtWidgets import QStackedWidget, QListWidgetItem, QTreeWidgetItem
+from PyQt6.QtCore import Qt, pyqtSignal, QTimer
 from i18n.manager import i18n
+from ui.timeline_grid import TimelineGridWidget
+from ui.timeline_list import TimelineListView
+from ui.timeline_base_view import BaseTimelineView, TimelineViewUtils
+from ui.timeline_model import TimelineModel
+from model.project_data import FrameData
+from typing import List, Optional
 import os
 
-class TimelineWidget(QTreeWidget):
-    selection_changed = pyqtSignal(list) 
+class TimelineWidget(QStackedWidget):
+    """Timeline widget that supports both list and grid views"""
+
+    selection_changed = pyqtSignal(list)
     order_changed = pyqtSignal()
-    files_dropped = pyqtSignal(list, int) # list of files, insertion index
+    files_dropped = pyqtSignal(list, int)
     copy_properties_requested = pyqtSignal()
     paste_properties_requested = pyqtSignal()
     duplicate_requested = pyqtSignal()
     remove_requested = pyqtSignal()
-    disabled_state_changed = pyqtSignal(object, bool) # frame_data, is_disabled
-    enable_requested = pyqtSignal(bool) # True for Enable, False for Disable
-    reverse_order_requested = pyqtSignal()
+    disabled_state_changed = pyqtSignal(object, bool)
+    enable_requested = pyqtSignal(bool)
     reverse_order_requested = pyqtSignal()
     integerize_offset_requested = pyqtSignal()
     set_reference_requested = pyqtSignal()
     clear_reference_requested = pyqtSignal()
+    thumbnail_size_changed = pyqtSignal(int, int)  # width, height
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setColumnCount(6)
-        self.setHeaderLabels([
-            i18n.t("col_index"),
-            i18n.t("col_disabled"), 
-            i18n.t("col_filename"), 
-            i18n.t("col_scale"), 
-            i18n.t("col_position"), 
-            i18n.t("col_res_combined")
-        ])
-        
-        header = self.header()
-        header.setStretchLastSection(False)
-        header.setMinimumSectionSize(0)
-        
-        # Column 0: Index
-        header.setSectionResizeMode(0, QHeaderView.ResizeMode.Interactive)
-        header.resizeSection(0, 40)
 
-        # Column 1: Disable icon
-        header.setSectionResizeMode(1, QHeaderView.ResizeMode.Fixed)
-        header.resizeSection(1, 24)
-        
-        # Columns 3-5: Fixed/Interactive sizes
-        header.setSectionResizeMode(3, QHeaderView.ResizeMode.Interactive)
-        header.resizeSection(3, 80)
-        header.setSectionResizeMode(4, QHeaderView.ResizeMode.Interactive)
-        header.resizeSection(4, 100)
-        header.setSectionResizeMode(5, QHeaderView.ResizeMode.Interactive)
-        header.resizeSection(5, 150)
-        
-        # Column 2: Filename - STRETCH
-        header.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
-        
-        self.setDragDropMode(QAbstractItemView.DragDropMode.DragDrop)
-        self.setAcceptDrops(True)
-        self.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
-        self.setDefaultDropAction(Qt.DropAction.MoveAction)
-        self.setRootIsDecorated(False)
-        self.setUniformRowHeights(True)
-        
-        # Block internal signals during setup if needed, but here simple connect is fine
-        self.itemChanged.connect(self.on_item_changed)
-        
-        # Enable Context Menu
-        self.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
-        self.customContextMenuRequested.connect(self.show_context_menu)
-        
-        # 防抖定时器：避免快速连续的选择变化触发过多更新
-        self._selection_debounce_timer = QTimer(self)
-        self._selection_debounce_timer.setSingleShot(True)
-        self._selection_debounce_timer.setInterval(50)  # 50ms 防抖延迟
-        self._selection_debounce_timer.timeout.connect(self._emit_selection_changed)
-        
-        # 信号阻塞标志：用于批量操作时阻塞选择信号
-        self._selection_blocked = False
-        
-        self.itemSelectionChanged.connect(self.on_selection_changed)
-        
-        self.reference_frame_data = None
-        self.is_dark_theme = True # Default to dark
-        self.setMinimumHeight(120)
+        # Create data model
+        self.model = TimelineModel()
 
+        # Connect model signals to view updates
+        self.model.frames_inserted.connect(self._on_frames_inserted)
+        self.model.frames_removed.connect(self._on_frames_removed)
+        self.model.frames_moved.connect(self._on_frames_moved)
+        self.model.data_changed.connect(self._on_data_changed)
+        self.model.selection_changed.connect(self._on_model_selection_changed)
+
+        # Create list view (tree widget)
+        self.list_view = TimelineListView(self)
+        self._connect_view_signals(self.list_view)
+
+        # Create grid view
+        self.grid_view = TimelineGridWidget(self)
+        self._connect_view_signals(self.grid_view, is_grid=True)
+
+        # Add both views to stacked widget
+        self.addWidget(self.list_view)
+        self.addWidget(self.grid_view)
+
+        # Default to list view
+        self.current_view_mode = "list"  # "list" or "grid"
+
+        # Grid settings
+        self.grid_thumbnail_width = 120
+        self.grid_thumbnail_height = 120
+        self.grid_show_multiline = False
+        self.grid_background_mode = "checkerboard"
+
+        # Apply settings to grid view
+        self.grid_view.set_thumbnail_size(self.grid_thumbnail_width, self.grid_thumbnail_height)
+        self.grid_view.set_show_multiline(self.grid_show_multiline)
+        self.grid_view.set_background_mode(self.grid_background_mode)
+
+    def _connect_view_signals(self, view, is_grid=False):
+        """Connect common signals from a view to this widget"""
+        view.selection_changed.connect(self._on_view_selection_changed)
+        view.selection_changed.connect(self.selection_changed)
+        view.order_changed.connect(self.order_changed)
+        view.files_dropped.connect(self.files_dropped)
+        view.copy_properties_requested.connect(self.copy_properties_requested)
+        view.paste_properties_requested.connect(self.paste_properties_requested)
+        view.duplicate_requested.connect(self.duplicate_requested)
+        view.remove_requested.connect(self.remove_requested)
+        view.disabled_state_changed.connect(self.disabled_state_changed)
+        view.enable_requested.connect(self.enable_requested)
+        view.reverse_order_requested.connect(self.reverse_order_requested)
+        view.integerize_offset_requested.connect(self.integerize_offset_requested)
+        view.set_reference_requested.connect(self.set_reference_requested)
+        view.clear_reference_requested.connect(self.clear_reference_requested)
+
+        # Grid-specific signal
+        if is_grid:
+            view.thumbnail_size_changed.connect(self._on_grid_thumbnail_changed)
+
+    def set_view_mode(self, mode):
+        """Switch between list and grid view"""
+        if mode == "list":
+            self.setCurrentWidget(self.list_view)
+            self.current_view_mode = "list"
+            # Sync selection from model to list view
+            selected_indices = self.model.get_selected_indices()
+            # Block ALL Qt signals first
+            self._block_all_signals()
+            self.list_view.clearSelection()
+            for idx in selected_indices:
+                if idx < self.list_view.topLevelItemCount():
+                    item = self.list_view.topLevelItem(idx)
+                    item.setSelected(True)
+            self._unblock_all_signals()
+        elif mode == "grid":
+            self.setCurrentWidget(self.grid_view)
+            self.current_view_mode = "grid"
+            # Refresh grid view with current data
+            self.refresh_current_items()
+            # Sync selection from model to grid view
+            selected_indices = self.model.get_selected_indices()
+            # Block ALL Qt signals first
+            self._block_all_signals()
+            self.grid_view.clearSelection()
+            for idx in selected_indices:
+                if idx < self.grid_view.count():
+                    item = self.grid_view.item(idx)
+                    item.setSelected(True)
+            self._unblock_all_signals()
+
+    def get_view_mode(self):
+        """Return current view mode"""
+        return self.current_view_mode
+
+    def _on_grid_thumbnail_changed(self, width, height):
+        """Handle grid thumbnail size change"""
+        self.grid_thumbnail_width = width
+        self.grid_thumbnail_height = height
+        self.thumbnail_size_changed.emit(width, height)
+
+    def update_grid_settings(self, width, height, multiline, background):
+        """Update grid view settings"""
+        self.grid_thumbnail_width = width
+        self.grid_thumbnail_height = height
+        self.grid_show_multiline = multiline
+        self.grid_background_mode = background
+
+        self.grid_view.set_thumbnail_size(width, height)
+        self.grid_view.set_show_multiline(multiline)
+        self.grid_view.set_background_mode(background)
+
+    def get_current_widget(self):
+        """Get currently active timeline widget"""
+        return self.currentWidget()
+
+    # ========== Model signal handlers ==========
+    def _on_frames_inserted(self, index: int, count: int):
+        """Handle frame insertion from model"""
+        # Get frame data from model
+        for i in range(count):
+            frame_data = self.model.get_frame_at(index + i)
+            if frame_data:
+                # Determine original resolution if available
+                orig_w, orig_h = 0, 0
+                if hasattr(frame_data, 'target_resolution') and frame_data.target_resolution:
+                    orig_w, orig_h = frame_data.target_resolution
+
+                # Add to both views
+                filename = os.path.basename(frame_data.file_path)
+                self.list_view.add_frame(filename, frame_data, orig_w, orig_h)
+                self.grid_view.add_frame(filename, frame_data, index + i)
+
+    def _on_frames_removed(self, index: int, count: int):
+        """Handle frame removal from model"""
+        # Remove from both views (remove from end first)
+        for i in range(count):
+            idx_to_remove = index + (count - 1 - i)
+            if idx_to_remove < self.list_view.topLevelItemCount():
+                self.list_view.takeTopLevelItem(idx_to_remove)
+            if idx_to_remove < self.grid_view.count():
+                self.grid_view.takeItem(idx_to_remove)
+
+    def _on_frames_moved(self, from_index: int, to_index: int, count: int):
+        """Handle frame movement from model"""
+        # Rebuild both views
+        # This is simpler than moving individual items
+        total_frames = self.model.get_frame_count()
+
+        # Rebuild list view
+        self.list_view.clear()
+        for i in range(total_frames):
+            frame_data = self.model.get_frame_at(i)
+            if frame_data:
+                orig_w, orig_h = 0, 0
+                if hasattr(frame_data, 'target_resolution') and frame_data.target_resolution:
+                    orig_w, orig_h = frame_data.target_resolution
+                filename = os.path.basename(frame_data.file_path)
+                self.list_view.add_frame(filename, frame_data, orig_w, orig_h)
+
+        # Rebuild grid view
+        self.grid_view.clear()
+        for i in range(total_frames):
+            frame_data = self.model.get_frame_at(i)
+            if frame_data:
+                filename = os.path.basename(frame_data.file_path)
+                self.grid_view.add_frame(filename, frame_data, i)
+
+    def _on_data_changed(self, start_index: int, end_index: int):
+        """Handle frame data change from model"""
+        # Get selection before update
+        selection_before = self.model.get_selected_indices()
+
+        # Only update the currently active view
+        self._block_all_signals()
+        if self.current_view_mode == "list":
+            for idx in range(start_index, end_index + 1):
+                frame_data = self.model.get_frame_at(idx)
+                if frame_data:
+                    orig_w, orig_h = 0, 0
+                    if hasattr(frame_data, 'target_resolution') and frame_data.target_resolution:
+                        orig_w, orig_h = frame_data.target_resolution
+                    filename = os.path.basename(frame_data.file_path)
+
+                    # Update list view only
+                    if idx < self.list_view.topLevelItemCount():
+                        item = self.list_view.topLevelItem(idx)
+                        self.list_view.update_item_display(item, frame_data, orig_w, orig_h)
+        else:
+            # Grid mode - only update grid view
+            for idx in range(start_index, end_index + 1):
+                frame_data = self.model.get_frame_at(idx)
+                if frame_data:
+                    filename = os.path.basename(frame_data.file_path)
+
+                    # Update grid view only
+                    if idx < self.grid_view.count():
+                        self.grid_view.update_frame(idx, frame_data, filename)
+
+        self._unblock_all_signals()
+
+        # Check selection after update
+        selection_after = self.model.get_selected_indices()
+
+        if selection_before != selection_after:
+            print(f"WARNING: Selection changed during update! Before: {selection_before}, After: {selection_after}")
+
+    def _on_model_selection_changed(self):
+        """Handle selection change from model"""
+        # Get selected indices from model
+        selected_indices = set(self.model.get_selected_indices())
+
+        # Block signals and stop timers before updating
+        if self.current_view_mode == "list":
+            self.list_view._selection_debounce_timer.stop()
+            self.list_view.blockSignals(True)
+        else:
+            self.grid_view._selection_debounce_timer.stop()
+            self.grid_view.blockSignals(True)
+
+        # Only update the currently active view
+        self._apply_selection_to_view(selected_indices)
+
+        # Unblock signals
+        if self.current_view_mode == "list":
+            self.list_view.blockSignals(False)
+        else:
+            self.grid_view.blockSignals(False)
+
+    # ========== Model access methods ==========
+    def add_frame(self, filename: str, frame_data: FrameData, orig_width=0, orig_height=0):
+        """Add frame through model"""
+        self.model.add_frame(frame_data)
+
+    def get_frame_at(self, index: int) -> Optional[FrameData]:
+        """Get frame data from model"""
+        return self.model.get_frame_at(index)
+
+    def get_frame_count(self) -> int:
+        """Get total frame count from model"""
+        return self.model.get_frame_count()
+
+    def get_all_frames(self) -> List[FrameData]:
+        """Get all frames from model"""
+        return self.model.get_all_frames()
+
+    def remove_frame_at(self, index: int):
+        """Remove frame at index through model"""
+        self.model.remove_frame_at(index)
+
+    def remove_frames_at(self, indices: List[int]):
+        """Remove multiple frames at indices through model"""
+        self.model.remove_frames_at(indices)
+
+    def move_frame(self, from_index: int, to_index: int):
+        """Move frame through model"""
+        self.model.move_frame(from_index, to_index)
+
+    def update_frame_data(self, index: int):
+        """Notify model that frame data changed"""
+        self.model.update_frame_data(index)
+
+    def clear(self):
+        """Clear all data"""
+        self.model.clear()
+        self.list_view.clear()
+        self.grid_view.clear()
+
+    def set_reference_frame(self, frame_data: Optional[FrameData]):
+        """Set reference frame through model"""
+        self.model.set_reference_frame(frame_data)
+
+    def clear_reference_frame(self):
+        """Clear reference frame through model"""
+        self.model.clear_reference_frame()
+
+    def get_reference_frame(self) -> Optional[FrameData]:
+        """Get reference frame from model"""
+        return self.model.get_reference_frame()
+
+    def load_frames(self, frames: List[FrameData]):
+        """Load frames into model and views"""
+        self.model.clear()
+        for frame_data in frames:
+            orig_w, orig_h = 0, 0
+            if hasattr(frame_data, 'target_resolution') and frame_data.target_resolution:
+                orig_w, orig_h = frame_data.target_resolution
+            filename = os.path.basename(frame_data.file_path)
+            self.model.add_frame(frame_data)
+
+    # ========== Unified interface methods (using model) ==========
+    def get_selected_indices_from_current_view(self) -> List[int]:
+        """Get selected indices from model"""
+        return self.model.get_selected_indices()
+
+    def get_selected_frames(self) -> List[FrameData]:
+        """Get selected frame data from model"""
+        return self.model.get_selected_frames()
+
+    def get_frame_data_at_index(self, index: int) -> Optional[FrameData]:
+        """Get frame data from model"""
+        return self.model.get_frame_at(index)
+
+    def extract_frame_data_from_item(self, item):
+        """Extract frame data from an item (works for both QTreeWidgetItem and QListWidgetItem)"""
+        return TimelineViewUtils.extract_frame_data_from_item(item)
+
+    def add_frame_to_current_view(self, filename: str, frame_data, index: int):
+        """Add frame to current view"""
+        current = self.get_current_widget()
+        if hasattr(current, 'add_frame_to_view'):
+            current.add_frame_to_view(filename, frame_data, index)
+
+    def remove_frame_from_current_view(self, index: int):
+        """Remove frame from current view"""
+        current = self.get_current_widget()
+        if hasattr(current, 'remove_frame_from_view'):
+            current.remove_frame_from_view(index)
+
+    # Forward methods to current view
     def block_selection_signals(self, block: bool):
-        """
-        阻塞或恢复选择信号
-        用于批量选择操作（如全选）时阻止频繁的信号触发
-        """
-        self._selection_blocked = block
-        if not block:
-            # 解除阻塞时，立即触发一次选择变化
-            self._emit_selection_changed()
+        self.list_view.block_selection_signals(block)
+        self.grid_view.block_selection_signals(block)
 
     def select_all_optimized(self):
-        """
-        优化的全选方法：阻塞信号后批量选择，最后只触发一次更新
-        """
-        self._selection_blocked = True
-        self.selectAll()
-        self._selection_blocked = False
-        self._emit_selection_changed()
-
-    def _emit_selection_changed(self):
-        """实际发射选择变化信号"""
-        if self._selection_blocked:
-            return
-        selected_items = self.selectedItems()
-        frames = [item.data(0, Qt.ItemDataRole.UserRole) for item in selected_items]
-        self.selection_changed.emit(frames)
+        self.get_current_widget().select_all_optimized()
 
     def set_theme_mode(self, is_dark):
-        self.is_dark_theme = is_dark
-        self.refresh_visuals()
+        self.list_view.set_theme_mode(is_dark)
+        self.grid_view.set_theme_mode(is_dark)
 
     def set_visual_reference_frame(self, frame_data):
-        self.reference_frame_data = frame_data
-        
-        root = self.invisibleRootItem()
-        for i in range(root.childCount()):
-            item = root.child(i)
-            data = item.data(0, Qt.ItemDataRole.UserRole)
-            
-            # Simple reference check
-            is_ref = (data is frame_data)
-            
-            # Update visual style (e.g. Background or Font)
-            if is_ref:
-                # Set background or font
-                font = item.font(2)
-                font.setBold(True)
-                item.setFont(2, font)
-                
-                # Optimized Colors for Light/Dark themes
-                if hasattr(self, 'is_dark_theme') and not self.is_dark_theme:
-                    # Light Theme: Light Green background
-                    color = QColor(200, 230, 200)
-                    color.setAlpha(255)
-                else:
-                    # Dark Theme (Default): Dark Green background
-                    color = QColor(30, 80, 40) 
-                    color.setAlpha(200)
-                
-                item.setBackground(2, color) 
-                if i18n.t("label_ref_prefix") not in item.text(2):
-                    item.setText(2, f"{i18n.t('label_ref_prefix')}{item.text(2)}")
-            else:
-                font = item.font(2)
-                font.setBold(False)
-                item.setFont(2, font)
-                item.setBackground(2, QColor(0, 0, 0, 0)) # Transparent
-                item.setText(2, item.text(2).replace(i18n.t("label_ref_prefix"), ""))
+        self.list_view.set_visual_reference_frame(frame_data)
+        self.grid_view.set_visual_reference_frame(frame_data)
 
     def refresh_visuals(self):
-        """Force refresh of visual elements (e.g. after theme change)."""
-        if self.reference_frame_data:
-            self.set_visual_reference_frame(self.reference_frame_data)
-
-
-    def dragEnterEvent(self, event):
-        if event.mimeData().hasUrls():
-            event.accept()
-        else:
-            super().dragEnterEvent(event)
-
-    def dragMoveEvent(self, event):
-        if event.mimeData().hasUrls():
-            event.accept()
-        else:
-            # Prevent dropping ON item (nesting) for internal moves
-            # Only allow Above or Below
-            target = self.itemAt(event.position().toPoint())
-            if target:
-                # Force drop indicator
-                # We can't easily force QTreeWidget's internal logic for indicator via just event accept.
-                # However, dropping "On" item is usually handled by `dropEvent` logic or `dragMoveEvent` flags.
-                # QTreeWidget tries to reparent if you drop on item.
-                # We can try to modify the drop action or ignore 'On' pos.
-                pass
-            super().dragMoveEvent(event)
-
-    def dropEvent(self, event):
-        if event.mimeData().hasUrls():
-            links = []
-            for url in event.mimeData().urls():
-                links.append(url.toLocalFile())
-            
-            # Calculate Insertion Index
-            final_index = -1
-            item = self.itemAt(event.position().toPoint())
-            drop_pos = self.dropIndicatorPosition()
-            
-            if item:
-                index = self.indexOfTopLevelItem(item)
-                if drop_pos == QAbstractItemView.DropIndicatorPosition.AboveItem:
-                    final_index = index
-                elif drop_pos == QAbstractItemView.DropIndicatorPosition.BelowItem:
-                    final_index = index + 1
-                elif drop_pos == QAbstractItemView.DropIndicatorPosition.OnItem:
-                    final_index = index + 1
-                elif drop_pos == QAbstractItemView.DropIndicatorPosition.OnViewport:
-                    final_index = -1
-            
-            event.accept()
-            self.files_dropped.emit(links, final_index)
-            
-        else:
-            # Internal Drop
-            # We must prevent nesting.
-            # Check drop position
-            drop_pos = self.dropIndicatorPosition()
-            if drop_pos == QAbstractItemView.DropIndicatorPosition.OnItem:
-                # If user tries to drop "On" item, redirect to "Below" or "Above"
-                # Or just let super handle it but we ensure flatten?
-                # QTreeWidget dropEvent "OnItem" makes it a child.
-                # We can inhibit this by calling super() but then reparenting back? 
-                # Or easier: setRootIsDecorated(False) is already set, but that just hides expanders, doesn't prevent structure.
-                # Actually, standard fix for QTreeWidget flat list behavior:
-                pass
-
-            super().dropEvent(event)
-            
-            # Post-Drop cleanup: Ensure no items are children
-            root = self.invisibleRootItem()
-            # If any top level item has children, move them out.
-            # Iterating while modifying is tricky.
-            # But simpler: The moved items are now children of 'target'.
-            # We can detect this.
-            
-            # Better approach: 
-            # Re-emit order changed and let MainWindow sync?
-            # MainWindow syncs based on `files` list from `order_changed` assuming flat list?
-            # If QTreeWidget nests them, `topLevelItemCount` decreases.
-            # We need to flatten.
-            
-            # Flatten Logic
-            self.flatten_tree()
-            self.order_changed.emit()
-
-    def flatten_tree(self):
-        root = self.invisibleRootItem()
-        top_count = root.childCount()
-        items_to_move = [] # list of (item, index_to_insert_at)
-        
-        # Check all top level items for children
-        for i in range(top_count):
-            parent = root.child(i)
-            if parent.childCount() > 0:
-                # Found nested items
-                children = parent.takeChildren()
-                # We want to insert them after the parent
-                items_to_move.append((parent, children))
-        
-        # Re-insert children at top level
-        # Process in reverse to maintain index logic? 
-        # Actually easier: Just collect ALL items in generic order and rebuild tree?
-        # No, that loses selection state potentially.
-        
-        for parent, children in items_to_move:
-            parent_idx = self.indexOfTopLevelItem(parent)
-            # Insert children after parent
-            for offset, child in enumerate(children):
-                self.insertTopLevelItem(parent_idx + 1 + offset, child)
-
-    def show_context_menu(self, position):
-        from PyQt6.QtWidgets import QMenu
-        from PyQt6.QtGui import QAction
-        
-        menu = QMenu()
-        
-        # Actions
-        selected_items = self.selectedItems()
-        has_selection = bool(selected_items)
-        
-        copy_action = QAction(i18n.t("action_copy_props"), self)
-        copy_action.triggered.connect(self.copy_properties_requested.emit)
-        copy_action.setEnabled(has_selection)
-        
-        paste_action = QAction(i18n.t("action_paste_props"), self)
-        paste_action.triggered.connect(self.paste_properties_requested.emit)
-        
-        dup_action = QAction(i18n.t("action_dup_frame"), self)
-        dup_action.triggered.connect(self.duplicate_requested.emit)
-        dup_action.setEnabled(has_selection)
-        
-        rem_action = QAction(i18n.t("action_rem_frame"), self)
-        rem_action.triggered.connect(self.remove_requested.emit)
-        rem_action.setEnabled(has_selection)
-
-        # Disable/Enable actions
-        disable_action = QAction(i18n.t("disable_frame_label", "Disable Frame(s)"), self)
-        disable_action.triggered.connect(lambda: self.enable_requested.emit(False))
-        disable_action.setEnabled(has_selection)
-        
-        enable_action = QAction(i18n.t("enable_frame_label", "Enable Frame(s)"), self)
-        enable_action.triggered.connect(lambda: self.enable_requested.emit(True))
-        enable_action.setEnabled(has_selection)
-
-        reverse_action = QAction(i18n.t("action_reverse_order"), self)
-        reverse_action.triggered.connect(self.reverse_order_requested.emit)
-        reverse_action.setEnabled(len(selected_items) > 1)
-        
-        int_action = QAction(i18n.t("action_integerize"), self)
-        int_action.triggered.connect(self.integerize_offset_requested.emit)
-        int_action.setEnabled(has_selection)
-
-        menu.addAction(copy_action)
-        menu.addAction(paste_action)
-        menu.addSeparator()
-        menu.addAction(int_action)
-        menu.addSeparator()
-        menu.addAction(disable_action)
-        menu.addAction(enable_action)
-        menu.addAction(reverse_action)
-        menu.addAction(reverse_action)
-        menu.addSeparator()
-        
-        # Reference Frame Actions
-        ref_action = QAction(i18n.t("action_set_reference"), self)
-        ref_action.triggered.connect(self.set_reference_requested.emit)
-        ref_action.setEnabled(len(selected_items) == 1)
-        
-        clear_ref_action = QAction(i18n.t("action_clear_reference"), self)
-        clear_ref_action.triggered.connect(self.clear_reference_requested.emit)
-        
-        menu.addAction(ref_action)
-        menu.addAction(clear_ref_action)
-        menu.addSeparator()
-        
-        menu.addAction(dup_action)
-        menu.addAction(rem_action)
-        
-        menu.exec(self.viewport().mapToGlobal(position))
-
-    def on_item_changed(self, item, column):
-        if column == 1:
-            frame_data = item.data(0, Qt.ItemDataRole.UserRole)
-            # Checked means DISABLED
-            is_disabled = (item.checkState(1) == Qt.CheckState.Checked)
-            if frame_data.is_disabled != is_disabled:
-                frame_data.is_disabled = is_disabled
-                self.disabled_state_changed.emit(frame_data, is_disabled)
-
-
-    def add_frame(self, filename, frame_data, orig_width=0, orig_height=0):
-        item = QTreeWidgetItem(self)
-        item.setData(0, Qt.ItemDataRole.UserRole, frame_data)
-        
-        # Store original resolution for calculation
-        item.setData(3, Qt.ItemDataRole.UserRole, (orig_width, orig_height))
-        
-        item.setText(0, str(self.topLevelItemCount())) # Initial Index
-        item.setText(1, "") # Just the checkbox
-        item.setText(2, filename)
-        
-        # Checkbox
-        item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
-        # Checked = Disabled, Unchecked = Enabled
-        item.setCheckState(1, Qt.CheckState.Checked if frame_data.is_disabled else Qt.CheckState.Unchecked)
-        
-        self.update_item_display(item, frame_data, orig_width, orig_height)
+        self.list_view.refresh_visuals()
+        self.grid_view.refresh_visuals()
 
     def update_item_display(self, item, frame_data, orig_w, orig_h):
-        # Filename
-        fname = os.path.basename(frame_data.file_path)
-        if frame_data.crop_rect:
-            x, y, w, h = frame_data.crop_rect
-            # Attempt to calculate col/row. 
-            # We need the full resolution of the source image to be accurate if it's not a simple grid,
-            # but usually it is. 
-            col = x // w
-            row = y // h
-            fname += f" [{col},{row}]"
-        item.setText(2, fname)
-        
-        # Scale
-        item.setText(3, f"{frame_data.scale:.4f}")
-        
-        # Position
-        pos_str = f"({int(frame_data.position[0])}, {int(frame_data.position[1])})"
-        item.setText(4, pos_str)
-        
-        # Orig Res and Calculated Res
-        if orig_w > 0:
-            final_w = int(orig_w * frame_data.scale)
-            final_h = int(orig_h * frame_data.scale)
-            res_str = f"{orig_w}x{orig_h} -> {final_w}x{final_h}"
-            
-            if frame_data.target_resolution:
-                tw, th = frame_data.target_resolution
-                res_str += f" ({tw}x{th})"
+        """Update display of a single item in current view"""
+        if self.current_view_mode == "list":
+            self.list_view.update_item_display(item, frame_data, orig_w, orig_h)
         else:
-            res_str = "?x?"
-        
-        item.setText(5, res_str)
+            self.grid_view.update_item_display(item, frame_data, orig_w, orig_h)
 
     def refresh_ui_text(self):
-        self.setHeaderLabels([
-            i18n.t("col_index"),
-            i18n.t("col_disabled"), 
-            i18n.t("col_filename"), 
-            i18n.t("col_scale"), 
-            i18n.t("col_position"), 
-            i18n.t("col_res_combined")
-        ])
-        self.refresh_current_items()
+        self.list_view.refresh_ui_text()
+        self.grid_view.refresh_ui_text()
 
     def refresh_current_items(self):
-        # Actually standard iteration
-        root = self.invisibleRootItem()
-        for i in range(root.childCount()):
-            item = root.child(i)
-            item.setText(0, str(i + 1)) # Update index
-            frame_data = item.data(0, Qt.ItemDataRole.UserRole)
-            orig_res = item.data(3, Qt.ItemDataRole.UserRole)
-            if orig_res:
-                w, h = orig_res
-                self.update_item_display(item, frame_data, w, h)
-            else:
-                self.update_item_display(item, frame_data, 0, 0)
+        """Refresh all items in current view"""
+        if self.current_view_mode == "list":
+            self.list_view.refresh_current_items()
+        else:
+            # Rebuild grid view from model
+            self._rebuild_grid_view()
 
-    def on_selection_changed(self):
-        """选择变化时启动防抖定时器，避免频繁触发"""
-        if self._selection_blocked:
-            return
-        # 重启防抖定时器
-        self._selection_debounce_timer.start()
+    def _rebuild_grid_view(self):
+        """Rebuild grid view from model"""
+        # Store selection before clearing
+        selected_indices = set(self.model.get_selected_indices())
+
+        self.grid_view.clear()
+        total_frames = self.model.get_frame_count()
+
+        for i in range(total_frames):
+            frame_data = self.model.get_frame_at(i)
+            if frame_data:
+                filename = os.path.basename(frame_data.file_path)
+                self.grid_view.add_frame(filename, frame_data, i)
+
+        # Restore selection after rebuild (block signals to avoid triggering model update)
+        if selected_indices:
+            self.grid_view.blockSignals(True)
+            self.grid_view.block_selection_signals_internal(True)
+            self._apply_selection_to_view(selected_indices)
+            self.grid_view.blockSignals(False)
+            self.grid_view.block_selection_signals_internal(False)
+
+    def refresh_all_grid_items(self):
+        """Refresh all grid items (thumbnails and text)"""
+        self.grid_view.refresh_all_items()
+
+    def _block_all_signals(self):
+        """Block all signals from both views"""
+        self.list_view.blockSignals(True)
+        self.grid_view.blockSignals(True)
+        self.list_view.block_selection_signals_internal(True)
+        self.grid_view.block_selection_signals_internal(True)
+
+    def _unblock_all_signals(self):
+        """Unblock all signals from both views"""
+        self.list_view.blockSignals(False)
+        self.grid_view.blockSignals(False)
+        self.list_view.block_selection_signals_internal(False)
+        self.grid_view.block_selection_signals_internal(False)
+
+    def _apply_selection_to_view(self, selected_indices):
+        """Apply selection indices to the current view"""
+        if self.current_view_mode == "list":
+            # Use optimized set-based method for list view
+            if isinstance(selected_indices, set):
+                self.list_view._apply_selection_from_set(selected_indices)
+            else:
+                self.list_view._apply_selection_from_set(set(selected_indices))
+        else:
+            # Grid view: iterate through items
+            item_count = self.grid_view.count()
+            selected_set = selected_indices if isinstance(selected_indices, set) else set(selected_indices)
+            for idx in range(item_count):
+                item = self.grid_view.item(idx)
+                should_select = idx in selected_set
+                if item.isSelected() != should_select:
+                    item.setSelected(should_select)
+
+    def _on_view_selection_changed(self, frames):
+        """Handle selection change from views and update model"""
+        # Check if selection actually changed to avoid unnecessary updates
+        current_indices = self.model.get_selected_indices()
+        new_indices = []
+        if self.current_view_mode == "list":
+            new_indices = self.list_view.get_selected_indices()
+        else:
+            new_indices = self.grid_view.get_selected_indices()
+
+        if current_indices == new_indices:
+            return  # No change, skip update
+
+        self.model.set_selection(new_indices)
+
+    # ========== Property accessors for compatibility ==========
+    @property
+    def reference_frame_data(self):
+        """Get reference frame from model"""
+        return self.model.get_reference_frame()
+
+    @reference_frame_data.setter
+    def reference_frame_data(self, frame_data):
+        """Set reference frame in model"""
+        self.model.set_reference_frame(frame_data)
+
+    @property
+    def is_dark_theme(self):
+        return self.list_view.is_dark_theme
+
+    def setMinimumHeight(self, height):
+        super().setMinimumHeight(height)
+
+    def selectedItems(self):
+        """Get selected items from current view"""
+        return self.get_current_widget().selectedItems()
+
+    def currentItem(self):
+        """Get current item from current view"""
+        return self.get_current_widget().currentItem()
+
+    def setCurrentItem(self, item):
+        """Set current item in current view"""
+        # Find the corresponding item in the current view by index
+        if isinstance(item, QTreeWidgetItem):  # QTreeWidgetItem from list view
+            index = self.list_view.indexOfTopLevelItem(item)
+            if self.current_view_mode == "list":
+                self.list_view.setCurrentItem(item)
+            elif index >= 0 and index < self.grid_view.count():
+                self.grid_view.setCurrentItem(self.grid_view.item(index))
+        elif isinstance(item, QListWidgetItem):  # QListWidgetItem from grid view
+            index = self.grid_view.row(item)
+            if self.current_view_mode == "grid":
+                self.grid_view.setCurrentItem(item)
+            elif index >= 0 and index < self.list_view.topLevelItemCount():
+                self.list_view.setCurrentItem(self.list_view.topLevelItem(index))
+        else:
+            # Fallback: try to determine by view mode
+            if self.current_view_mode == "list" and self.list_view.topLevelItemCount() > 0:
+                self.list_view.setCurrentItem(self.list_view.topLevelItem(0))
+            elif self.grid_view.count() > 0:
+                self.grid_view.setCurrentItem(self.grid_view.item(0))
+
+    def setCurrentIndex(self, index):
+        """Set current index in current view"""
+        self.get_current_widget().setCurrentIndex(index)
+
+    def topLevelItem(self, index):
+        """Get top level item from list view"""
+        return self.list_view.topLevelItem(index)
+
+    def topLevelItemCount(self):
+        """Get top level item count from list view"""
+        return self.list_view.topLevelItemCount()
+
+    def indexOfTopLevelItem(self, item):
+        """Get index of top level item from list view"""
+        return self.list_view.indexOfTopLevelItem(item)
+
+    def takeTopLevelItem(self, index):
+        """Remove frame at index using model"""
+        self.model.remove_frame_at(index)
+
+    def insertTopLevelItem(self, index, item):
+        """This method is deprecated - use model.add_frame instead"""
+        # Extract frame data from item and add to model
+        frame_data = self.list_view._extract_frame_data_from_item(item)
+        if frame_data:
+            self.model.add_frame(frame_data, index)
+
+    def count(self):
+        """Get item count from model"""
+        return self.model.get_frame_count()
+
+    # Compatibility wrapper - delegates to views directly
+    def _get_view_method(self, method_name, *args, **kwargs):
+        """Helper to call methods on current view"""
+        current = self.get_current_widget()
+        if hasattr(current, method_name):
+            method = getattr(current, method_name)
+            return method(*args, **kwargs)
+        return None
