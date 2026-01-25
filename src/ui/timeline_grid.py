@@ -17,6 +17,7 @@ class TimelineGridWidget(QListWidget, BaseTimelineView):
     copy_properties_requested = pyqtSignal()
     paste_properties_requested = pyqtSignal()
     duplicate_requested = pyqtSignal()
+    duplicate_dialog_requested = pyqtSignal()
     remove_requested = pyqtSignal()
     disabled_state_changed = pyqtSignal(object, bool)
     enable_requested = pyqtSignal(bool)
@@ -337,8 +338,9 @@ class TimelineGridWidget(QListWidget, BaseTimelineView):
             font = item.font()
             font.setBold(True)
             item.setFont(font)
-        
-        self.addItem(item)
+
+        # Insert item at specified index
+        self.insertItem(index, item)
     
     def update_frame(self, index, frame_data, filename):
         """Update frame at index"""
@@ -604,6 +606,10 @@ class TimelineGridWidget(QListWidget, BaseTimelineView):
         dup_action.triggered.connect(self.duplicate_requested.emit)
         dup_action.setEnabled(has_selection)
 
+        dup_dialog_action = QAction(i18n.t("action_dup_frames_dialog"), self)
+        dup_dialog_action.triggered.connect(self.duplicate_dialog_requested.emit)
+        dup_dialog_action.setEnabled(has_selection)
+
         rem_action = QAction(i18n.t("action_rem_frame"), self)
         rem_action.triggered.connect(self.remove_requested.emit)
         rem_action.setEnabled(has_selection)
@@ -646,6 +652,7 @@ class TimelineGridWidget(QListWidget, BaseTimelineView):
         menu.addSeparator()
 
         menu.addAction(dup_action)
+        menu.addAction(dup_dialog_action)
         menu.addAction(rem_action)
 
         menu.exec(self.viewport().mapToGlobal(position))

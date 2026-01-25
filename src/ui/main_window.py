@@ -1,8 +1,8 @@
 
-from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
-                             QDockWidget, QToolBar, QFileDialog, QSpinBox, 
+from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
+                             QDockWidget, QToolBar, QFileDialog, QSpinBox,
                              QLabel, QPushButton, QInputDialog, QTreeWidgetItem, QMenu, QStyle,
-                             QMessageBox)
+                             QMessageBox, QDialog)
 from PyQt6.QtGui import QAction, QIcon, QKeySequence, QImage, QActionGroup, QImageReader, QDesktopServices, QColor
 from PyQt6.QtCore import Qt, QTimer, QSettings, QByteArray, QUrl, QDateTime, QLocale
 import subprocess
@@ -70,6 +70,7 @@ class MainWindow(QMainWindow):
         self.timeline.copy_properties_requested.connect(self.copy_frame_properties)
         self.timeline.paste_properties_requested.connect(self.paste_frame_properties)
         self.timeline.duplicate_requested.connect(self.duplicate_frame)
+        self.timeline.duplicate_dialog_requested.connect(self.duplicate_frames_dialog)
         self.timeline.remove_requested.connect(self.remove_frame)
         self.timeline.disabled_state_changed.connect(self.on_frame_disabled_state_changed)
         self.timeline.enable_requested.connect(self.toggle_enable_disable)
@@ -592,7 +593,11 @@ class MainWindow(QMainWindow):
         self.dup_frame_action = QAction(i18n.t("action_dup_frame"), self)
         self.dup_frame_action.setShortcut("Ctrl+D")
         self.dup_frame_action.triggered.connect(self.duplicate_frame)
-        
+
+        self.dup_frames_dialog_action = QAction(i18n.t("action_dup_frames_dialog"), self)
+        self.dup_frames_dialog_action.setShortcut("Ctrl+Shift+D")
+        self.dup_frames_dialog_action.triggered.connect(self.duplicate_frames_dialog)
+
         self.rem_frame_action = QAction(i18n.t("action_rem_frame"), self)
         self.rem_frame_action.setShortcut(QKeySequence.StandardKey.Delete)
         self.rem_frame_action.triggered.connect(self.remove_frame)
@@ -935,6 +940,7 @@ class MainWindow(QMainWindow):
         edit_menu.addAction(self.paste_props_action)
         edit_menu.addSeparator()
         edit_menu.addAction(self.dup_frame_action)
+        edit_menu.addAction(self.dup_frames_dialog_action)
         edit_menu.addAction(self.rem_frame_action)
         edit_menu.addSeparator()
         edit_menu.addAction(self.reverse_order_action)
@@ -1274,8 +1280,8 @@ class MainWindow(QMainWindow):
 
         indices.sort()  # Sort in ascending order
 
-        # Find the insertion point (after the last selected item)
-        insert_pos = indices[-1] + 1
+        # Find the insertion point (BEFORE the first selected item)
+        insert_pos = indices[0]
 
         # Collect all duplicates first
         duplicates = []
@@ -1296,15 +1302,104 @@ class MainWindow(QMainWindow):
 
             duplicates.append(new_data)
 
-        # Insert all duplicates at the end of selection through model
+        # Insert all duplicates at once before the selection
         for i, new_data in enumerate(duplicates):
-            # Use timeline model to add frames
             filename = os.path.basename(new_data.file_path)
-            self.timeline.add_frame(filename, new_data)
+            # Use model directly to insert at specific position
+            self.timeline.model.add_frame(new_data, insert_pos + i)
+
+        # Calculate new indices for original frames (shifted right by number of duplicates)
+        original_indices_after_dup = [idx + len(duplicates) for idx in indices]
+
+        # Restore selection to original frames
+        self.timeline.model.set_selection(original_indices_after_dup)
 
         self.mark_dirty()
         self.timeline.refresh_current_items()
         self.statusBar().showMessage(i18n.t("msg_frames_duplicated").format(count=len(duplicates)), 3000)
+
+    def duplicate_frames_dialog(self):
+        """Show dialog for advanced duplication with count and mode options"""
+        from ui.duplicate_dialog import DuplicateFramesDialog
+
+        # Use unified interface to get selected indices
+        indices = self.timeline.get_selected_indices_from_current_view()
+        if not indices:
+            return
+
+        indices.sort()  # Sort in ascending order
+
+        # Show dialog
+        dialog = DuplicateFramesDialog(self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+
+        options = dialog.get_options()
+        count = options['count']
+        mode = options['mode']
+
+        # Find the insertion point (BEFORE the first selected item)
+        insert_pos = indices[0]
+
+        # Collect all duplicates based on mode
+        frames_to_insert = []
+
+        if mode == "ABAB":
+            # ABAB mode: repeat the entire selected sequence
+            # Example: selected A,B, count=3 -> A,B,A,B,A,B,A,B
+            for repeat in range(count):
+                for idx in indices:
+                    # Get original data from timeline model
+                    orig_data = self.timeline.get_frame_at(idx)
+
+                    # Clone data
+                    new_data = FrameData(
+                        file_path=orig_data.file_path,
+                        scale=orig_data.scale,
+                        position=orig_data.position,
+                        rotation=orig_data.rotation,
+                        target_resolution=orig_data.target_resolution,
+                        is_disabled=orig_data.is_disabled,
+                        crop_rect=orig_data.crop_rect
+                    )
+
+                    frames_to_insert.append(new_data)
+        else:  # AABB mode
+            # AABB mode: repeat each selected frame individually
+            # Example: selected A,B, count=3 -> A,A,A,B,B,B
+            for idx in indices:
+                # Get original data from timeline model
+                orig_data = self.timeline.get_frame_at(idx)
+
+                # Repeat this frame 'count' times
+                for repeat in range(count):
+                    new_data = FrameData(
+                        file_path=orig_data.file_path,
+                        scale=orig_data.scale,
+                        position=orig_data.position,
+                        rotation=orig_data.rotation,
+                        target_resolution=orig_data.target_resolution,
+                        is_disabled=orig_data.is_disabled,
+                        crop_rect=orig_data.crop_rect
+                    )
+
+                    frames_to_insert.append(new_data)
+
+        # Insert all frames at once before the selection
+        for i, frame_data in enumerate(frames_to_insert):
+            filename = os.path.basename(frame_data.file_path)
+            # Use model directly to insert at specific position
+            self.timeline.model.add_frame(frame_data, insert_pos + i)
+
+        # Calculate new indices for original frames (shifted right by number of inserted frames)
+        original_indices_after_dup = [idx + len(frames_to_insert) for idx in indices]
+
+        # Restore selection to original frames
+        self.timeline.model.set_selection(original_indices_after_dup)
+
+        self.mark_dirty()
+        self.timeline.refresh_current_items()
+        self.statusBar().showMessage(i18n.t("msg_frames_duplicated").format(count=len(frames_to_insert)), 3000)
 
     def remove_frame(self):
         # Use unified interface to get selected indices
@@ -2509,6 +2604,7 @@ class MainWindow(QMainWindow):
         self.copy_props_action.setText(i18n.t("action_copy_props"))
         self.paste_props_action.setText(i18n.t("action_paste_props"))
         self.dup_frame_action.setText(i18n.t("action_dup_frame"))
+        self.dup_frames_dialog_action.setText(i18n.t("action_dup_frames_dialog"))
         self.rem_frame_action.setText(i18n.t("action_rem_frame"))
         self.reverse_order_action.setText(i18n.t("action_reverse_order"))
 

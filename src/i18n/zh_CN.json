@@ -273,5 +273,13 @@
     "grid_settings_filename_hint": "单行模式：显示省略后的文件名，鼠标悬停显示完整名称。",
     "grid_settings_background": "预览背景",
     "grid_settings_gray": "灰色",
-    "bg_transparent": "透明"
+    "bg_transparent": "透明",
+    "dlg_duplicate_frames": "重复帧选项",
+    "dup_repeat_count": "重复次数:",
+    "dup_repeat_mode": "重复模式:",
+    "dup_mode_abab": "ABAB (交替)",
+    "dup_mode_aabb": "AABB (分组)",
+    "dup_example_abab": "示例: 选中A,B重复3次 → A,B,A,B,A,B",
+    "dup_example_aabb": "示例: 选中A,B重复3次 → A,A,A,B,B,B",
+    "action_dup_frames_dialog": "重复帧..."
 }

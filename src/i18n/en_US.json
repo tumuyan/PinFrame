@@ -273,5 +273,13 @@
     "grid_settings_filename_hint": "Single line: Shows truncated filename with ellipsis. Hover for full name.",
     "grid_settings_background": "Preview Background",
     "grid_settings_gray": "Gray",
-    "bg_transparent": "Transparent"
+    "bg_transparent": "Transparent",
+    "dlg_duplicate_frames": "Duplicate Frames Options",
+    "dup_repeat_count": "Repeat Count:",
+    "dup_repeat_mode": "Repeat Mode:",
+    "dup_mode_abab": "ABAB (Alternate)",
+    "dup_mode_aabb": "AABB (Grouped)",
+    "dup_example_abab": "Example: Selected A,B with count 3 → A,B,A,B,A,B",
+    "dup_example_aabb": "Example: Selected A,B with count 3 → A,A,A,B,B,B",
+    "action_dup_frames_dialog": "Duplicate Frames..."
 }
