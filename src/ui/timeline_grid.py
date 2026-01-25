@@ -98,7 +98,7 @@ class TimelineGridWidget(QListWidget, BaseTimelineView):
     def _get_cache_key(self, image_path, frame_data, index):
         """Generate cache key for thumbnail"""
         crop_key = tuple(frame_data.crop_rect) if frame_data.crop_rect else None
-        return (image_path, crop_key, self.background_mode, self.thumbnail_width, self.thumbnail_height, index)
+        return (image_path, crop_key, self.background_mode, self.thumbnail_width, self.thumbnail_height, index, frame_data.is_disabled)
 
     def _clear_thumbnail_cache(self):
         """Clear thumbnail cache"""
@@ -284,11 +284,6 @@ class TimelineGridWidget(QListWidget, BaseTimelineView):
         if frame_data.is_disabled:
             overlay_color = QColor(0, 0, 0, 120)
             painter.fillRect(rect, overlay_color)
-
-            # Draw disabled icon/text
-            painter.setPen(QColor(255, 100, 100))
-            painter.setFont(QFont("Arial", 12, QFont.Weight.Bold))
-            painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, "🚫")
 
         # Draw frame number
         painter.setPen(QColor(255, 255, 255))
