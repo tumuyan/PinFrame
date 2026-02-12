@@ -379,6 +379,11 @@ class TimelineGridWidget(QListWidget, BaseTimelineView):
     
     def refresh_all_items(self):
         """Refresh all items (thumbnails and text)"""
+        # Reset log flag for delegate to allow logging first frame info
+        delegate = self.itemDelegate()
+        if hasattr(delegate, 'reset_log_flag'):
+            delegate.reset_log_flag()
+
         for i in range(self.count()):
             item = self.item(i)
             frame_data = item.data(Qt.ItemDataRole.UserRole)
