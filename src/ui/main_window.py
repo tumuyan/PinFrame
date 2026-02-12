@@ -19,6 +19,7 @@ from ui.export_dialog import ExportOptionsDialog
 from ui.onion_settings import OnionSettingsDialog
 from ui.reference_settings import ReferenceSettingsDialog
 from ui.raster_settings import RasterizationSettingsDialog
+from ui.canvas_border_settings import CanvasBorderSettingsDialog
 from ui.utils.icon_generator import IconGenerator
 from i18n.manager import i18n
 
@@ -111,11 +112,27 @@ class MainWindow(QMainWindow):
             self.raster_grid_color = (128, 128, 128)
         self.raster_scale_threshold = float(self.settings.value("raster_scale_threshold", 5.0))
 
+        # Canvas Border Settings
+        border_inner_color_str = self.settings.value("canvas_border_inner_color", "255,255,255")
+        try:
+            self.canvas_border_inner_color = tuple(map(int, border_inner_color_str.split(',')))
+        except:
+            self.canvas_border_inner_color = (255, 255, 255)
+        self.canvas_border_inner_width = self.settings.value("canvas_border_inner_width", 2, type=int)
+        
+        border_outer_color_str = self.settings.value("canvas_border_outer_color", "0,0,0")
+        try:
+            self.canvas_border_outer_color = tuple(map(int, border_outer_color_str.split(',')))
+        except:
+            self.canvas_border_outer_color = (0, 0, 0)
+        self.canvas_border_outer_width = self.settings.value("canvas_border_outer_width", 1, type=int)
+
         # Load timeline view settings (before creating actions/menus)
         self.timeline_view_mode = self.settings.value("timeline_view_mode", "list")
         self.grid_thumb_width = self.settings.value("grid_thumb_width", 120, type=int)
         self.grid_thumb_height = self.settings.value("grid_thumb_height", 120, type=int)
         self.grid_show_multiline = self.settings.value("grid_show_multiline", False, type=bool)
+        self.grid_multiline_label_height = self.settings.value("grid_multiline_label_height", 36, type=int)
         self.grid_background_mode = self.settings.value("grid_background_mode", "checkerboard")
 
         # Playback (must be initialized before create_menus to avoid AttributeError)
@@ -144,6 +161,16 @@ class MainWindow(QMainWindow):
         self.canvas.ref_opacity = self.ref_opacity
         self.canvas.ref_layer = self.ref_layer
         self.canvas.ref_show_on_playback = self.ref_show_on_playback
+        
+        # Apply initial border settings to canvas
+        inner_color = QColor(*self.canvas_border_inner_color)
+        outer_color = QColor(*self.canvas_border_outer_color)
+        self.canvas.set_border_settings(
+            inner_color,
+            self.canvas_border_inner_width,
+            outer_color,
+            self.canvas_border_outer_width
+        )
 
         # Menus & Toolbar
         self.create_actions()
@@ -637,6 +664,9 @@ class MainWindow(QMainWindow):
         self.onion_settings_action = QAction(i18n.t("action_onion_settings"), self)
         self.onion_settings_action.triggered.connect(self.configure_onion_settings)
         
+        self.canvas_settings_action = QAction(i18n.t("action_canvas_settings"), self)
+        self.canvas_settings_action.triggered.connect(self.configure_canvas_border_settings)
+        
         # Toolbar Onion Action (Separate for dynamic text)
         self.onion_toolbar_action = QAction(i18n.t("toolbar_onion_off"), self)
         onion_icon = QIcon()
@@ -966,13 +996,29 @@ class MainWindow(QMainWindow):
         play_menu.addAction(self.play_pause_action)
         play_menu.addAction(self.rev_play_action)
         
+        # Canvas Menu
+        canvas_menu = menubar.addMenu(i18n.t("menu_canvas"))
+        canvas_menu.addAction(self.zoom_in_action)
+        canvas_menu.addAction(self.zoom_out_action)
+        canvas_menu.addAction(self.zoom_fit_action)
+        canvas_menu.addAction(self.reset_view_action)
+        canvas_menu.addSeparator()
+        
+        # Wheel Mode Submenu
+        wheel_menu = canvas_menu.addMenu(i18n.t("action_toggle_wheel_mode"))
+        wheel_menu.addAction(self.action_wheel_zoom_view)
+        wheel_menu.addAction(self.action_wheel_scale_image)
+        canvas_menu.addSeparator()
+        
+        self.background_menu = canvas_menu.addMenu(i18n.t("menu_background"))
+        for action in self.bg_actions.values():
+            self.background_menu.addAction(action)
+        canvas_menu.addSeparator()
+        
+        canvas_menu.addAction(self.canvas_settings_action)
+        
         # View Menu
         view_menu = menubar.addMenu(i18n.t("menu_view"))
-        view_menu.addAction(self.zoom_in_action)
-        view_menu.addAction(self.zoom_out_action)
-        view_menu.addAction(self.zoom_fit_action)
-        view_menu.addAction(self.reset_view_action)
-        view_menu.addSeparator()
         
         # Onion Skin (Flattened)
         view_menu.addAction(self.onion_action)
@@ -983,20 +1029,6 @@ class MainWindow(QMainWindow):
         view_menu.addAction(self.set_ref_action)
         view_menu.addAction(self.ref_settings_action)
         view_menu.addAction(self.clear_ref_action)
-        
-        view_menu.addSeparator()
-        
-        # Wheel Mode Submenu
-        wheel_menu = view_menu.addMenu(i18n.t("action_toggle_wheel_mode"))
-        wheel_menu.addAction(self.action_wheel_zoom_view)
-        wheel_menu.addAction(self.action_wheel_scale_image)
-        
-        view_menu.addSeparator()
-        
-        self.background_menu = view_menu.addMenu(i18n.t("menu_background"))
-        for action in self.bg_actions.values():
-            self.background_menu.addAction(action)
-        
         view_menu.addSeparator()
         
         theme_menu = view_menu.addMenu(i18n.t("menu_theme"))
@@ -1025,6 +1057,7 @@ class MainWindow(QMainWindow):
             self.grid_thumb_width,
             self.grid_thumb_height,
             self.grid_show_multiline,
+            self.grid_multiline_label_height,
             self.grid_background_mode
         )
         
@@ -1675,6 +1708,44 @@ class MainWindow(QMainWindow):
 
             # Update UI
             self.update_rasterization_ui()
+
+    def configure_canvas_border_settings(self):
+        """Open canvas border settings dialog."""
+        dlg = CanvasBorderSettingsDialog(self)
+        
+        # Set current settings
+        dlg.set_settings({
+            "inner_color": self.canvas_border_inner_color,
+            "inner_width": self.canvas_border_inner_width,
+            "outer_color": self.canvas_border_outer_color,
+            "outer_width": self.canvas_border_outer_width,
+        })
+        
+        if dlg.exec():
+            settings = dlg.get_settings()
+            self.canvas_border_inner_color = settings["inner_color"]
+            self.canvas_border_inner_width = settings["inner_width"]
+            self.canvas_border_outer_color = settings["outer_color"]
+            self.canvas_border_outer_width = settings["outer_width"]
+
+            # Save to global settings
+            inner_color_str = ",".join(map(str, self.canvas_border_inner_color))
+            self.settings.setValue("canvas_border_inner_color", inner_color_str)
+            self.settings.setValue("canvas_border_inner_width", self.canvas_border_inner_width)
+            
+            outer_color_str = ",".join(map(str, self.canvas_border_outer_color))
+            self.settings.setValue("canvas_border_outer_color", outer_color_str)
+            self.settings.setValue("canvas_border_outer_width", self.canvas_border_outer_width)
+
+            # Update canvas settings
+            inner_color = QColor(*self.canvas_border_inner_color)
+            outer_color = QColor(*self.canvas_border_outer_color)
+            self.canvas.set_border_settings(
+                inner_color,
+                self.canvas_border_inner_width,
+                outer_color,
+                self.canvas_border_outer_width
+            )
 
     def toggle_rasterization(self, checked):
         """Toggle rasterization preview."""
@@ -2624,6 +2695,7 @@ class MainWindow(QMainWindow):
     def refresh_onion_action_labels(self):
         self.onion_action.setText(i18n.t("action_onion_skin"))
         self.onion_settings_action.setText(i18n.t("action_onion_settings"))
+        self.canvas_settings_action.setText(i18n.t("action_canvas_settings"))
         self.onion_toolbar_action.setText(i18n.t("toolbar_onion_off" if not self.onion_enabled else "toolbar_onion_on"))
 
     def refresh_reference_action_labels(self):
@@ -3106,32 +3178,35 @@ class MainWindow(QMainWindow):
     def open_timeline_grid_settings(self):
         """Open grid view settings dialog"""
         from ui.timeline_grid_settings import TimelineGridSettingsDialog
-        
+
         dlg = TimelineGridSettingsDialog(
             self,
             self.timeline.grid_thumbnail_width,
             self.timeline.grid_thumbnail_height,
             self.timeline.grid_show_multiline,
+            self.timeline.grid_multiline_label_height,
             self.timeline.grid_background_mode
         )
-        
+
         if dlg.exec():
             settings = dlg.get_settings()
-            
+
             # Apply settings
             self.timeline.update_grid_settings(
                 settings['width'],
                 settings['height'],
                 settings['multiline'],
+                settings['multiline_label_height'],
                 settings['background']
             )
-            
+
             # Save settings
             self.settings.setValue("grid_thumb_width", settings['width'])
             self.settings.setValue("grid_thumb_height", settings['height'])
             self.settings.setValue("grid_show_multiline", settings['multiline'])
+            self.settings.setValue("grid_multiline_label_height", settings['multiline_label_height'])
             self.settings.setValue("grid_background_mode", settings['background'])
-            
+
             # If currently in grid view, refresh
             if self.timeline.get_view_mode() == "grid":
                 self.timeline.refresh_all_grid_items()

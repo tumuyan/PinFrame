@@ -6,18 +6,21 @@ from i18n.manager import i18n
 class TimelineGridSettingsDialog(QDialog):
     """Settings dialog for timeline grid view"""
     
-    def __init__(self, parent=None, current_width=120, current_height=120, 
-                 current_multiline=False, current_background="checkerboard"):
+    def __init__(self, parent=None, current_width=120, current_height=120,
+                 current_multiline=False, current_multiline_label_height=36,
+                 current_background="checkerboard"):
         super().__init__(parent)
-        
+
         self.current_width = current_width
         self.current_height = current_height
         self.current_multiline = current_multiline
+        self.current_multiline_label_height = current_multiline_label_height
         self.current_background = current_background
-        
+
         self.result_width = current_width
         self.result_height = current_height
         self.result_multiline = current_multiline
+        self.result_multiline_label_height = current_multiline_label_height
         self.result_background = current_background
         
         self.setWindowTitle(i18n.t("dialog_timeline_grid_settings", "Grid View Settings"))
@@ -93,34 +96,56 @@ class TimelineGridSettingsDialog(QDialog):
         frame = QFrame()
         frame.setFrameShape(QFrame.Shape.StyledPanel)
         layout = QVBoxLayout()
-        
+
         title = QLabel(i18n.t("grid_settings_filename", "Filename Display"))
         title.setStyleSheet("font-weight: bold; font-size: 12pt;")
         layout.addWidget(title)
-        
+
         # Single/Multi line radio buttons
         self.line_group = QButtonGroup()
-        
+
         single_radio = QRadioButton(i18n.t("grid_settings_single_line", "Single Line"))
         single_radio.setChecked(not self.current_multiline)
         self.line_group.addButton(single_radio, 0)
-        
+
         multi_radio = QRadioButton(i18n.t("grid_settings_multi_line", "Multi Line"))
         multi_radio.setChecked(self.current_multiline)
         self.line_group.addButton(multi_radio, 1)
-        
+
         layout.addWidget(single_radio)
         layout.addWidget(multi_radio)
-        
+
+        # Multiline label height setting
+        height_layout = QHBoxLayout()
+        height_label = QLabel(i18n.t("grid_settings_label_height", "Label Height:"))
+        self.multiline_label_height_spin = QSpinBox()
+        self.multiline_label_height_spin.setRange(20, 120)
+        self.multiline_label_height_spin.setValue(self.current_multiline_label_height)
+        self.multiline_label_height_spin.setSuffix(" px")
+        # Enable/disable based on multiline mode
+        self.multiline_label_height_spin.setEnabled(self.current_multiline)
+        # Connect radio button state to enable/disable height spin
+        self.line_group.buttonClicked.connect(self._on_line_mode_changed)
+        height_layout.addWidget(height_label)
+        height_layout.addWidget(self.multiline_label_height_spin)
+        height_layout.addStretch()
+        layout.addLayout(height_layout)
+
         # Hint text
-        hint = QLabel(i18n.t("grid_settings_filename_hint", 
-            "Single line: Shows truncated filename with ellipsis. Hover for full name."))
+        hint = QLabel(i18n.t("grid_settings_filename_hint",
+            "Single line: Shows truncated filename with ellipsis. Hover for full name.\n"
+            "Multi line: Shows full filename with automatic wrapping."))
         hint.setWordWrap(True)
         hint.setStyleSheet("color: gray; font-size: 9pt;")
         layout.addWidget(hint)
-        
+
         frame.setLayout(layout)
         return frame
+
+    def _on_line_mode_changed(self, button):
+        """Handle line mode radio button change"""
+        is_multiline = (self.line_group.id(button) == 1)
+        self.multiline_label_height_spin.setEnabled(is_multiline)
     
     def create_background_section(self):
         """Create background settings section"""
@@ -156,11 +181,13 @@ class TimelineGridSettingsDialog(QDialog):
         self.result_width = self.width_spin.value()
         self.result_height = self.height_spin.value()
         self.result_multiline = (self.line_group.checkedId() == 1)
+        self.result_multiline_label_height = self.multiline_label_height_spin.value()
         self.result_background = self.bg_combo.currentData()
-        
+
         return {
             'width': self.result_width,
             'height': self.result_height,
             'multiline': self.result_multiline,
+            'multiline_label_height': self.result_multiline_label_height,
             'background': self.result_background
         }
