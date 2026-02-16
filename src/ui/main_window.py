@@ -875,6 +875,9 @@ class MainWindow(QMainWindow):
         self.repo_action = QAction(i18n.t("action_repo"), self)
         self.repo_action.triggered.connect(self.open_repo_url)
 
+        self.debug_control_action = QAction(i18n.t("action_debug_control"), self)
+        self.debug_control_action.triggered.connect(self.show_debug_control_dialog)
+
         version_str = self.get_git_version()
         self.version_action = QAction(i18n.t("action_version").format(version=version_str), self)
         self.version_action.setEnabled(False)
@@ -1052,7 +1055,9 @@ class MainWindow(QMainWindow):
         about_menu.addAction(self.repo_action)
         about_menu.addAction(self.version_action)
         about_menu.addAction(self.build_date_action)
-        
+        about_menu.addSeparator()
+        about_menu.addAction(self.debug_control_action)
+
         # Apply saved timeline view settings
         self.timeline.update_grid_settings(
             self.grid_thumb_width,
@@ -1075,6 +1080,62 @@ class MainWindow(QMainWindow):
         except Exception:
             # Fallback
             QDesktopServices.openUrl(QUrl("https://github.com/tumuyan/PinFrame"))
+
+    def show_debug_control_dialog(self):
+        """Show dialog to control debug output"""
+        from PyQt6.QtWidgets import (QDialog, QVBoxLayout, QLabel, QScrollArea,
+                                      QWidget, QDialogButtonBox, QCheckBox)
+        from utils.debug_config import DebugConfig
+
+        config = DebugConfig()
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle(i18n.t("dlg_debug_control"))
+        dialog.setMinimumWidth(400)
+        dialog.setMinimumHeight(300)
+
+        layout = QVBoxLayout(dialog)
+
+        # Description
+        desc_label = QLabel(i18n.t("debug_control_desc"))
+        desc_label.setWordWrap(True)
+        layout.addWidget(desc_label)
+
+        # Scroll area for checkboxes
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll_widget = QWidget()
+        scroll_layout = QVBoxLayout(scroll_widget)
+
+        # Create checkboxes for each category
+        checkboxes = {}
+        categories = config.get_all_categories()
+        for cat_key, cat_name in categories.items():
+            cb = QCheckBox(f"{cat_name} ({cat_key})")
+            cb.setChecked(config.is_enabled(cat_key))
+            checkboxes[cat_key] = cb
+            scroll_layout.addWidget(cb)
+
+        scroll_layout.addStretch()
+        scroll.setWidget(scroll_widget)
+        layout.addWidget(scroll)
+
+        # Buttons
+        button_box = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        button_box.accepted.connect(dialog.accept)
+        button_box.rejected.connect(dialog.reject)
+        layout.addWidget(button_box)
+
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            # Update config
+            enabled = set()
+            for cat_key, cb in checkboxes.items():
+                if cb.isChecked():
+                    enabled.add(cat_key)
+            config.set_enabled_categories(enabled)
+            self.statusBar().showMessage(i18n.t("msg_debug_settings_saved"), 2000)
 
     def get_git_version(self):
         self._git_available = False
@@ -2898,6 +2959,7 @@ class MainWindow(QMainWindow):
 
     def refresh_about_action_labels(self):
         self.repo_action.setText(i18n.t("action_repo"))
+        self.debug_control_action.setText(i18n.t("action_debug_control"))
         version_str = self.get_git_version()
         self.version_action.setText(i18n.t("action_version").format(version=version_str))
         build_date = self.get_build_date()
