@@ -109,11 +109,45 @@ class TimelineGridDelegate(QStyledItemDelegate):
         painter.fillRect(text_rect, QColor(0, 0, 0, 0))
         painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceOver)
 
-        # Get text color based on selection state
+        # Get theme mode from widget
+        is_dark_theme = True
+        widget = option.widget
+        if widget and hasattr(widget, 'is_dark_theme'):
+            is_dark_theme = widget.is_dark_theme
+
+        # Check if this is a reference frame
+        is_ref = False
+        frame_data = item.data(Qt.ItemDataRole.UserRole)
+        if frame_data and hasattr(widget, 'reference_frame_data'):
+            is_ref = (frame_data is widget.reference_frame_data)
+
+        # Get text color and background based on selection state and theme
         if option.state & QStyle.StateFlag.State_Selected:
             text_color = QColor(255, 255, 255)
+            # Selection background
+            if is_dark_theme:
+                bg_color = QColor(0, 120, 215, 200)
+            else:
+                bg_color = QColor(0, 120, 215, 220)
+        elif is_ref:
+            # Reference frame highlighting
+            if is_dark_theme:
+                bg_color = QColor(30, 80, 40, 200)
+                text_color = QColor(200, 255, 200)
+            else:
+                bg_color = QColor(200, 230, 200, 255)
+                text_color = QColor(30, 80, 40)
         else:
-            text_color = option.palette.text().color()
+            # Normal state - adapt to theme
+            if is_dark_theme:
+                bg_color = QColor(40, 40, 40, 200)
+                text_color = QColor(220, 220, 220)
+            else:
+                bg_color = QColor(250, 250, 250, 230)
+                text_color = QColor(30, 30, 30)
+
+        # Draw text background
+        painter.fillRect(text_rect, bg_color)
 
         painter.setFont(font)
         painter.setPen(text_color)

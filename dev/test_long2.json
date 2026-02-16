@@ -1,0 +1,276 @@
+{
+    "fps": 6,
+    "width": 512,
+    "height": 512,
+    "background_color": "#000000",
+    "frames": [
+        {
+            "file_path": "sample_test_long_file_name.jpg",
+            "scale": 1.0,
+            "position": [
+                0,
+                0
+            ],
+            "rotation": 0.0,
+            "aspect_ratio": 1.0,
+            "is_disabled": false,
+            "crop_rect": [
+                0,
+                0,
+                256,
+                275
+            ]
+        },
+        {
+            "file_path": "sample_test_long_file_name.jpg",
+            "scale": 1.0,
+            "position": [
+                0,
+                0
+            ],
+            "rotation": 0.0,
+            "aspect_ratio": 1.0,
+            "is_disabled": false,
+            "crop_rect": [
+                256,
+                0,
+                256,
+                275
+            ]
+        },
+        {
+            "file_path": "sample_test_long_file_name.jpg",
+            "scale": 1.0,
+            "position": [
+                0,
+                0
+            ],
+            "rotation": 0.0,
+            "aspect_ratio": 1.0,
+            "is_disabled": false,
+            "crop_rect": [
+                512,
+                0,
+                256,
+                275
+            ]
+        },
+        {
+            "file_path": "sample_test_long_file_name.jpg",
+            "scale": 1.0,
+            "position": [
+                0,
+                0
+            ],
+            "rotation": 0.0,
+            "aspect_ratio": 1.0,
+            "is_disabled": false,
+            "crop_rect": [
+                0,
+                275,
+                256,
+                275
+            ]
+        },
+        {
+            "file_path": "sample_test_long_file_name.jpg",
+            "scale": 1.0,
+            "position": [
+                0,
+                0
+            ],
+            "rotation": 0.0,
+            "aspect_ratio": 1.0,
+            "is_disabled": false,
+            "crop_rect": [
+                256,
+                275,
+                256,
+                275
+            ]
+        },
+        {
+            "file_path": "sample_test_long_file_name.jpg",
+            "scale": 1.0,
+            "position": [
+                0,
+                0
+            ],
+            "rotation": 0.0,
+            "aspect_ratio": 1.0,
+            "is_disabled": false,
+            "crop_rect": [
+                512,
+                275,
+                256,
+                275
+            ]
+        },
+        {
+            "file_path": "sample_test_long_file_name.jpg",
+            "scale": 1.0,
+            "position": [
+                0,
+                0
+            ],
+            "rotation": 0.0,
+            "aspect_ratio": 1.0,
+            "is_disabled": false,
+            "crop_rect": [
+                0,
+                550,
+                256,
+                275
+            ]
+        },
+        {
+            "file_path": "sample_test_long_file_name.jpg",
+            "scale": 1.0,
+            "position": [
+                0,
+                0
+            ],
+            "rotation": 0.0,
+            "aspect_ratio": 1.0,
+            "is_disabled": false,
+            "crop_rect": [
+                256,
+                550,
+                256,
+                275
+            ]
+        },
+        {
+            "file_path": "sample_test_long_file_name.jpg",
+            "scale": 1.0,
+            "position": [
+                0,
+                0
+            ],
+            "rotation": 0.0,
+            "aspect_ratio": 1.0,
+            "is_disabled": false,
+            "crop_rect": [
+                512,
+                550,
+                256,
+                275
+            ]
+        },
+        {
+            "file_path": "sample_test_long_file_name.jpg",
+            "scale": 1.0,
+            "position": [
+                0,
+                0
+            ],
+            "rotation": 0.0,
+            "aspect_ratio": 1.0,
+            "is_disabled": false,
+            "crop_rect": [
+                0,
+                825,
+                256,
+                275
+            ]
+        },
+        {
+            "file_path": "sample_test_long_file_name.jpg",
+            "scale": 1.0,
+            "position": [
+                0,
+                0
+            ],
+            "rotation": 0.0,
+            "aspect_ratio": 1.0,
+            "is_disabled": false,
+            "crop_rect": [
+                256,
+                825,
+                256,
+                275
+            ]
+        },
+        {
+            "file_path": "sample_test_long_file_name.jpg",
+            "scale": 1.0,
+            "position": [
+                0,
+                0
+            ],
+            "rotation": 0.0,
+            "aspect_ratio": 1.0,
+            "is_disabled": false,
+            "crop_rect": [
+                512,
+                825,
+                256,
+                275
+            ]
+        },
+        {
+            "file_path": "sample_test_long_file_name.jpg",
+            "scale": 1.0,
+            "position": [
+                0,
+                0
+            ],
+            "rotation": 0.0,
+            "aspect_ratio": 1.0,
+            "is_disabled": false,
+            "crop_rect": [
+                0,
+                1100,
+                256,
+                275
+            ]
+        },
+        {
+            "file_path": "sample_test_long_file_name.jpg",
+            "scale": 1.0,
+            "position": [
+                0,
+                0
+            ],
+            "rotation": 0.0,
+            "aspect_ratio": 1.0,
+            "is_disabled": false,
+            "crop_rect": [
+                256,
+                1100,
+                256,
+                275
+            ]
+        },
+        {
+            "file_path": "sample_test_long_file_name.jpg",
+            "scale": 1.0,
+            "position": [
+                0,
+                0
+            ],
+            "rotation": 0.0,
+            "aspect_ratio": 1.0,
+            "is_disabled": false,
+            "crop_rect": [
+                512,
+                1100,
+                256,
+                275
+            ]
+        }
+    ],
+    "last_export_path": "",
+    "last_gif_export_path": "",
+    "export_use_orig_names": true,
+    "export_sheet_cols": 4,
+    "export_sheet_padding": 0,
+    "export_bg_color": [
+        0,
+        0,
+        0,
+        0
+    ],
+    "export_range_mode": "all",
+    "export_custom_range": ""
+}
