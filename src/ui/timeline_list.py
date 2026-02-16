@@ -26,6 +26,7 @@ class TimelineListView(QTreeWidget, BaseTimelineView):
     enable_requested = pyqtSignal(bool)
     reverse_order_requested = pyqtSignal()
     integerize_offset_requested = pyqtSignal()
+    smooth_params_requested = pyqtSignal()
     set_reference_requested = pyqtSignal()
     clear_reference_requested = pyqtSignal()
 
@@ -327,10 +328,15 @@ class TimelineListView(QTreeWidget, BaseTimelineView):
         int_action.triggered.connect(self.integerize_offset_requested.emit)
         int_action.setEnabled(has_selection)
 
+        smooth_action = QAction(i18n.t("action_smooth_params"), self)
+        smooth_action.triggered.connect(self.smooth_params_requested.emit)
+        smooth_action.setEnabled(len(selected_items) > 1)
+
         menu.addAction(copy_action)
         menu.addAction(paste_action)
         menu.addSeparator()
         menu.addAction(int_action)
+        menu.addAction(smooth_action)
         menu.addSeparator()
         menu.addAction(disable_action)
         menu.addAction(enable_action)

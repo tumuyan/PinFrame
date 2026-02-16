@@ -77,6 +77,7 @@ class MainWindow(QMainWindow):
         self.timeline.enable_requested.connect(self.toggle_enable_disable)
         self.timeline.reverse_order_requested.connect(self.reverse_selected_frames)
         self.timeline.integerize_offset_requested.connect(self.integerize_selection_offset)
+        self.timeline.smooth_params_requested.connect(self.smooth_params_dialog)
         self.timeline.set_reference_requested.connect(self.set_reference_frame_from_selection)
         self.timeline.clear_reference_requested.connect(self.clear_reference_frame)
         self.timeline.thumbnail_size_changed.connect(self.on_grid_thumbnail_size_changed)
@@ -2107,6 +2108,161 @@ class MainWindow(QMainWindow):
         self.property_panel.update_ui_from_selection()
         self.mark_dirty()
         self.statusBar().showMessage(i18n.t("msg_integerized"), 2000)
+
+    def smooth_params_dialog(self):
+        """Open dialog to smooth parameters between first and last selected frames"""
+        from PyQt6.QtWidgets import QDialog, QVBoxLayout, QComboBox, QLabel, QDialogButtonBox, QCheckBox, QGroupBox
+        import math
+
+        selected_frames = self.timeline.get_selected_frames()
+        if not selected_frames or len(selected_frames) < 2:
+            return
+
+        # Get selected indices (sorted)
+        selected_indices = sorted(self.timeline.get_selected_indices_from_current_view())
+        first_frame = selected_frames[0]
+        last_frame = selected_frames[-1]
+
+        # Create dialog
+        dialog = QDialog(self)
+        dialog.setWindowTitle(i18n.t("dlg_smooth_params"))
+        dialog.setMinimumWidth(350)
+
+        layout = QVBoxLayout(dialog)
+
+        # Mode selection
+        mode_label = QLabel(i18n.t("smooth_mode_label"))
+        layout.addWidget(mode_label)
+
+        mode_combo = QComboBox()
+        mode_combo.addItem(i18n.t("smooth_mode_linear"), "linear")
+        mode_combo.addItem(i18n.t("smooth_mode_average"), "average")
+        mode_combo.addItem(i18n.t("smooth_mode_ease_in"), "ease_in")
+        mode_combo.addItem(i18n.t("smooth_mode_ease_out"), "ease_out")
+        mode_combo.addItem(i18n.t("smooth_mode_ease_in_out"), "ease_in_out")
+        layout.addWidget(mode_combo)
+
+        # Parameter selection group
+        params_group = QGroupBox(i18n.t("smooth_params_group"))
+        params_layout = QVBoxLayout(params_group)
+
+        # Checkboxes for each parameter
+        scale_cb = QCheckBox(i18n.t("smooth_param_scale"))
+        scale_cb.setChecked(True)
+        params_layout.addWidget(scale_cb)
+
+        pos_x_cb = QCheckBox(i18n.t("smooth_param_pos_x"))
+        pos_x_cb.setChecked(True)
+        params_layout.addWidget(pos_x_cb)
+
+        pos_y_cb = QCheckBox(i18n.t("smooth_param_pos_y"))
+        pos_y_cb.setChecked(True)
+        params_layout.addWidget(pos_y_cb)
+
+        rotation_cb = QCheckBox(i18n.t("smooth_param_rotation"))
+        rotation_cb.setChecked(False)
+        params_layout.addWidget(rotation_cb)
+
+        layout.addWidget(params_group)
+
+        # Info label
+        info_label = QLabel(i18n.t("smooth_info").format(
+            first=selected_indices[0] + 1,
+            last=selected_indices[-1] + 1,
+            count=len(selected_indices)
+        ))
+        info_label.setWordWrap(True)
+        layout.addWidget(info_label)
+
+        # Buttons
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        layout.addWidget(buttons)
+
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+
+        # Get selected mode
+        mode = mode_combo.currentData()
+
+        # Apply smoothing
+        self._apply_param_smoothing(
+            selected_frames,
+            first_frame,
+            last_frame,
+            mode,
+            scale_cb.isChecked(),
+            pos_x_cb.isChecked(),
+            pos_y_cb.isChecked(),
+            rotation_cb.isChecked()
+        )
+
+        # Update timeline display
+        for idx in selected_indices:
+            self.timeline.update_frame_data(idx)
+
+        self.canvas.update()
+        self.property_panel.update_ui_from_selection()
+        self.mark_dirty()
+        self.statusBar().showMessage(i18n.t("msg_params_smoothed").format(count=len(selected_frames)), 2000)
+
+    def _apply_param_smoothing(self, frames, first_frame, last_frame, mode,
+                                smooth_scale, smooth_pos_x, smooth_pos_y, smooth_rotation):
+        """Apply parameter smoothing with the selected mode"""
+        import math
+
+        if len(frames) < 2:
+            return
+
+        total = len(frames)
+
+        for i, frame in enumerate(frames):
+            t = i / (total - 1)  # 0.0 to 1.0
+
+            # Calculate interpolation factor based on mode
+            if mode == "linear":
+                factor = t
+            elif mode == "average":
+                factor = 0.5  # All frames use average
+            elif mode == "ease_in":
+                # Quadratic ease-in: slow start, fast end
+                factor = t * t
+            elif mode == "ease_out":
+                # Quadratic ease-out: fast start, slow end
+                factor = t * (2 - t)
+            elif mode == "ease_in_out":
+                # Smooth step (ease-in-out)
+                factor = t * t * (3 - 2 * t)
+            else:
+                factor = t
+
+            if mode == "average":
+                # For average mode, calculate the mean
+                if smooth_scale:
+                    frame.scale = (first_frame.scale + last_frame.scale) / 2
+                if smooth_pos_x:
+                    x = (first_frame.position[0] + last_frame.position[0]) / 2
+                    frame.position = (x, frame.position[1])
+                if smooth_pos_y:
+                    y = (first_frame.position[1] + last_frame.position[1]) / 2
+                    frame.position = (frame.position[0], y)
+                if smooth_rotation:
+                    frame.rotation = (first_frame.rotation + last_frame.rotation) / 2
+            else:
+                # For other modes, interpolate
+                if smooth_scale:
+                    frame.scale = first_frame.scale + (last_frame.scale - first_frame.scale) * factor
+                if smooth_pos_x:
+                    x = first_frame.position[0] + (last_frame.position[0] - first_frame.position[0]) * factor
+                    frame.position = (x, frame.position[1])
+                if smooth_pos_y:
+                    y = first_frame.position[1] + (last_frame.position[1] - first_frame.position[1]) * factor
+                    frame.position = (frame.position[0], y)
+                if smooth_rotation:
+                    frame.rotation = first_frame.rotation + (last_frame.rotation - first_frame.rotation) * factor
 
     def adjust_zoom(self, factor):
         self.canvas.view_scale *= factor

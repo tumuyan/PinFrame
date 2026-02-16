@@ -24,6 +24,7 @@ class TimelineWidget(QStackedWidget):
     enable_requested = pyqtSignal(bool)
     reverse_order_requested = pyqtSignal()
     integerize_offset_requested = pyqtSignal()
+    smooth_params_requested = pyqtSignal()
     set_reference_requested = pyqtSignal()
     clear_reference_requested = pyqtSignal()
     thumbnail_size_changed = pyqtSignal(int, int)  # width, height
@@ -84,6 +85,7 @@ class TimelineWidget(QStackedWidget):
         view.enable_requested.connect(self.enable_requested)
         view.reverse_order_requested.connect(self.reverse_order_requested)
         view.integerize_offset_requested.connect(self.integerize_offset_requested)
+        view.smooth_params_requested.connect(self.smooth_params_requested)
         view.set_reference_requested.connect(self.set_reference_requested)
         view.clear_reference_requested.connect(self.clear_reference_requested)
 
