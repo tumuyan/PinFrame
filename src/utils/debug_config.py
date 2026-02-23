@@ -2,9 +2,10 @@
 Debug logging configuration module.
 Controls which debug messages are printed to console.
 """
-from typing import Set, List, Any
+from typing import Set, List
 import json
 import os
+from i18n.manager import i18n
 
 
 class DebugConfig:
@@ -12,14 +13,17 @@ class DebugConfig:
     
     _instance = None
     
-    # Available debug categories
-    CATEGORIES = {
-        "grid_text": "GridText 日志 (网格视图文字)",
-        "timeline": "Timeline 时间轴",
-        "canvas": "Canvas 画布",
-        "property": "Property 属性面板",
-        "export": "Export 导出",
-        "import": "Import 导入",
+    # Category keys (display names are i18n keys) - reversed order
+    CATEGORY_KEYS = ["import", "export", "property", "canvas", "timeline", "grid_text"]
+    
+    # I18n keys for category display names
+    CATEGORY_I18N_KEYS = {
+        "grid_text": "debug_cat_timeline_graidview",
+        "timeline": "debug_cat_timeline",
+        "canvas": "debug_cat_canvas",
+        "property": "debug_cat_property",
+        "export": "debug_cat_export",
+        "import": "debug_cat_import",
     }
     
     # Default enabled categories (grid_text disabled by default, others enabled)
@@ -29,6 +33,7 @@ class DebugConfig:
         if cls._instance is None:
             cls._instance = super().__new__(cls)
             cls._instance._enabled_categories: Set[str] = set()
+            cls._instance._master_enabled: bool = True
             cls._instance._load_settings()
         return cls._instance
     
@@ -40,12 +45,15 @@ class DebugConfig:
                 with open(config_path, 'r', encoding='utf-8') as f:
                     data = json.load(f)
                     self._enabled_categories = set(data.get("enabled_categories", []))
+                    self._master_enabled = data.get("master_enabled", True)
             except (json.JSONDecodeError, IOError):
                 # On error, use defaults
                 self._enabled_categories = self.DEFAULT_ENABLED.copy()
+                self._master_enabled = True
         else:
             # Default: grid_text disabled, others enabled
             self._enabled_categories = self.DEFAULT_ENABLED.copy()
+            self._master_enabled = True
     
     def _save_settings(self):
         """Save settings to config file"""
@@ -54,7 +62,8 @@ class DebugConfig:
         try:
             with open(config_path, 'w', encoding='utf-8') as f:
                 json.dump({
-                    "enabled_categories": list(self._enabled_categories)
+                    "enabled_categories": list(self._enabled_categories),
+                    "master_enabled": self._master_enabled
                 }, f, indent=2)
         except IOError:
             pass
@@ -66,8 +75,17 @@ class DebugConfig:
         return os.path.join(config_dir, "debug_config.json")
     
     def is_enabled(self, category: str) -> bool:
-        """Check if a debug category is enabled"""
-        return category in self._enabled_categories
+        """Check if a debug category is enabled (also checks master switch)"""
+        return self._master_enabled and category in self._enabled_categories
+    
+    def is_master_enabled(self) -> bool:
+        """Check if master debug switch is enabled"""
+        return self._master_enabled
+    
+    def set_master_enabled(self, enabled: bool):
+        """Enable or disable master debug switch"""
+        self._master_enabled = enabled
+        self._save_settings()
     
     def set_enabled(self, category: str, enabled: bool):
         """Enable or disable a debug category"""
@@ -79,7 +97,8 @@ class DebugConfig:
     
     def get_all_categories(self) -> dict:
         """Get all available categories with their display names"""
-        return self.CATEGORIES.copy()
+        return {key: i18n.t(self.CATEGORY_I18N_KEYS.get(key, key), key) 
+                for key in self.CATEGORY_KEYS}
     
     def get_enabled_categories(self) -> Set[str]:
         """Get set of enabled categories"""

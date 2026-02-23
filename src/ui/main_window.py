@@ -1086,6 +1086,7 @@ class MainWindow(QMainWindow):
         """Show dialog to control debug output"""
         from PyQt6.QtWidgets import (QDialog, QVBoxLayout, QLabel, QScrollArea,
                                       QWidget, QDialogButtonBox, QCheckBox)
+        from PyQt6.QtCore import Qt
         from utils.debug_config import DebugConfig
 
         config = DebugConfig()
@@ -1093,7 +1094,7 @@ class MainWindow(QMainWindow):
         dialog = QDialog(self)
         dialog.setWindowTitle(i18n.t("dlg_debug_control"))
         dialog.setMinimumWidth(400)
-        dialog.setMinimumHeight(300)
+        dialog.setMinimumHeight(350)
 
         layout = QVBoxLayout(dialog)
 
@@ -1101,6 +1102,12 @@ class MainWindow(QMainWindow):
         desc_label = QLabel(i18n.t("debug_control_desc"))
         desc_label.setWordWrap(True)
         layout.addWidget(desc_label)
+
+        # Master switch
+        master_checkbox = QCheckBox(i18n.t("debug_master_switch", "Enable Debug Logging"))
+        master_checkbox.setChecked(config.is_master_enabled())
+        master_checkbox.setStyleSheet("font-weight: bold; padding: 5px 0;")
+        layout.addWidget(master_checkbox)
 
         # Scroll area for checkboxes
         scroll = QScrollArea()
@@ -1112,14 +1119,29 @@ class MainWindow(QMainWindow):
         checkboxes = {}
         categories = config.get_all_categories()
         for cat_key, cat_name in categories.items():
-            cb = QCheckBox(f"{cat_name} ({cat_key})")
-            cb.setChecked(config.is_enabled(cat_key))
+            cb = QCheckBox(cat_name)
+            cb.setChecked(cat_key in config.get_enabled_categories())
             checkboxes[cat_key] = cb
             scroll_layout.addWidget(cb)
 
         scroll_layout.addStretch()
         scroll.setWidget(scroll_widget)
         layout.addWidget(scroll)
+
+        # Function to update category checkboxes state based on master switch
+        def update_category_states():
+            master_on = master_checkbox.isChecked()
+            for cb in checkboxes.values():
+                cb.setEnabled(master_on)
+                if master_on:
+                    cb.setStyleSheet("")
+                else:
+                    cb.setStyleSheet("color: gray;")
+
+        # Connect master checkbox
+        master_checkbox.toggled.connect(update_category_states)
+        # Initial state
+        update_category_states()
 
         # Buttons
         button_box = QDialogButtonBox(
@@ -1131,6 +1153,7 @@ class MainWindow(QMainWindow):
 
         if dialog.exec() == QDialog.DialogCode.Accepted:
             # Update config
+            config.set_master_enabled(master_checkbox.isChecked())
             enabled = set()
             for cat_key, cb in checkboxes.items():
                 if cb.isChecked():

@@ -1,10 +1,13 @@
 #!/bin/bash
-#切换工作路径到当前脚本所在目录
-cd "$(dirname "$0")"
+# 获取脚本所在目录
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# 获取项目根目录（脚本所在目录的上一级）
+PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 
-./setup.sh
-./install_fonts.sh
-./novnc_install.sh
+# 在项目根目录执行 setup.sh（需要访问 requirements.txt）
+"$SCRIPT_DIR/setup.sh"
+"$SCRIPT_DIR/install_fonts.sh"
+"$SCRIPT_DIR/novnc_install.sh"
 
 echo "现在可以运行: source venv/bin/activate"
 echo "现在可以运行: export DISPLAY=:99 && python main.py"

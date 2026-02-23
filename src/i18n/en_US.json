@@ -318,5 +318,12 @@
     "action_debug_control": "Log Control",
     "dlg_debug_control": "Log Output Control",
     "debug_control_desc": "Check the log categories to enable output, uncheck to disable. Settings are saved automatically.",
-    "msg_debug_settings_saved": "Log output settings saved"
+    "msg_debug_settings_saved": "Log output settings saved",
+    "debug_cat_timeline_graidview": "Timeline GridView Label",
+    "debug_cat_timeline": "Timeline",
+    "debug_cat_canvas": "Canvas",
+    "debug_cat_property": "Property Panel",
+    "debug_cat_export": "Export",
+    "debug_cat_import": "Import",
+    "debug_master_switch": "Enable Debug Logging"
 }
