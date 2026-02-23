@@ -6,6 +6,7 @@ from ui.timeline_list import TimelineListView
 from ui.timeline_base_view import BaseTimelineView, TimelineViewUtils
 from ui.timeline_model import TimelineModel
 from model.project_data import FrameData
+from utils.debug_config import timeline_debug
 from typing import List, Optional
 import os
 
@@ -95,6 +96,7 @@ class TimelineWidget(QStackedWidget):
 
     def set_view_mode(self, mode):
         """Switch between list and grid view"""
+        timeline_debug(f"[Timeline] Switching view mode to: {mode}")
         if mode == "list":
             self.setCurrentWidget(self.list_view)
             self.current_view_mode = "list"
@@ -154,6 +156,7 @@ class TimelineWidget(QStackedWidget):
     # ========== Model signal handlers ==========
     def _on_frames_inserted(self, index: int, count: int):
         """Handle frame insertion from model"""
+        timeline_debug(f"[Timeline] Frames inserted at index {index}, count: {count}")
         # Get frame data from model
         for i in range(count):
             frame_data = self.model.get_frame_at(index + i)
@@ -178,6 +181,7 @@ class TimelineWidget(QStackedWidget):
 
     def _on_frames_removed(self, index: int, count: int):
         """Handle frame removal from model"""
+        timeline_debug(f"[Timeline] Frames removed at index {index}, count: {count}")
         # Remove from both views (remove from end first)
         for i in range(count):
             idx_to_remove = index + (count - 1 - i)
@@ -188,6 +192,7 @@ class TimelineWidget(QStackedWidget):
 
     def _on_frames_moved(self, from_index: int, to_index: int, count: int):
         """Handle frame movement from model"""
+        timeline_debug(f"[Timeline] Frames moved from {from_index} to {to_index}, count: {count}")
         # Rebuild both views
         # This is simpler than moving individual items
         total_frames = self.model.get_frame_count()
@@ -213,6 +218,7 @@ class TimelineWidget(QStackedWidget):
 
     def _on_data_changed(self, start_index: int, end_index: int):
         """Handle frame data change from model"""
+        timeline_debug(f"[Timeline] Data changed from index {start_index} to {end_index}")
         # Get selection before update
         selection_before = self.model.get_selected_indices()
 

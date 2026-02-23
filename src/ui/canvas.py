@@ -2,6 +2,7 @@ from PyQt6.QtWidgets import QWidget
 from PyQt6.QtCore import Qt, pyqtSignal, QPointF, QRectF
 from PyQt6.QtGui import QPainter, QColor, QPen, QBrush, QImage, QTransform
 from src.core.image_cache import image_cache
+from utils.debug_config import canvas_debug
 import math
 
 class CanvasWidget(QWidget):
@@ -110,6 +111,7 @@ class CanvasWidget(QWidget):
         self.update()
 
     def set_selected_frames(self, frames_data):
+        canvas_debug(f"[Canvas] Setting selected frames: {len(frames_data)} frames")
         self.selected_frames_data = frames_data
         # 使用全局缓存预加载图片
         paths = [f.file_path for f in frames_data if f.file_path]
@@ -131,11 +133,13 @@ class CanvasWidget(QWidget):
         self.update()
 
     def reset_view(self):
+        canvas_debug("[Canvas] View reset")
         self.view_offset = QPointF(0, 0)
         self.view_scale = 1.0
         self.update()
 
     def fit_to_view(self):
+        canvas_debug("[Canvas] Fit to view")
         if self.project_width <= 0 or self.project_height <= 0:
             # Fallback to reset if widget size is too small or invalid
             self.reset_view()
@@ -157,6 +161,7 @@ class CanvasWidget(QWidget):
         # Use the smaller scale so that both dimensions are visible
         self.view_scale = min(scale_w, scale_h)
         self.view_offset = QPointF(0, 0)
+        canvas_debug(f"[Canvas] Fit to view: scale={self.view_scale:.3f}")
         self.update()
 
     def paintEvent(self, event):
@@ -663,6 +668,7 @@ class CanvasWidget(QWidget):
                 self.view_scale *= 1.1
             else:
                 self.view_scale /= 1.1
+            canvas_debug(f"[Canvas] Zoom: scale={self.view_scale:.3f}")
             self.update()
         elif self.wheel_mode == self.WHEEL_SCALE:
             # Scale Image(s)

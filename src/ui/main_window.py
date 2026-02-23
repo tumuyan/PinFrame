@@ -22,6 +22,7 @@ from ui.raster_settings import RasterizationSettingsDialog
 from ui.canvas_border_settings import CanvasBorderSettingsDialog
 from ui.utils.icon_generator import IconGenerator
 from i18n.manager import i18n
+from utils.debug_config import import_debug
 
 class MainWindow(QMainWindow):
     def __init__(self):
@@ -1275,11 +1276,14 @@ class MainWindow(QMainWindow):
         files, _ = QFileDialog.getOpenFileNames(self, i18n.t("dlg_import_title"), "", i18n.t("dlg_filter_images"))
         if not files:
             return
+        import_debug(f"[Import] Importing images: {len(files)} files selected")
         self.add_files(files)
 
     def add_files(self, files, index=-1):
         if not files:
             return
+        
+        import_debug(f"[Import] Adding files: count={len(files)}, index={index}")
             
         added_count = 0
         valid_extensions = {'.png', '.jpg', '.jpeg', '.bmp'}
@@ -1306,7 +1310,10 @@ class MainWindow(QMainWindow):
             added_count += 1
 
         if added_count == 0:
+            import_debug("[Import] No valid files to add")
             return
+
+        import_debug(f"[Import] Successfully added {added_count} files")
 
         # Insert logic - now uses TimelineModel
         # TimelineWidget handles both data and view updates
@@ -2603,6 +2610,7 @@ class MainWindow(QMainWindow):
         self._load_from_path(path)
 
     def _load_from_path(self, path):
+        import_debug(f"[Import] Loading project from: {path}")
         try:
             with open(path, 'r') as f:
                 json_str = f.read()
@@ -2647,6 +2655,7 @@ class MainWindow(QMainWindow):
             self.update_title()
             self.update_onion_state()
             self.update_menu_state()
+            import_debug(f"[Import] Project loaded successfully: {len(self.project.frames)} frames")
             self.statusBar().showMessage(i18n.t("msg_project_loaded").format(path=path), 3000)
         except Exception as e:
             msg_box = QMessageBox(self)
@@ -3072,6 +3081,8 @@ class MainWindow(QMainWindow):
         file, _ = QFileDialog.getOpenFileName(self, i18n.t("dlg_import_slice_title"), "", i18n.t("dlg_filter_images"))
         if not file:
             return
+        
+        import_debug(f"[Import] Importing sprite sheet: {file}")
             
         from ui.slice_dialog import SliceImportDialog
         dlg = SliceImportDialog(file, self)
@@ -3111,12 +3122,15 @@ class MainWindow(QMainWindow):
 
         self.mark_dirty()
         self.timeline.refresh_current_items()
+        import_debug(f"[Import] Sprite sheet imported: {len(crops)} slices, mode={mode}")
         self.statusBar().showMessage(i18n.t("msg_imported_slices").format(count=len(crops)), 3000)
 
     def import_gif(self):
         file, _ = QFileDialog.getOpenFileName(self, i18n.t("dlg_import_gif_title"), "", i18n.t("dlg_filter_gif"))
         if not file:
             return
+        
+        import_debug(f"[Import] Importing GIF: {file}")
             
         try:
             from PIL import Image, ImageSequence
@@ -3142,6 +3156,7 @@ class MainWindow(QMainWindow):
 
             self.mark_dirty()
             self.timeline.refresh_current_items()
+            import_debug(f"[Import] GIF imported: {count} frames extracted")
             self.statusBar().showMessage(i18n.t("msg_imported_gif").format(count=count), 3000)
             
         except Exception as e:
