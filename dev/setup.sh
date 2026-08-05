@@ -6,7 +6,6 @@ source venv/bin/activate
 pip install -r requirements.txt
 
 apt-get install -y \
-    libgl1-mesa-glx \
     libgl1 \
     libegl1 \
     libglib2.0-0 \

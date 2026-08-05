@@ -1,0 +1,10 @@
+$:
+  vscode:
+    - runner:
+        cpus: 32
+      services:
+        - docker
+        - vscode
+      env:
+        CNB_WELCOME_CMD: echo "Welcome to oracle in cnb";./dev/setup.sh;cd dev;./install_fonts.sh;./novnc_install.sh;./novnc_start.sh  
+        PYTHONUNBUFFERED: "1"
