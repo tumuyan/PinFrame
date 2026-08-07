@@ -56,7 +56,7 @@ sudo dnf install \
 ## 运行程序
 在测试时，最终运行的程序有三类：
 
-- **Xvfb**（虚拟显示，分辨率由它定）
+- **Xvfb**（虚拟显示）
 - **python main.py**（项目开发的 PyQt 程序）
 - **x11vnc + websockify**（noVNC 转发，用于浏览器查看界面）
 
@@ -69,6 +69,8 @@ sudo dnf install \
 | 运行并自动截图验证 | ✓ | ✓ | | 由 `screenshot.sh` 复用已有 `:99` 显示并截图（`dev/tmp_screenshot.png`），仅清理自身 python |
 
 > 三种场景的虚拟显示都统一由 `dev/start_xvfb.sh` 提供（分辨率 `1920x1080x24`），避免重复拉起与尺寸不一致。停止相关进程统一用 `停止 noVNC`（`novnc_stop.sh`）。
+
+> **分辨率无法在运行中热修改**：虚拟显示的分辨率在 `start_xvfb.sh` 启动时一次性确定，运行期间不能动态调整。如需更换分辨率，必须先停止相关进程（含 Xvfb 与 noVNC），修改 `SCREEN` 后重新启动；Xvfb 一旦拉起，其 `-screen` 尺寸即固定。
 
 ## 远程测试
 ### 激活虚拟环境

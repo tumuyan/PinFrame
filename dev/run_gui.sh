@@ -1,7 +1,8 @@
 #!/bin/bash
 # 带虚拟显示运行 PyQt 应用（用于 code-server / 无头环境）。
-# 内部确保 Xvfb 已就绪（用 setsid 脱离调用方进程树，避免被 VS Code 任务清理杀掉），
-# 再 export DISPLAY 并 exec venv 的 python 运行目标脚本。
+# 内部先调用 start_xvfb.sh 确保虚拟显示就绪，再 export DISPLAY，
+# 用 setsid 让 python 进入独立进程组，并 trap 退出信号，保证
+# SIGINT/SIGTERM 都能可靠杀掉整个 python 进程组。
 set -e
 
 DISPLAY_NUM="${DISPLAY:-:99}"

@@ -5,7 +5,12 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 export DISPLAY=:99
 
 # 2. 运行你的 Python GUI 程序 (后台运行)
-"${SCRIPT_DIR}/../venv/bin/python" main.py &
+PY_BIN="${SCRIPT_DIR}/../venv/bin/python"
+if [ ! -x "${PY_BIN}" ]; then
+  echo "screenshot: venv 不存在，请先创建虚拟环境 (python3 -m venv venv)" >&2
+  exit 1
+fi
+"${PY_BIN}" main.py &
 
 # 3. 等待几秒让界面加载
 sleep 5

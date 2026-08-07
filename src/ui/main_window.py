@@ -572,6 +572,11 @@ class MainWindow(QMainWindow):
         self.save_as_action.triggered.connect(self.save_project_as)
         self.save_as_action.setShortcut("Ctrl+Shift+S")
 
+        self.new_action = QAction(i18n.t("action_new"), self)
+        self.new_action.setIcon(style.standardIcon(QStyle.StandardPixmap.SP_FileIcon))
+        self.new_action.triggered.connect(self.new_project)
+        self.new_action.setShortcut(QKeySequence.StandardKey.New)
+
         self.load_action = QAction(i18n.t("action_load"), self)
         self.load_action.setIcon(style.standardIcon(QStyle.StandardPixmap.SP_DialogOpenButton))
         self.load_action.triggered.connect(self.load_project)
@@ -930,6 +935,7 @@ class MainWindow(QMainWindow):
 
         # File Menu
         file_menu = menubar.addMenu(i18n.t("menu_file"))
+        file_menu.addAction(self.new_action)
         file_menu.addAction(self.load_action)
         file_menu.addAction(self.save_action)
         file_menu.addAction(self.save_as_action)
@@ -2468,7 +2474,20 @@ class MainWindow(QMainWindow):
         """Close current project and reset to empty state."""
         if not self.check_unsaved_changes():
             return
-        
+
+        self._reset_project_to_empty()
+        self.statusBar().showMessage(i18n.t("msg_project_closed"), 3000)
+
+    def new_project(self):
+        """Create a new empty project, prompting to save if there are unsaved changes."""
+        if not self.check_unsaved_changes():
+            return
+
+        self._reset_project_to_empty()
+        self.statusBar().showMessage(i18n.t("msg_project_new"), 3000)
+
+    def _reset_project_to_empty(self):
+        """Reset the current project to an empty state without any prompts."""
         # Reset project to empty state
         self.project = ProjectData()
         self.fps_spin.setValue(self.project.fps)
@@ -2498,7 +2517,6 @@ class MainWindow(QMainWindow):
         # Update UI
         self.update_title()
         self.update_menu_state()
-        self.statusBar().showMessage(i18n.t("msg_project_closed"), 3000)
 
     def update_menu_state(self):
         """Enable/Disable menu items based on project state."""
