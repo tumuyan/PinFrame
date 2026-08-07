@@ -9,26 +9,13 @@ GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 NC='\033[0m' # No Color
 
+echo "novnc-start: starting"
 echo -e "${GREEN}=== 启动 noVNC 环境 ===${NC}"
 
-# 检查是否已经在运行
-if pgrep -x "Xvfb" > /dev/null; then
-    echo -e "${YELLOW}Xvfb 已经在运行${NC}"
-else
-    # 启动 Xvfb 虚拟显示器
-    # 分辨率 1440x900，颜色深度 24
-    echo "启动 Xvfb 虚拟显示器 (1440x900)..."
-    Xvfb :99 -screen 0 1440x900x24 -ac +extension GLX +render -noreset &
-
-    # 等待 Xvfb 启动
-    sleep 2
-
-    if ! pgrep -x "Xvfb" > /dev/null; then
-        echo -e "${RED}Xvfb 启动失败！${NC}"
-        exit 1
-    fi
-    echo -e "${GREEN}Xvfb 启动成功${NC}"
-fi
+# 复用统一的 Xvfb 就绪逻辑（dev/start_xvfb.sh 负责检测/拉起 :99，
+# 分辨率统一为 1920x1080x24，避免与各脚本重复实现且尺寸不一致）。
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+"${SCRIPT_DIR}/start_xvfb.sh" :99
 
 # 设置 DISPLAY 环境变量
 export DISPLAY=:99
@@ -43,7 +30,8 @@ if pgrep -x "x11vnc" > /dev/null; then
     echo -e "${YELLOW}x11vnc 已经在运行${NC}"
 else
     echo "启动 x11vnc 服务器..."
-    x11vnc -display :99 -forever -shared -nopw -nowf -nowcr -noxdamage -rfbport 5900 -timeout 900 &
+    # setsid 脱离调用方进程树，避免被 VS Code 任务结束时的进程清理杀掉
+    setsid x11vnc -display :99 -forever -shared -nopw -nowf -nowcr -noxdamage -rfbport 5900 -timeout 900 >/dev/null 2>&1 < /dev/null &
 
     # 等待 x11vnc 启动并监听端口
     sleep 3
@@ -66,7 +54,8 @@ if pgrep -f "websockify" > /dev/null; then
     echo -e "${YELLOW}websockify 已经在运行${NC}"
 else
     echo "启动 websockify..."
-    websockify --web=/usr/share/novnc 6080 localhost:5900 &
+    # setsid 脱离调用方进程树
+    setsid websockify --web=/usr/share/novnc 6080 localhost:5900 >/dev/null 2>&1 < /dev/null &
 
     sleep 1
 
@@ -76,6 +65,14 @@ else
     fi
     echo -e "${GREEN}websockify 启动成功 (端口 6080)${NC}"
 fi
+
+# 打印就绪标记，供 VS Code tasks.json 的 problemMatcher 识别
+echo "novnc-start: ready"
+
+# 以前台阻塞方式保持任务存活（等待终止信号），
+# 使 VS Code 的 background 任务不会立即结束、也不会清理掉 noVNC 进程。
+echo "noVNC 运行中，按任务停止按钮可结束（停止 noVNC 任务会一并清理进程）。"
+wait
 
 # 启动 PyQt6 应用
 # if pgrep -f "python.*main.py" > /dev/null; then

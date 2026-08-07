@@ -53,6 +53,23 @@ sudo dnf install \
     libXi
 ```
 
+## 运行程序
+在测试时，最终运行的程序有三类：
+
+- **Xvfb**（虚拟显示，分辨率由它定）
+- **python main.py**（项目开发的 PyQt 程序）
+- **x11vnc + websockify**（noVNC 转发，用于浏览器查看界面）
+
+不同场景所需的进程（✓ 表示会运行）：
+
+| 场景 | Xvfb | python main.py | x11vnc + websockify | 说明 |
+| --- | --- | --- | --- | --- |
+| 只跑 GUI（默认流程） | ✓ | ✓ | | 由 `run_gui.sh` 调用 `start_xvfb.sh` 确保显示就绪，适合无头环境直接运行 |
+| GUI + 用浏览器看界面 | ✓ | ✓ | ✓ | VNC 相关由 `novnc_start.sh` 管；浏览器访问 `http://<服务器IP>:6080/vnc.html` |
+| 运行并自动截图验证 | ✓ | ✓ | | 由 `screenshot.sh` 复用已有 `:99` 显示并截图（`dev/tmp_screenshot.png`），仅清理自身 python |
+
+> 三种场景的虚拟显示都统一由 `dev/start_xvfb.sh` 提供（分辨率 `1920x1080x24`），避免重复拉起与尺寸不一致。停止相关进程统一用 `停止 noVNC`（`novnc_stop.sh`）。
+
 ## 远程测试
 ### 激活虚拟环境
 ```

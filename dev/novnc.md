@@ -40,7 +40,7 @@ chmod +x novnc_start.sh
 ```
 
 这会自动启动:
-1. Xvfb 虚拟显示器 (分辨率 1280x720x24)
+1. Xvfb 虚拟显示器（由 `dev/start_xvfb.sh` 检测/拉起，分辨率 1920x1080x24）
 2. x11vnc 服务器 (端口 5900)
 3. websockify 代理 (端口 6080)
 
@@ -73,23 +73,13 @@ pkill -f "python.*main.py"
 
 ### novnc_start.sh
 
-启动脚本包含以下配置:
+启动脚本不再直接管理 Xvfb，而是调用统一的 `dev/start_xvfb.sh` 检测/拉起
+虚拟显示器，因此 Xvfb 的分辨率、参数等都在 `start_xvfb.sh` 中统一定义
+（当前为 `1920x1080x24`，参数含 `-ac +extension GLX +render -noreset`）。
 
-```bash
-Xvfb :99 -screen 0 1280x720x24 -ac +extension GLX +render -noreset &
-```
-
-- `:99` - 显示器编号
-- `1280x720x24` - 分辨率和颜色深度
-- `-ac` - 禁用访问控制
-- `+extension GLX` - 启用 OpenGL 扩展
-- `+render` - 启用渲染扩展
-- `-noreset` - 最后一个客户端断开后不重置
-
-如果需要更高分辨率, 修改为:
-```bash
-Xvfb :99 -screen 0 1920x1080x24 -ac +extension GLX +render -noreset &
-```
+如需调整虚拟显示器的分辨率或参数，请修改 `dev/start_xvfb.sh` 中的
+`SCREEN` 变量（`novnc_start.sh` 与 `run_gui.sh`、`screenshot.sh` 共用此来源，
+改一处即可全局生效）。
 
 ### 端口配置
 
@@ -214,8 +204,8 @@ x11vnc -storepasswd your_password ~/.vnc/passwd
 ### 手动启动各组件
 
 ```bash
-# 1. 启动 Xvfb
-Xvfb :99 -screen 0 1280x720x24 -ac +extension GLX +render -noreset &
+# 1. 启动 Xvfb（推荐走统一脚本，确保参数/分辨率一致）
+./dev/start_xvfb.sh :99
 
 # 2. 设置环境变量
 export DISPLAY=:99

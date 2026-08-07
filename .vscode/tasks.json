@@ -1,0 +1,132 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+        "label": "Setup Python",
+        "type": "shell",
+        "command": "./dev/setup.sh",
+        "group": {
+          "kind": "build",
+          "isDefault": false
+        },
+        "presentation": {
+          "reveal": "always",
+          "panel": "new"
+        }
+    },
+    {
+        "label": "Setup noVNC",
+        "type": "shell",
+        "command": "./dev/novnc_install.sh",
+        "group": {
+          "kind": "build",
+          "isDefault": false
+        },
+        "presentation": {
+          "reveal": "always",
+          "panel": "new"
+        }
+    },
+    {
+      "label": "start-xvfb",
+      "type": "shell",
+      "command": "./dev/start_xvfb.sh",
+      "isBackground": true,
+      "problemMatcher": {
+        "pattern": {
+          "regexp": "^$"
+        },
+        "background": {
+          "activeOnStart": true,
+          "beginsPattern": "xvfb-start:",
+          "endsPattern": "xvfb-ready"
+        }
+      },
+      "presentation": {
+        "reveal": "always"
+      }
+    },
+    {
+      "label": "运行 PyQt 应用",
+      "type": "shell",
+      "command": "${workspaceFolder}/venv/bin/python",
+      "args": ["main.py"],
+      "group": {
+        "kind": "build",
+        "isDefault": false
+      },
+      "presentation": {
+        "reveal": "always",
+        "panel": "new"
+      }
+    },
+    {
+        "label": "运行 PyQt 应用 (noVNC)",
+        "type": "shell",
+        "command": "./dev/run_gui.sh",
+        "args": ["main.py"],
+        "group": {
+        "kind": "build",
+        "isDefault": true
+      },
+      "problemMatcher": {
+        "pattern": [
+          {
+            "regexp": "^$"
+          }
+        ],
+        "background": {
+          "activeOnStart": true,
+          "beginsPattern": "run_gui: DISPLAY=",
+          "endsPattern": "run_gui: (exited|terminated)"
+        }
+      },
+      "presentation": {
+        "reveal": "always",
+        "panel": "shared",
+        "close": false
+      }
+    },
+    {
+      "label": "截图测试",
+      "type": "shell",
+      "command": "./dev/screenshot.sh",
+      "group": "test",
+      "presentation": {
+        "reveal": "always",
+        "panel": "new"
+      }
+    },
+    {
+      "label": "启动 noVNC",
+      "type": "shell",
+      "command": "./dev/novnc_start.sh",
+      "isBackground": true,
+      "problemMatcher": {
+        "pattern": {
+          "regexp": "^$"
+        },
+        "background": {
+          "activeOnStart": true,
+          "beginsPattern": "novnc-start:",
+          "endsPattern": "novnc-start: ready"
+        }
+      },
+      "group": "none",
+      "presentation": {
+        "reveal": "always",
+        "panel": "new"
+      }
+    },
+    {
+      "label": "停止 noVNC",
+      "type": "shell",
+      "command": "./dev/novnc_stop.sh",
+      "group": "none",
+      "presentation": {
+        "reveal": "always",
+        "panel": "new"
+      }
+    }
+  ]
+}
