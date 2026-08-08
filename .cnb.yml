@@ -1,7 +1,7 @@
 $:
   vscode:
     - runner:
-        cpus: 32
+        cpus: 8
       services:
         - docker
         - vscode

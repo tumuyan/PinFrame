@@ -2991,6 +2991,10 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(i18n.t("msg_no_frames_to_export", "No frames to export"), 3000)
             return
 
+        # Sync frames from timeline model to project so export works even when the
+        # project has not been saved yet.
+        self.project.frames = self.timeline.get_all_frames()
+
         from utils.exporter import Exporter
         try:
             Exporter.export_sprite_sheet(self.project, file, frame_indices=indices, bg_color=self.project.export_bg_color)
@@ -3029,6 +3033,10 @@ class MainWindow(QMainWindow):
         if not indices:
              self.statusBar().showMessage(i18n.t("msg_no_frames_to_export"), 3000)
              return
+
+        # Sync frames from timeline model to project so export works even when the
+        # project has not been saved yet.
+        self.project.frames = self.timeline.get_all_frames()
 
         from utils.exporter import Exporter 
         from PyQt6.QtWidgets import QApplication

@@ -54,6 +54,11 @@ class Exporter:
             os.makedirs(output_dir)
             
         used_filenames = set()
+        # Counter for virtual-sliced frames sharing the same source image path.
+        # Each source image gets its own 0-based index so exported frames become
+        # "originalname_0.png", "originalname_1.png", ... and never overwrite the
+        # original sprite sheet itself.
+        slice_counters = {}
         
         # If no indices provided, export all active frames
         if frame_indices is None:
@@ -110,12 +115,20 @@ class Exporter:
                 if use_original_filenames:
                     base_name = os.path.basename(frame.file_path)
                     name, ext = os.path.splitext(base_name)
-                    filename = base_name
-                    
-                    dup_count = 1
-                    while filename in used_filenames:
-                        filename = f"{name}_{dup_count}{ext}"
-                        dup_count += 1
+
+                    if frame.crop_rect:
+                        # Virtual-sliced frame: use "originalname_<index>" so the
+                        # original sprite sheet is never overwritten when exporting
+                        # into the same directory.
+                        idx = slice_counters.get(frame.file_path, 0)
+                        slice_counters[frame.file_path] = idx + 1
+                        filename = f"{name}_{idx}{ext}"
+                    else:
+                        filename = base_name
+                        dup_count = 1
+                        while filename in used_filenames:
+                            filename = f"{name}_{dup_count}{ext}"
+                            dup_count += 1
                     
                     used_filenames.add(filename)
                 else:
