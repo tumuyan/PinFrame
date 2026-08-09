@@ -59,3 +59,10 @@ pyinstaller PinFrame.spec
 ```
 
 生成的成品位于 `dist/PinFrame` 目录。
+
+## 许可证
+
+本项目基于 [GNU General Public License v3.0](./LICENSE)（GPL-3.0）开源。
+
+由于本项目依赖 PyQt6（基于 Qt，采用 GPL 双重授权），采用 GPL-3.0 可确保与依赖的许可证完全兼容。任何人可以自由使用、修改和分发本项目，但任何分发或修改后的派生作品同样必须以 GPL-3.0 开源。
+
