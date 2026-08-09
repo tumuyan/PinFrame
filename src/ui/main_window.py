@@ -2203,7 +2203,6 @@ class MainWindow(QMainWindow):
     def smooth_params_dialog(self):
         """Open dialog to smooth parameters between first and last selected frames"""
         from PyQt6.QtWidgets import QDialog, QVBoxLayout, QComboBox, QLabel, QDialogButtonBox, QCheckBox, QGroupBox
-        import math
 
         selected_frames = self.timeline.get_selected_frames()
         if not selected_frames or len(selected_frames) < 2:
@@ -2345,11 +2344,22 @@ class MainWindow(QMainWindow):
 
         # ----- Helpers -----
         def _normalize_signed(angle):
-            """Wrap angle into (-180, 180]."""
-            return (angle + 180) % 360 - 180
+            """Wrap angle into (-180, 180]; the -180 boundary maps to +180,
+            matching property_panel.normalize_rotation."""
+            angle = angle % 360
+            if angle > 180:
+                angle -= 360
+            return angle
 
         def _lerp_rotation(a, b, factor, path):
-            """Interpolate from a to b by factor along the given path."""
+            """Interpolate from a to b by factor along the given path.
+
+            The result is always normalized to (-180, 180], and the endpoint
+            (factor == 1.0) keeps b's original stored value so the last keyframe
+            is never rewritten to an equivalent-but-different value.
+            """
+            if factor >= 1.0:
+                return b
             if path == "shortest":
                 diff = _normalize_signed(b - a)
             elif path == "cw":
@@ -2358,7 +2368,7 @@ class MainWindow(QMainWindow):
                 diff = -((a - b) % 360)  # always decreasing angle
             else:  # "auto" -> already resolved to a concrete path
                 diff = _normalize_signed(b - a)
-            return a + diff * factor
+            return _normalize_signed(a + diff * factor)
 
         def _infer_rotation_path():
             """Infer cw/ccw/shortest from intermediate keyframes (bnc rule #1)."""
@@ -2367,9 +2377,11 @@ class MainWindow(QMainWindow):
             a = first_frame.rotation
             b = last_frame.rotation
             d_short = _normalize_signed(b - a)
-            # Average rotation of intermediate keyframes (excluding first & last)
-            avg = sum(f.rotation for f in frames[1:-1]) / (total - 2)
-            d_avg = _normalize_signed(avg - a)
+            # Wrap-aware average of intermediate keyframes relative to the first
+            # frame, so e.g. 170° & -10° are treated as 180° apart instead of
+            # averaging the raw values into a misleading -10°.
+            avg = sum(_normalize_signed(f.rotation - a) for f in frames[1:-1]) / (total - 2)
+            d_avg = _normalize_signed(avg)
             # If intermediate average lies on the first->last shortest segment -> undecidable
             if d_short == 0:
                 return "shortest"

@@ -18,7 +18,7 @@ class DebugConfig:
     
     # I18n keys for category display names
     CATEGORY_I18N_KEYS = {
-        "grid_text": "debug_cat_timeline_graidview",
+        "grid_text": "debug_cat_timeline_gridview",
         "timeline": "debug_cat_timeline",
         "canvas": "debug_cat_canvas",
         "property": "debug_cat_property",
@@ -85,14 +85,6 @@ class DebugConfig:
     def set_master_enabled(self, enabled: bool):
         """Enable or disable master debug switch"""
         self._master_enabled = enabled
-        self._save_settings()
-    
-    def set_enabled(self, category: str, enabled: bool):
-        """Enable or disable a debug category"""
-        if enabled:
-            self._enabled_categories.add(category)
-        else:
-            self._enabled_categories.discard(category)
         self._save_settings()
     
     def get_all_categories(self) -> dict:

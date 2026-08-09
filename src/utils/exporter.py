@@ -280,3 +280,8 @@ class Exporter:
                 disposal=2 # Help with transparency artifacts
             )
             export_debug(f"[Export] GIF saved: {output_path}, {len(pil_frames)} frames, duration={duration}ms")
+        else:
+            # All frames failed to render - log a warning so the failure is visible,
+            # consistent with the other exporters.
+            print(f"Error rendering gif: no frames could be rendered for {output_path}")
+            export_debug(f"[Export] GIF export failed: no frames rendered for {output_path}")
