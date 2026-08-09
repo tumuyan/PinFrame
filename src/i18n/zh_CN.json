@@ -39,7 +39,7 @@
     "dlg_smooth_params": "平滑参数",
     "smooth_mode_label": "插值模式：",
     "smooth_mode_linear": "线性插值",
-    "smooth_mode_average": "平均值",
+    "smooth_mode_average": "平均值 (取首末帧中点)",
     "smooth_mode_ease_in": "缓入 (加速)",
     "smooth_mode_ease_out": "缓出 (减速)",
     "smooth_mode_ease_in_out": "缓入缓出 (先加速后减速)",
@@ -325,5 +325,10 @@
     "debug_cat_property": "属性面板",
     "debug_cat_export": "导出",
     "debug_cat_import": "导入",
-    "debug_master_switch": "启用调试日志输出"
+    "debug_master_switch": "启用调试日志输出",
+    "smooth_path_label": "旋转插值路径：",
+    "smooth_path_auto": "自动 (根据关键帧方向判断)",
+    "smooth_path_shortest": "最短路径 (取 [-180°, 180°] 最短旋转)",
+    "smooth_path_cw": "顺时针插值 (角度增大)",
+    "smooth_path_ccw": "逆时针插值 (角度减小)"
 }

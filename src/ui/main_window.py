@@ -2256,6 +2256,27 @@ class MainWindow(QMainWindow):
 
         layout.addWidget(params_group)
 
+        # Rotation path selection (only enabled when rotation is checked)
+        path_label = QLabel(i18n.t("smooth_path_label"))
+        layout.addWidget(path_label)
+
+        path_combo = QComboBox()
+        path_combo.addItem(i18n.t("smooth_path_auto"), "auto")
+        path_combo.addItem(i18n.t("smooth_path_shortest"), "shortest")
+        path_combo.addItem(i18n.t("smooth_path_cw"), "cw")
+        path_combo.addItem(i18n.t("smooth_path_ccw"), "ccw")
+        layout.addWidget(path_combo)
+
+        def _update_path_enabled():
+            # Path only matters when rotation is checked AND mode is not "average"
+            path_active = rotation_cb.isChecked() and mode_combo.currentData() != "average"
+            path_label.setEnabled(path_active)
+            path_combo.setEnabled(path_active)
+
+        rotation_cb.toggled.connect(_update_path_enabled)
+        mode_combo.currentIndexChanged.connect(_update_path_enabled)
+        _update_path_enabled()
+
         # Info label
         info_label = QLabel(i18n.t("smooth_info").format(
             first=selected_indices[0] + 1,
@@ -2288,7 +2309,8 @@ class MainWindow(QMainWindow):
             scale_cb.isChecked(),
             pos_x_cb.isChecked(),
             pos_y_cb.isChecked(),
-            rotation_cb.isChecked()
+            rotation_cb.isChecked(),
+            path_combo.currentData()
         )
 
         # Update timeline display
@@ -2301,14 +2323,70 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(i18n.t("msg_params_smoothed").format(count=len(selected_frames)), 2000)
 
     def _apply_param_smoothing(self, frames, first_frame, last_frame, mode,
-                                smooth_scale, smooth_pos_x, smooth_pos_y, smooth_rotation):
-        """Apply parameter smoothing with the selected mode"""
-        import math
+                                smooth_scale, smooth_pos_x, smooth_pos_y, smooth_rotation,
+                                rotation_path="auto"):
+        """Apply parameter smoothing with the selected mode.
 
+        rotation_path controls how rotation is interpolated when smooth_rotation is True
+        (only relevant for interpolation modes; "average" always uses the shortest midpoint):
+          - "auto":     with >2 keyframes, the average of the intermediate keyframes decides
+                        whether interpolation should follow the clockwise or counterclockwise
+                        direction relative to the first->last segment; if undecidable, falls
+                        back to the shortest path. With exactly 2 frames it is effectively the
+                        shortest path (no direction can be inferred).
+          - "shortest": shortest rotation within [-180, 180].
+          - "cw":       always rotate in the increasing-angle direction (+).
+          - "ccw":      always rotate in the decreasing-angle direction (-).
+        """
         if len(frames) < 2:
             return
 
         total = len(frames)
+
+        # ----- Helpers -----
+        def _normalize_signed(angle):
+            """Wrap angle into (-180, 180]."""
+            return (angle + 180) % 360 - 180
+
+        def _lerp_rotation(a, b, factor, path):
+            """Interpolate from a to b by factor along the given path."""
+            if path == "shortest":
+                diff = _normalize_signed(b - a)
+            elif path == "cw":
+                diff = (b - a) % 360  # always increasing angle
+            elif path == "ccw":
+                diff = -((a - b) % 360)  # always decreasing angle
+            else:  # "auto" -> already resolved to a concrete path
+                diff = _normalize_signed(b - a)
+            return a + diff * factor
+
+        def _infer_rotation_path():
+            """Infer cw/ccw/shortest from intermediate keyframes (bnc rule #1)."""
+            if total < 3:
+                return "shortest"
+            a = first_frame.rotation
+            b = last_frame.rotation
+            d_short = _normalize_signed(b - a)
+            # Average rotation of intermediate keyframes (excluding first & last)
+            avg = sum(f.rotation for f in frames[1:-1]) / (total - 2)
+            d_avg = _normalize_signed(avg - a)
+            # If intermediate average lies on the first->last shortest segment -> undecidable
+            if d_short == 0:
+                return "shortest"
+            same_sign = (d_avg >= 0) == (d_short >= 0)
+            if same_sign and abs(d_avg) <= abs(d_short) + 1e-9:
+                return "shortest"
+            # Otherwise follow the direction the intermediate frames lean toward
+            if same_sign:
+                # Beyond the segment end along the same direction -> extend that direction
+                return "cw" if d_short >= 0 else "ccw"
+            # Opposite side of the segment -> reverse direction
+            return "ccw" if d_short >= 0 else "cw"
+
+        # Resolve the concrete path once for the whole operation
+        resolved_path = rotation_path
+        if resolved_path == "auto":
+            resolved_path = _infer_rotation_path()
 
         for i, frame in enumerate(frames):
             t = i / (total - 1)  # 0.0 to 1.0
@@ -2317,7 +2395,7 @@ class MainWindow(QMainWindow):
             if mode == "linear":
                 factor = t
             elif mode == "average":
-                factor = 0.5  # All frames use average
+                factor = 0.5  # All frames use the average value
             elif mode == "ease_in":
                 # Quadratic ease-in: slow start, fast end
                 factor = t * t
@@ -2331,7 +2409,8 @@ class MainWindow(QMainWindow):
                 factor = t
 
             if mode == "average":
-                # For average mode, calculate the mean
+                # Average mode: mean of first & last (no path concept; use shortest midpoint
+                # to avoid the ±180° wraparound pitfall, e.g. 170° & -170° -> 180° not 0°)
                 if smooth_scale:
                     frame.scale = (first_frame.scale + last_frame.scale) / 2
                 if smooth_pos_x:
@@ -2341,9 +2420,10 @@ class MainWindow(QMainWindow):
                     y = (first_frame.position[1] + last_frame.position[1]) / 2
                     frame.position = (frame.position[0], y)
                 if smooth_rotation:
-                    frame.rotation = (first_frame.rotation + last_frame.rotation) / 2
+                    frame.rotation = _lerp_rotation(
+                        first_frame.rotation, last_frame.rotation, 0.5, "shortest")
             else:
-                # For other modes, interpolate
+                # Interpolation modes: interpolate between first and last
                 if smooth_scale:
                     frame.scale = first_frame.scale + (last_frame.scale - first_frame.scale) * factor
                 if smooth_pos_x:
@@ -2353,7 +2433,8 @@ class MainWindow(QMainWindow):
                     y = first_frame.position[1] + (last_frame.position[1] - first_frame.position[1]) * factor
                     frame.position = (frame.position[0], y)
                 if smooth_rotation:
-                    frame.rotation = first_frame.rotation + (last_frame.rotation - first_frame.rotation) * factor
+                    frame.rotation = _lerp_rotation(
+                        first_frame.rotation, last_frame.rotation, factor, resolved_path)
 
     def adjust_zoom(self, factor):
         self.canvas.view_scale *= factor
