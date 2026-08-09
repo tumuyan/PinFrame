@@ -9,6 +9,7 @@ from PyQt6.QtCore import Qt, pyqtSignal, QRect, QTimer, QPointF, QRectF
 from PyQt6.QtGui import QImage, QPixmap, QPainter, QColor, QTransform
 from i18n.manager import i18n
 from src.core.image_cache import image_cache
+from utils.debug_config import property_debug
 
 class PropertyPanel(QWidget):
     # Anchor Modes
@@ -399,6 +400,7 @@ class PropertyPanel(QWidget):
     def set_selection(self, frames):
         self.selected_frames = frames
         self.frame_data = frames[0] if frames else None
+        property_debug(f"[Property] Selection changed: {len(frames)} frames")
         self.update_ui_from_selection()
         self.update_preview()
 
@@ -473,6 +475,8 @@ class PropertyPanel(QWidget):
         new_x = self.x_spin.value()
         new_y = self.y_spin.value()
         new_rot = self.normalize_rotation(self.rotation_spin.value())
+        
+        property_debug(f"[Property] Value changed: scale={new_scale:.4f}, pos=({new_x:.1f}, {new_y:.1f}), rot={new_rot:.1f}°")
         
         # Update UI if normalized
         if abs(new_rot - self.rotation_spin.value()) > 0.01:
@@ -598,6 +602,8 @@ class PropertyPanel(QWidget):
     def apply_mirror(self, axis):
         if not self.selected_frames: return
         
+        property_debug(f"[Property] Apply mirror: axis={axis}")
+
         # 1. Choose Pivot
         pivot = self.get_anchor_pos() 
 
@@ -640,6 +646,7 @@ class PropertyPanel(QWidget):
 
     def apply_rel_move(self, dx, dy):
         if not self.selected_frames: return
+        property_debug(f"[Property] Relative move: dx={dx:.1f}, dy={dy:.1f}")
         for f in self.selected_frames:
             f.position = (f.position[0] + dx, f.position[1] + dy)
         self.update_ui_from_selection()
@@ -650,6 +657,8 @@ class PropertyPanel(QWidget):
     def apply_rel_scale(self, factor):
         if not self.selected_frames: return
         
+        property_debug(f"[Property] Relative scale: factor={factor:.4f}")
+
         # Share code: Both use self.custom_anchor_pos as pivot
         anchor = self.get_anchor_pos()
         
@@ -669,6 +678,8 @@ class PropertyPanel(QWidget):
     def apply_rel_rotate(self, angle_deg):
         if not self.selected_frames: return
         
+        property_debug(f"[Property] Relative rotate: angle={angle_deg:.1f}°")
+
         rad = math.radians(angle_deg)
         cos_a = math.cos(rad)
         sin_a = math.sin(rad)
@@ -814,6 +825,8 @@ class PropertyPanel(QWidget):
         # align_factor: 0.0 (Left/Top), 0.5 (Center), 1.0 (Right/Bottom)
         if not self.selected_frames:
             return
+            
+        property_debug(f"[Property] Quick align: x={align_x_factor}, y={align_y_factor}")
             
         # Canvas Rect is centered at (0,0) in our Coordinate System logic?
         # NO. We decided `position` is offset from Canvas Center (0,0)?

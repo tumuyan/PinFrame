@@ -3,6 +3,7 @@ from PyQt6.QtCore import Qt, QSize, QRectF, QPoint
 from PyQt6.QtGui import QPainter, QColor, QFont, QIcon, QFontMetrics
 from typing import Optional
 import logging
+from utils.debug_config import grid_text_debug, grid_text_debug_lines
 
 logger = logging.getLogger(__name__)
 
@@ -90,30 +91,67 @@ class TimelineGridDelegate(QStyledItemDelegate):
         debug = index.row() == 0 and not self._log_printed
         if debug:
             fm = QFontMetrics(font)
-            print(f"[GridText Debug] First frame text info:")
-            print(f"  - Original text: '{text}'")
-            print(f"  - Text length: {len(text)} chars")
-            print(f"  - Item rect: {option.rect.width()}x{option.rect.height()}")
-            print(f"  - Icon size: {icon_size.width()}x{icon_size.height()}")
-            print(f"  - Text rect: {text_rect.width():.1f}x{text_rect.height():.1f}")
-            print(f"  - Font: {font.family()}, size: {font.pointSize()}pt")
-            print(f"  - Font metrics height: {fm.height()}, ascent: {fm.ascent()}")
-            print(f"  - Text width: {fm.horizontalAdvance(text)}")
-            print(f"  - Multiline mode: {self.show_multiline}")
+            lines = [
+                f"[GridText Debug] First frame text info:",
+                f"  - Original text: '{text}'",
+                f"  - Text length: {len(text)} chars",
+                f"  - Item rect: {option.rect.width()}x{option.rect.height()}",
+                f"  - Icon size: {icon_size.width()}x{icon_size.height()}",
+                f"  - Text rect: {text_rect.width():.1f}x{text_rect.height():.1f}",
+                f"  - Font: {font.family()}, size: {font.pointSize()}pt",
+                f"  - Font metrics height: {fm.height()}, ascent: {fm.ascent()}",
+                f"  - Text width: {fm.horizontalAdvance(text)}",
+                f"  - Multiline mode: {self.show_multiline}",
+            ]
             if self.show_multiline:
                 available_lines = int(text_rect.height()) // fm.height()
-                print(f"  - Available lines: {available_lines}")
+                lines.append(f"  - Available lines: {available_lines}")
+            grid_text_debug_lines(lines)
 
         # Clear the default text drawn by super().paint()
         painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_Source)
         painter.fillRect(text_rect, QColor(0, 0, 0, 0))
         painter.setCompositionMode(QPainter.CompositionMode.CompositionMode_SourceOver)
 
-        # Get text color based on selection state
+        # Get theme mode from widget
+        is_dark_theme = True
+        widget = option.widget
+        if widget and hasattr(widget, 'is_dark_theme'):
+            is_dark_theme = widget.is_dark_theme
+
+        # Check if this is a reference frame
+        is_ref = False
+        frame_data = item.data(Qt.ItemDataRole.UserRole)
+        if frame_data and hasattr(widget, 'reference_frame_data'):
+            is_ref = (frame_data is widget.reference_frame_data)
+
+        # Get text color and background based on selection state and theme
         if option.state & QStyle.StateFlag.State_Selected:
             text_color = QColor(255, 255, 255)
+            # Selection background
+            if is_dark_theme:
+                bg_color = QColor(0, 120, 215, 200)
+            else:
+                bg_color = QColor(0, 120, 215, 220)
+        elif is_ref:
+            # Reference frame highlighting
+            if is_dark_theme:
+                bg_color = QColor(30, 80, 40, 200)
+                text_color = QColor(200, 255, 200)
+            else:
+                bg_color = QColor(200, 230, 200, 255)
+                text_color = QColor(30, 80, 40)
         else:
-            text_color = option.palette.text().color()
+            # Normal state - adapt to theme
+            if is_dark_theme:
+                bg_color = QColor(40, 40, 40, 200)
+                text_color = QColor(220, 220, 220)
+            else:
+                bg_color = QColor(250, 250, 250, 230)
+                text_color = QColor(30, 30, 30)
+
+        # Draw text background
+        painter.fillRect(text_rect, bg_color)
 
         painter.setFont(font)
         painter.setPen(text_color)
@@ -125,10 +163,11 @@ class TimelineGridDelegate(QStyledItemDelegate):
 
             # Log processed text for first frame
             if debug:
-                print(f"  - Processed lines ({len(display_lines)}):")
+                lines = [f"  - Processed lines ({len(display_lines)}):"]
                 for i, line in enumerate(display_lines):
                     line_width = QFontMetrics(font).horizontalAdvance(line)
-                    print(f"      [{i}] '{line}' (width: {line_width}, rect_width: {text_rect.width():.1f})")
+                    lines.append(f"      [{i}] '{line}' (width: {line_width}, rect_width: {text_rect.width():.1f})")
+                grid_text_debug_lines(lines)
                 self._log_printed = True  # Mark as printed after all logs
 
             self._draw_multiline_truncated(painter, display_lines, text_rect, font)
@@ -139,7 +178,7 @@ class TimelineGridDelegate(QStyledItemDelegate):
             # Log processed text for first frame
             if debug:
                 display_width = QFontMetrics(font).horizontalAdvance(display_text)
-                print(f"  - Processed text: '{display_text}' (width: {display_width}, rect_width: {text_rect.width():.1f})")
+                grid_text_debug(f"  - Processed text: '{display_text}' (width: {display_width}, rect_width: {text_rect.width():.1f})")
                 self._log_printed = True  # Mark as printed after all logs
 
             painter.drawText(text_rect, Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignVCenter, display_text)
@@ -154,12 +193,12 @@ class TimelineGridDelegate(QStyledItemDelegate):
         num_lines = available_height // line_height
 
         if debug:
-            print(f"  - [Algorithm] num_lines={num_lines}, line_height={line_height}, available_height={available_height}")
+            grid_text_debug(f"  - [Algorithm] num_lines={num_lines}, line_height={line_height}, available_height={available_height}")
 
         # If text fits in a single line, return it
         if fm.horizontalAdvance(text) <= text_rect.width():
             if debug:
-                print(f"  - [Algorithm] Text fits in single line, returning as-is")
+                grid_text_debug(f"  - [Algorithm] Text fits in single line, returning as-is")
             return [text]
 
         # Check for virtual slice position suffix (e.g., " [1,1]")
@@ -185,9 +224,11 @@ class TimelineGridDelegate(QStyledItemDelegate):
             ellipsis_width = fm.horizontalAdvance("...")
 
             if debug:
-                print(f"  - [Algorithm] main_text='{main_text}', slice_suffix='{slice_suffix}'")
-                print(f"  - [Algorithm] main_prefix='{main_prefix}', main_suffix='{main_suffix}'")
-                print(f"  - [Algorithm] slice_width={slice_width}, main_suffix_width={main_suffix_width}")
+                grid_text_debug_lines([
+                    f"  - [Algorithm] main_text='{main_text}', slice_suffix='{slice_suffix}'",
+                    f"  - [Algorithm] main_prefix='{main_prefix}', main_suffix='{main_suffix}'",
+                    f"  - [Algorithm] slice_width={slice_width}, main_suffix_width={main_suffix_width}",
+                ])
 
             # Try to fit as much as possible across multiple lines
             lines = []
@@ -198,7 +239,7 @@ class TimelineGridDelegate(QStyledItemDelegate):
                 is_last_line = (line_num == num_lines - 1)
 
                 if debug:
-                    print(f"  - [Algorithm] Processing line {line_num}, is_last={is_last_line}, remaining='{remaining_text}'")
+                    grid_text_debug(f"  - [Algorithm] Processing line {line_num}, is_last={is_last_line}, remaining='{remaining_text}'")
 
                 if is_last_line:
                     # Last line must contain: remaining_text + main_suffix + slice_suffix
@@ -255,14 +296,14 @@ class TimelineGridDelegate(QStyledItemDelegate):
                     if len(remaining_text) == 0:
                         # No more prefix to display, we're done
                         if debug:
-                            print(f"  - [Algorithm] No more remaining_text, done")
+                            grid_text_debug(f"  - [Algorithm] No more remaining_text, done")
                         break
 
                     if fm.horizontalAdvance(remaining_text) <= text_rect.width():
                         # All remaining prefix fits, but we need to continue to next lines
                         # for main_suffix + slice_suffix
                         if debug:
-                            print(f"  - [Algorithm] All remaining fits: '{remaining_text}'")
+                            grid_text_debug(f"  - [Algorithm] All remaining fits: '{remaining_text}'")
                         lines.append(remaining_text)
                         remaining_text = ""
                         # DON'T break here - continue to process remaining lines for suffix
@@ -270,7 +311,7 @@ class TimelineGridDelegate(QStyledItemDelegate):
                         # Find the best split point
                         split_pos = self._find_best_split_point(fm, remaining_text, text_rect.width(), debug)
                         if debug:
-                            print(f"  - [Algorithm] Split at pos {split_pos}: '{remaining_text[:split_pos]}'")
+                            grid_text_debug(f"  - [Algorithm] Split at pos {split_pos}: '{remaining_text[:split_pos]}'")
                         lines.append(remaining_text[:split_pos])
                         remaining_text = remaining_text[split_pos:]
 
@@ -350,7 +391,7 @@ class TimelineGridDelegate(QStyledItemDelegate):
         # If entire text fits, return its length
         if text_width <= max_width:
             if debug:
-                print(f"    [SplitPoint] '{text}' fits (width={text_width}, max={max_width}), return {len(text)}")
+                grid_text_debug(f"    [SplitPoint] '{text}' fits (width={text_width}, max={max_width}), return {len(text)}")
             return len(text)
 
         # Try to split at spaces (word boundaries)
@@ -365,24 +406,24 @@ class TimelineGridDelegate(QStyledItemDelegate):
                 else:
                     # This word doesn't fit, return the position before it
                     if debug:
-                        print(f"    [SplitPoint] Split at word boundary: '{current_line}' (len={len(current_line)})")
+                        grid_text_debug(f"    [SplitPoint] Split at word boundary: '{current_line}' (len={len(current_line)})")
                     return len(current_line)
 
             # All words fit
             if debug:
-                print(f"    [SplitPoint] All words fit: '{current_line}' (len={len(current_line)})")
+                grid_text_debug(f"    [SplitPoint] All words fit: '{current_line}' (len={len(current_line)})")
             return len(current_line)
 
         # No spaces, split character by character
         for i in range(len(text), 0, -1):
             if fm.horizontalAdvance(text[:i]) <= max_width:
                 if debug:
-                    print(f"    [SplitPoint] No spaces, char-by-char split at {i}: '{text[:i]}' (width={fm.horizontalAdvance(text[:i])})")
+                    grid_text_debug(f"    [SplitPoint] No spaces, char-by-char split at {i}: '{text[:i]}' (width={fm.horizontalAdvance(text[:i])})")
                 return i
 
         # Nothing fits
         if debug:
-            print(f"    [SplitPoint] WARNING: Nothing fits in max_width={max_width}, text_width={text_width}")
+            grid_text_debug(f"    [SplitPoint] WARNING: Nothing fits in max_width={max_width}, text_width={text_width}")
         return 0
 
         return 0

@@ -2,6 +2,7 @@ import os
 from typing import List, Tuple, Optional
 from PIL import Image
 from model.project_data import ProjectData
+from utils.debug_config import export_debug
 
 class Exporter:
     @staticmethod
@@ -50,6 +51,7 @@ class Exporter:
     @staticmethod
     def export_iter(project: ProjectData, output_dir: str, use_original_filenames: bool = True, 
                     frame_indices: Optional[List[int]] = None, bg_color: Tuple[int, int, int, int] = (0, 0, 0, 0)):
+        export_debug(f"[Export] Starting export_iter: output_dir={output_dir}, use_original_filenames={use_original_filenames}")
         if not os.path.exists(output_dir):
             os.makedirs(output_dir)
             
@@ -69,7 +71,10 @@ class Exporter:
             
         total_frames = len(frames_to_export)
         if total_frames == 0:
+            export_debug("[Export] No frames to export")
             return
+        
+        export_debug(f"[Export] Exporting {total_frames} frames")
             
         for progress_idx, (orig_idx, frame) in enumerate(frames_to_export):
             yield progress_idx + 1, total_frames # Progress bar info
@@ -139,10 +144,14 @@ class Exporter:
             except Exception as e:
                 print(f"Error exporting frame {orig_idx}: {e}")
                 
+        export_debug(f"[Export] Export_iter completed: {total_frames} frames exported")
+                
     @staticmethod
     def export_sprite_sheet(project: ProjectData, output_path: str, 
                            frame_indices: Optional[List[int]] = None, bg_color: Tuple[int, int, int, int] = (0, 0, 0, 0)):
         
+        export_debug(f"[Export] Starting sprite sheet export: output_path={output_path}")
+
         if frame_indices is None:
             frames_to_export = [f for f in project.frames if not f.is_disabled]
         else:
@@ -211,11 +220,14 @@ class Exporter:
                 print(f"Error merging frame {i}: {e}")
                 
         sheet.save(output_path)
+        export_debug(f"[Export] Sprite sheet saved: {output_path}, {len(frames_to_export)} frames, {cols}x{rows} grid")
 
     @staticmethod
     def export_gif(project: ProjectData, output_path: str, 
                    frame_indices: Optional[List[int]] = None, bg_color: Tuple[int, int, int, int] = (0, 0, 0, 0)):
         
+        export_debug(f"[Export] Starting GIF export: output_path={output_path}")
+
         if frame_indices is None:
             frames_to_export = [f for f in project.frames if not f.is_disabled]
         else:
@@ -280,3 +292,9 @@ class Exporter:
                 loop=0,
                 disposal=2 # Help with transparency artifacts
             )
+            export_debug(f"[Export] GIF saved: {output_path}, {len(pil_frames)} frames, duration={duration}ms")
+        else:
+            # All frames failed to render - log a warning so the failure is visible,
+            # consistent with the other exporters.
+            print(f"Error rendering gif: no frames could be rendered for {output_path}")
+            export_debug(f"[Export] GIF export failed: no frames rendered for {output_path}")

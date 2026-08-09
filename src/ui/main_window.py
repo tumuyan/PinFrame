@@ -22,6 +22,7 @@ from ui.raster_settings import RasterizationSettingsDialog
 from ui.canvas_border_settings import CanvasBorderSettingsDialog
 from ui.utils.icon_generator import IconGenerator
 from i18n.manager import i18n
+from utils.debug_config import import_debug
 
 class MainWindow(QMainWindow):
     def __init__(self):
@@ -77,6 +78,7 @@ class MainWindow(QMainWindow):
         self.timeline.enable_requested.connect(self.toggle_enable_disable)
         self.timeline.reverse_order_requested.connect(self.reverse_selected_frames)
         self.timeline.integerize_offset_requested.connect(self.integerize_selection_offset)
+        self.timeline.smooth_params_requested.connect(self.smooth_params_dialog)
         self.timeline.set_reference_requested.connect(self.set_reference_frame_from_selection)
         self.timeline.clear_reference_requested.connect(self.clear_reference_frame)
         self.timeline.thumbnail_size_changed.connect(self.on_grid_thumbnail_size_changed)
@@ -879,6 +881,9 @@ class MainWindow(QMainWindow):
         self.repo_action = QAction(i18n.t("action_repo"), self)
         self.repo_action.triggered.connect(self.open_repo_url)
 
+        self.debug_control_action = QAction(i18n.t("action_debug_control"), self)
+        self.debug_control_action.triggered.connect(self.show_debug_control_dialog)
+
         version_str = self.get_git_version()
         self.version_action = QAction(i18n.t("action_version").format(version=version_str), self)
         self.version_action.setEnabled(False)
@@ -1057,7 +1062,9 @@ class MainWindow(QMainWindow):
         about_menu.addAction(self.repo_action)
         about_menu.addAction(self.version_action)
         about_menu.addAction(self.build_date_action)
-        
+        about_menu.addSeparator()
+        about_menu.addAction(self.debug_control_action)
+
         # Apply saved timeline view settings
         self.timeline.update_grid_settings(
             self.grid_thumb_width,
@@ -1080,6 +1087,85 @@ class MainWindow(QMainWindow):
         except Exception:
             # Fallback
             QDesktopServices.openUrl(QUrl("https://github.com/tumuyan/PinFrame"))
+
+    def show_debug_control_dialog(self):
+        """Show dialog to control debug output"""
+        from PyQt6.QtWidgets import (QDialog, QVBoxLayout, QLabel, QScrollArea,
+                                      QWidget, QDialogButtonBox, QCheckBox)
+        from PyQt6.QtCore import Qt
+        from utils.debug_config import DebugConfig
+
+        config = DebugConfig()
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle(i18n.t("dlg_debug_control"))
+        dialog.setMinimumWidth(400)
+        dialog.setMinimumHeight(350)
+
+        layout = QVBoxLayout(dialog)
+
+        # Description
+        desc_label = QLabel(i18n.t("debug_control_desc"))
+        desc_label.setWordWrap(True)
+        layout.addWidget(desc_label)
+
+        # Master switch
+        master_checkbox = QCheckBox(i18n.t("debug_master_switch", "Enable Debug Logging"))
+        master_checkbox.setChecked(config.is_master_enabled())
+        master_checkbox.setStyleSheet("font-weight: bold; padding: 5px 0;")
+        layout.addWidget(master_checkbox)
+
+        # Scroll area for checkboxes
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll_widget = QWidget()
+        scroll_layout = QVBoxLayout(scroll_widget)
+
+        # Create checkboxes for each category
+        checkboxes = {}
+        categories = config.get_all_categories()
+        for cat_key, cat_name in categories.items():
+            cb = QCheckBox(cat_name)
+            cb.setChecked(cat_key in config.get_enabled_categories())
+            checkboxes[cat_key] = cb
+            scroll_layout.addWidget(cb)
+
+        scroll_layout.addStretch()
+        scroll.setWidget(scroll_widget)
+        layout.addWidget(scroll)
+
+        # Function to update category checkboxes state based on master switch
+        def update_category_states():
+            master_on = master_checkbox.isChecked()
+            for cb in checkboxes.values():
+                cb.setEnabled(master_on)
+                if master_on:
+                    cb.setStyleSheet("")
+                else:
+                    cb.setStyleSheet("color: gray;")
+
+        # Connect master checkbox
+        master_checkbox.toggled.connect(update_category_states)
+        # Initial state
+        update_category_states()
+
+        # Buttons
+        button_box = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        button_box.accepted.connect(dialog.accept)
+        button_box.rejected.connect(dialog.reject)
+        layout.addWidget(button_box)
+
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            # Update config
+            config.set_master_enabled(master_checkbox.isChecked())
+            enabled = set()
+            for cat_key, cb in checkboxes.items():
+                if cb.isChecked():
+                    enabled.add(cat_key)
+            config.set_enabled_categories(enabled)
+            self.statusBar().showMessage(i18n.t("msg_debug_settings_saved"), 2000)
 
     def get_git_version(self):
         self._git_available = False
@@ -1219,11 +1305,14 @@ class MainWindow(QMainWindow):
         files, _ = QFileDialog.getOpenFileNames(self, i18n.t("dlg_import_title"), "", i18n.t("dlg_filter_images"))
         if not files:
             return
+        import_debug(f"[Import] Importing images: {len(files)} files selected")
         self.add_files(files)
 
     def add_files(self, files, index=-1):
         if not files:
             return
+        
+        import_debug(f"[Import] Adding files: count={len(files)}, index={index}")
             
         added_count = 0
         valid_extensions = {'.png', '.jpg', '.jpeg', '.bmp'}
@@ -1250,7 +1339,10 @@ class MainWindow(QMainWindow):
             added_count += 1
 
         if added_count == 0:
+            import_debug("[Import] No valid files to add")
             return
+
+        import_debug(f"[Import] Successfully added {added_count} files")
 
         # Insert logic - now uses TimelineModel
         # TimelineWidget handles both data and view updates
@@ -2114,6 +2206,254 @@ class MainWindow(QMainWindow):
         self.mark_dirty()
         self.statusBar().showMessage(i18n.t("msg_integerized"), 2000)
 
+    def smooth_params_dialog(self):
+        """Open dialog to smooth parameters between first and last selected frames"""
+        from PyQt6.QtWidgets import QDialog, QVBoxLayout, QComboBox, QLabel, QDialogButtonBox, QCheckBox, QGroupBox
+
+        selected_frames = self.timeline.get_selected_frames()
+        if not selected_frames or len(selected_frames) < 2:
+            return
+
+        # Get selected indices (sorted)
+        selected_indices = sorted(self.timeline.get_selected_indices_from_current_view())
+        first_frame = selected_frames[0]
+        last_frame = selected_frames[-1]
+
+        # Create dialog
+        dialog = QDialog(self)
+        dialog.setWindowTitle(i18n.t("dlg_smooth_params"))
+        dialog.setMinimumWidth(350)
+
+        layout = QVBoxLayout(dialog)
+
+        # Mode selection
+        mode_label = QLabel(i18n.t("smooth_mode_label"))
+        layout.addWidget(mode_label)
+
+        mode_combo = QComboBox()
+        mode_combo.addItem(i18n.t("smooth_mode_linear"), "linear")
+        mode_combo.addItem(i18n.t("smooth_mode_average"), "average")
+        mode_combo.addItem(i18n.t("smooth_mode_ease_in"), "ease_in")
+        mode_combo.addItem(i18n.t("smooth_mode_ease_out"), "ease_out")
+        mode_combo.addItem(i18n.t("smooth_mode_ease_in_out"), "ease_in_out")
+        layout.addWidget(mode_combo)
+
+        # Parameter selection group
+        params_group = QGroupBox(i18n.t("smooth_params_group"))
+        params_layout = QVBoxLayout(params_group)
+
+        # Checkboxes for each parameter
+        scale_cb = QCheckBox(i18n.t("smooth_param_scale"))
+        scale_cb.setChecked(True)
+        params_layout.addWidget(scale_cb)
+
+        pos_x_cb = QCheckBox(i18n.t("smooth_param_pos_x"))
+        pos_x_cb.setChecked(True)
+        params_layout.addWidget(pos_x_cb)
+
+        pos_y_cb = QCheckBox(i18n.t("smooth_param_pos_y"))
+        pos_y_cb.setChecked(True)
+        params_layout.addWidget(pos_y_cb)
+
+        rotation_cb = QCheckBox(i18n.t("smooth_param_rotation"))
+        rotation_cb.setChecked(False)
+        params_layout.addWidget(rotation_cb)
+
+        layout.addWidget(params_group)
+
+        # Rotation path selection (only enabled when rotation is checked)
+        path_label = QLabel(i18n.t("smooth_path_label"))
+        layout.addWidget(path_label)
+
+        path_combo = QComboBox()
+        path_combo.addItem(i18n.t("smooth_path_auto"), "auto")
+        path_combo.addItem(i18n.t("smooth_path_shortest"), "shortest")
+        path_combo.addItem(i18n.t("smooth_path_cw"), "cw")
+        path_combo.addItem(i18n.t("smooth_path_ccw"), "ccw")
+        layout.addWidget(path_combo)
+
+        def _update_path_enabled():
+            # Path only matters when rotation is checked AND mode is not "average"
+            path_active = rotation_cb.isChecked() and mode_combo.currentData() != "average"
+            path_label.setEnabled(path_active)
+            path_combo.setEnabled(path_active)
+
+        rotation_cb.toggled.connect(_update_path_enabled)
+        mode_combo.currentIndexChanged.connect(_update_path_enabled)
+        _update_path_enabled()
+
+        # Info label
+        info_label = QLabel(i18n.t("smooth_info").format(
+            first=selected_indices[0] + 1,
+            last=selected_indices[-1] + 1,
+            count=len(selected_indices)
+        ))
+        info_label.setWordWrap(True)
+        layout.addWidget(info_label)
+
+        # Buttons
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        layout.addWidget(buttons)
+
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+
+        # Get selected mode
+        mode = mode_combo.currentData()
+
+        # Apply smoothing
+        self._apply_param_smoothing(
+            selected_frames,
+            first_frame,
+            last_frame,
+            mode,
+            scale_cb.isChecked(),
+            pos_x_cb.isChecked(),
+            pos_y_cb.isChecked(),
+            rotation_cb.isChecked(),
+            path_combo.currentData()
+        )
+
+        # Update timeline display
+        for idx in selected_indices:
+            self.timeline.update_frame_data(idx)
+
+        self.canvas.update()
+        self.property_panel.update_ui_from_selection()
+        self.mark_dirty()
+        self.statusBar().showMessage(i18n.t("msg_params_smoothed").format(count=len(selected_frames)), 2000)
+
+    def _apply_param_smoothing(self, frames, first_frame, last_frame, mode,
+                                smooth_scale, smooth_pos_x, smooth_pos_y, smooth_rotation,
+                                rotation_path="auto"):
+        """Apply parameter smoothing with the selected mode.
+
+        rotation_path controls how rotation is interpolated when smooth_rotation is True
+        (only relevant for interpolation modes; "average" always uses the shortest midpoint):
+          - "auto":     with >2 keyframes, the average of the intermediate keyframes decides
+                        whether interpolation should follow the clockwise or counterclockwise
+                        direction relative to the first->last segment; if undecidable, falls
+                        back to the shortest path. With exactly 2 frames it is effectively the
+                        shortest path (no direction can be inferred).
+          - "shortest": shortest rotation within [-180, 180].
+          - "cw":       always rotate in the increasing-angle direction (+).
+          - "ccw":      always rotate in the decreasing-angle direction (-).
+        """
+        if len(frames) < 2:
+            return
+
+        total = len(frames)
+
+        # ----- Helpers -----
+        def _normalize_signed(angle):
+            """Wrap angle into (-180, 180]; the -180 boundary maps to +180,
+            matching property_panel.normalize_rotation."""
+            angle = angle % 360
+            if angle > 180:
+                angle -= 360
+            return angle
+
+        def _lerp_rotation(a, b, factor, path):
+            """Interpolate from a to b by factor along the given path.
+
+            The result is always normalized to (-180, 180], and the endpoint
+            (factor == 1.0) keeps b's original stored value so the last keyframe
+            is never rewritten to an equivalent-but-different value.
+            """
+            if factor >= 1.0:
+                return b
+            if path == "shortest":
+                diff = _normalize_signed(b - a)
+            elif path == "cw":
+                diff = (b - a) % 360  # always increasing angle
+            elif path == "ccw":
+                diff = -((a - b) % 360)  # always decreasing angle
+            else:  # "auto" -> already resolved to a concrete path
+                diff = _normalize_signed(b - a)
+            return _normalize_signed(a + diff * factor)
+
+        def _infer_rotation_path():
+            """Infer cw/ccw/shortest from intermediate keyframes (bnc rule #1)."""
+            if total < 3:
+                return "shortest"
+            a = first_frame.rotation
+            b = last_frame.rotation
+            d_short = _normalize_signed(b - a)
+            # Wrap-aware average of intermediate keyframes relative to the first
+            # frame, so e.g. 170° & -10° are treated as 180° apart instead of
+            # averaging the raw values into a misleading -10°.
+            avg = sum(_normalize_signed(f.rotation - a) for f in frames[1:-1]) / (total - 2)
+            d_avg = _normalize_signed(avg)
+            # If intermediate average lies on the first->last shortest segment -> undecidable
+            if d_short == 0:
+                return "shortest"
+            same_sign = (d_avg >= 0) == (d_short >= 0)
+            if same_sign and abs(d_avg) <= abs(d_short) + 1e-9:
+                return "shortest"
+            # Otherwise follow the direction the intermediate frames lean toward
+            if same_sign:
+                # Beyond the segment end along the same direction -> extend that direction
+                return "cw" if d_short >= 0 else "ccw"
+            # Opposite side of the segment -> reverse direction
+            return "ccw" if d_short >= 0 else "cw"
+
+        # Resolve the concrete path once for the whole operation
+        resolved_path = rotation_path
+        if resolved_path == "auto":
+            resolved_path = _infer_rotation_path()
+
+        for i, frame in enumerate(frames):
+            t = i / (total - 1)  # 0.0 to 1.0
+
+            # Calculate interpolation factor based on mode
+            if mode == "linear":
+                factor = t
+            elif mode == "average":
+                factor = 0.5  # All frames use the average value
+            elif mode == "ease_in":
+                # Quadratic ease-in: slow start, fast end
+                factor = t * t
+            elif mode == "ease_out":
+                # Quadratic ease-out: fast start, slow end
+                factor = t * (2 - t)
+            elif mode == "ease_in_out":
+                # Smooth step (ease-in-out)
+                factor = t * t * (3 - 2 * t)
+            else:
+                factor = t
+
+            if mode == "average":
+                # Average mode: mean of first & last (no path concept; use shortest midpoint
+                # to avoid the ±180° wraparound pitfall, e.g. 170° & -170° -> 180° not 0°)
+                if smooth_scale:
+                    frame.scale = (first_frame.scale + last_frame.scale) / 2
+                if smooth_pos_x:
+                    x = (first_frame.position[0] + last_frame.position[0]) / 2
+                    frame.position = (x, frame.position[1])
+                if smooth_pos_y:
+                    y = (first_frame.position[1] + last_frame.position[1]) / 2
+                    frame.position = (frame.position[0], y)
+                if smooth_rotation:
+                    frame.rotation = _lerp_rotation(
+                        first_frame.rotation, last_frame.rotation, 0.5, "shortest")
+            else:
+                # Interpolation modes: interpolate between first and last
+                if smooth_scale:
+                    frame.scale = first_frame.scale + (last_frame.scale - first_frame.scale) * factor
+                if smooth_pos_x:
+                    x = first_frame.position[0] + (last_frame.position[0] - first_frame.position[0]) * factor
+                    frame.position = (x, frame.position[1])
+                if smooth_pos_y:
+                    y = first_frame.position[1] + (last_frame.position[1] - first_frame.position[1]) * factor
+                    frame.position = (frame.position[0], y)
+                if smooth_rotation:
+                    frame.rotation = _lerp_rotation(
+                        first_frame.rotation, last_frame.rotation, factor, resolved_path)
+
     def adjust_zoom(self, factor):
         self.canvas.view_scale *= factor
         self.canvas.update()
@@ -2392,6 +2732,7 @@ class MainWindow(QMainWindow):
         self._load_from_path(path)
 
     def _load_from_path(self, path):
+        import_debug(f"[Import] Loading project from: {path}")
         try:
             with open(path, 'r') as f:
                 json_str = f.read()
@@ -2436,6 +2777,7 @@ class MainWindow(QMainWindow):
             self.update_title()
             self.update_onion_state()
             self.update_menu_state()
+            import_debug(f"[Import] Project loaded successfully: {len(self.project.frames)} frames")
             self.statusBar().showMessage(i18n.t("msg_project_loaded").format(path=path), 3000)
         except Exception as e:
             msg_box = QMessageBox(self)
@@ -2760,6 +3102,7 @@ class MainWindow(QMainWindow):
 
     def refresh_about_action_labels(self):
         self.repo_action.setText(i18n.t("action_repo"))
+        self.debug_control_action.setText(i18n.t("action_debug_control"))
         version_str = self.get_git_version()
         self.version_action.setText(i18n.t("action_version").format(version=version_str))
         build_date = self.get_build_date()
@@ -2872,6 +3215,8 @@ class MainWindow(QMainWindow):
         file, _ = QFileDialog.getOpenFileName(self, i18n.t("dlg_import_slice_title"), "", i18n.t("dlg_filter_images"))
         if not file:
             return
+        
+        import_debug(f"[Import] Importing sprite sheet: {file}")
             
         from ui.slice_dialog import SliceImportDialog
         dlg = SliceImportDialog(file, self)
@@ -2911,12 +3256,15 @@ class MainWindow(QMainWindow):
 
         self.mark_dirty()
         self.timeline.refresh_current_items()
+        import_debug(f"[Import] Sprite sheet imported: {len(crops)} slices, mode={mode}")
         self.statusBar().showMessage(i18n.t("msg_imported_slices").format(count=len(crops)), 3000)
 
     def import_gif(self):
         file, _ = QFileDialog.getOpenFileName(self, i18n.t("dlg_import_gif_title"), "", i18n.t("dlg_filter_gif"))
         if not file:
             return
+        
+        import_debug(f"[Import] Importing GIF: {file}")
             
         try:
             from PIL import Image, ImageSequence
@@ -2942,6 +3290,7 @@ class MainWindow(QMainWindow):
 
             self.mark_dirty()
             self.timeline.refresh_current_items()
+            import_debug(f"[Import] GIF imported: {count} frames extracted")
             self.statusBar().showMessage(i18n.t("msg_imported_gif").format(count=count), 3000)
             
         except Exception as e:
