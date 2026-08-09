@@ -8,7 +8,12 @@
             "program": "${workspaceFolder}/main.py",
             "console": "integratedTerminal",
             "cwd": "${workspaceFolder}",
-            "python": "${command:python.interpreterPath}"
+            "python": "${command:python.interpreterPath}",
+            "preLaunchTask": "start-xvfb",
+            "env": {
+                "DISPLAY": ":99",
+                "QT_QPA_PLATFORM": "xcb"
+            }
         },
         {
             "name": "运行 PyQt 应用 (venv + noVNC)",
@@ -18,7 +23,11 @@
             "console": "integratedTerminal",
             "cwd": "${workspaceFolder}",
             "python": "${command:python.interpreterPath}",
-            "preLaunchTask": "运行 PyQt 应用 (noVNC)"
+            "preLaunchTask": "start-xvfb",
+            "env": {
+                "DISPLAY": ":99",
+                "QT_QPA_PLATFORM": "xcb"
+            }
         }
     ]
 }

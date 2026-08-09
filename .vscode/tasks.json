@@ -31,17 +31,7 @@
       "label": "start-xvfb",
       "type": "shell",
       "command": "./dev/start_xvfb.sh",
-      "isBackground": true,
-      "problemMatcher": {
-        "pattern": {
-          "regexp": "^$"
-        },
-        "background": {
-          "activeOnStart": true,
-          "beginsPattern": "xvfb-start:",
-          "endsPattern": "xvfb-ready"
-        }
-      },
+      "problemMatcher": [],
       "presentation": {
         "reveal": "always"
       }
@@ -70,11 +60,11 @@
         "isDefault": true
       },
       "problemMatcher": {
-        "pattern": [
-          {
-            "regexp": "^$"
-          }
-        ],
+        "pattern": {
+          "regexp": "^\\[NO_PROBLEM_MATCHER\\].*$",
+          "file": 1,
+          "message": 1
+        },
         "background": {
           "activeOnStart": true,
           "beginsPattern": "run_gui: DISPLAY=",
@@ -104,7 +94,8 @@
       "isBackground": true,
       "problemMatcher": {
         "pattern": {
-          "regexp": "^$"
+          "regexp": "novnc-start: (.*)",
+          "message": 1
         },
         "background": {
           "activeOnStart": true,
