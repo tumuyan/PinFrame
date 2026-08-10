@@ -23,6 +23,7 @@ from ui.canvas_border_settings import CanvasBorderSettingsDialog
 from ui.utils.icon_generator import IconGenerator
 from i18n.manager import i18n
 from utils.debug_config import import_debug
+from core.history import HistoryManager
 
 class MainWindow(QMainWindow):
     def __init__(self):
@@ -32,6 +33,15 @@ class MainWindow(QMainWindow):
         # State
         self.current_project_path = None
         self.is_dirty = False
+        # 操作历史（撤销/重做）
+        self.history = HistoryManager(max_entries=200)
+        self._history_suspend = False
+        # 连续操作（拖拽/连发/连续调节）合并窗口
+        self._history_merging = False
+        self._history_merge_timer = QTimer(self)
+        self._history_merge_timer.setSingleShot(True)
+        self._history_merge_timer.setInterval(600)
+        self._history_merge_timer.timeout.connect(self._close_history_merge_window)
         self.settings = QSettings("tumuyan", "PinFrame")
         self.current_theme = self.settings.value("theme", "dark")
         self.current_lang = self.settings.value("language", "zh_CN")
@@ -61,6 +71,7 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(self.canvas)
         self.canvas.transform_changed.connect(self.on_canvas_transform_changed)
         self.canvas.scale_change_requested.connect(self.on_canvas_scale_requested)
+        self.canvas.drag_started.connect(lambda: self._open_history_merge_window(i18n.t("hist_edit_move")))
 
         # Dock Widget (Timeline)
         self.timeline_dock = QDockWidget(i18n.t("dock_timeline"), self)
@@ -90,6 +101,22 @@ class MainWindow(QMainWindow):
         self.property_dock.setObjectName("PropertyDock")
         self.property_panel = PropertyPanel()
         self.property_panel.frame_data_changed.connect(self.on_property_changed)
+        self.property_panel.repeat_requested.connect(self.repeat_last_move)
+        self.property_panel.rev_repeat_requested.connect(self.reverse_repeat_last_move)
+        # edit_started 携带具体操作类型，映射为细化的历史记录描述
+        self._edit_type_labels = {
+            "move": "hist_edit_move",
+            "rotate": "hist_edit_rotate",
+            "scale": "hist_edit_scale",
+            "mirror_h": "hist_edit_mirror_h",
+            "mirror_v": "hist_edit_mirror_v",
+            "target_size": "hist_edit_target_size",
+            "aspect": "hist_edit_aspect",
+            "fit_width": "hist_edit_fit_width",
+            "fit_height": "hist_edit_fit_height",
+            "align": "hist_edit_align",
+        }
+        self.property_panel.edit_started.connect(self._on_property_edit_started)
         
         # Init settings
         self.property_panel.set_project_info(self.project.width, self.project.height)
@@ -549,6 +576,326 @@ class MainWindow(QMainWindow):
             self.is_dirty = True
             self.update_title()
 
+    def _set_dirty_state(self, dirty: bool):
+        """按指定值设置未保存状态并刷新窗口标题。"""
+        if bool(self.is_dirty) != bool(dirty):
+            self.is_dirty = bool(dirty)
+            self.update_title()
+
+    # ------------------------------------------------------------------
+    # 操作历史（撤销 / 重做 / 历史跳转）
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _clone_frame(f) -> FrameData:
+        """深拷贝单帧数据（用于快照与还原，避免共享可变对象污染历史）。"""
+        return FrameData(
+            file_path=f.file_path,
+            scale=f.scale,
+            position=tuple(f.position),
+            rotation=f.rotation,
+            aspect_ratio=f.aspect_ratio,
+            target_resolution=tuple(f.target_resolution) if f.target_resolution else None,
+            is_disabled=f.is_disabled,
+            crop_rect=tuple(f.crop_rect) if f.crop_rect else None,
+        )
+
+    def _capture_snapshot(self):
+        """抓取当前项目状态的深拷贝快照（帧数据与画布设置）。"""
+        live_frames = self.timeline.get_all_frames()
+        # 记录参考帧在 frames 中的下标，供撤销/重做时按下标精确定位恢复
+        ref_index = None
+        if self.reference_frame is not None:
+            for i, f in enumerate(live_frames):
+                if f is self.reference_frame:
+                    ref_index = i
+                    break
+        return {
+            "fps": self.project.fps,
+            "width": self.project.width,
+            "height": self.project.height,
+            "background_color": self.project.background_color,
+            "is_dirty": self.is_dirty,
+            "reference_frame": self.reference_frame.file_path if self.reference_frame else None,
+            "reference_frame_index": ref_index,
+            "frames": [self._clone_frame(f) for f in live_frames],
+        }
+
+    def _apply_snapshot(self, snap):
+        """将快照应用到当前项目（帧数据与画布设置），并刷新所有视图。"""
+        # 应用快照期间挂起历史记录，避免 UI 刷新触发的信号污染历史
+        self._history_suspend = True
+        try:
+            self._apply_snapshot_inner(snap)
+        finally:
+            self._history_suspend = False
+            self._history_merge_timer.stop()
+            self._history_merging = False
+
+    def _apply_snapshot_inner(self, snap):
+        """_apply_snapshot 的实际逻辑（供挂起/恢复包装）。"""
+        self.project.fps = snap.get("fps", self.project.fps)
+        self.project.width = snap.get("width", self.project.width)
+        self.project.height = snap.get("height", self.project.height)
+        self.project.background_color = snap.get("background_color", self.project.background_color)
+
+        self.fps_spin.setValue(self.project.fps)
+        self.canvas.set_project_settings(self.project.width, self.project.height)
+        self.property_panel.set_project_info(self.project.width, self.project.height)
+
+        frames = snap.get("frames", [])
+        self.timeline.clear()
+        # 克隆快照中的帧对象，避免后续编辑污染历史快照
+        for frame in frames:
+            new_frame = self._clone_frame(frame)
+            # 尺寸仅供视图展示；add_frame 走模型插入，视图会在 _on_frames_inserted 中
+            # 自行读取所需尺寸，这里传入的 orig_w/orig_h 会被丢弃，故不再做 QImageReader 读取。
+            w, h = (new_frame.crop_rect[2], new_frame.crop_rect[3]) if new_frame.crop_rect else (0, 0)
+            self.timeline.add_frame(os.path.basename(new_frame.file_path), new_frame, w, h)
+
+        # 帧插入时缩略图已按 file_path/crop_rect 生成并写入缓存；此处仅刷新（复用缓存），
+        # 不再 _clear_thumbnail_cache()，避免对无 crop_rect 的帧从磁盘重复加载原图。
+        self.timeline.grid_view.refresh_all_items()
+
+        # 参考帧：按快照中保存的路径重新映射到新的时间轴帧对象，避免悬空引用
+        live_frames = self.timeline.get_all_frames()
+
+        if frames:
+            self.timeline.model.set_selection([0])
+            self.canvas.set_selected_frames([live_frames[0]])
+            self.property_panel.set_selection([live_frames[0]])
+        else:
+            self.canvas.set_selected_frames([])
+            self.property_panel.set_selection([])
+
+        ref_path = snap.get("reference_frame")
+        # 优先按快照中记录的参考帧下标精确定位，避免同路径多帧被错误映射到第一个对象；
+        # 下标失效时再按路径兜底匹配。
+        new_ref = None
+        if ref_path:
+            ref_index = snap.get("reference_frame_index")
+            if ref_index is not None and 0 <= ref_index < len(live_frames) \
+                    and live_frames[ref_index].file_path == ref_path:
+                new_ref = live_frames[ref_index]
+            else:
+                new_ref = next((f for f in live_frames if f.file_path == ref_path), None)
+        if new_ref is not None:
+            self.reference_frame = new_ref
+            self.canvas.set_reference_frame(self.reference_frame)
+            self.timeline.set_visual_reference_frame(self.reference_frame)
+            if hasattr(self, 'set_ref_action'):
+                self.set_ref_action.setText(i18n.t("action_cancel_reference"))
+        else:
+            self.reference_frame = None
+            self.canvas.set_reference_frame(None)
+            self.timeline.set_visual_reference_frame(None)
+            if hasattr(self, 'set_ref_action'):
+                self.set_ref_action.setText(i18n.t("action_set_reference"))
+
+        # 恢复快照中记录的未保存状态，避免撤销回已保存状态后仍被标记为有未保存修改
+        self._set_dirty_state(bool(snap.get("is_dirty", True)))
+
+        self.canvas.update()
+        self.update_onion_state()
+        self.update_menu_state()
+
+    # -- 连续操作合并窗口 ------------------------------------------------
+    # 拖拽、连发移动、连续调节数值等会高频触发，开启合并窗口后，
+    # 同一窗口内只保留一条历史记录（始终以窗口打开时的状态为 before），
+    # 在最后一次事件后约 600ms 无新事件时由定时器自动提交。
+    def _on_property_edit_started(self, edit_type):
+        """属性面板开始一次编辑：把 edit_type 映射为细化的历史描述。"""
+        label_key = self._edit_type_labels.get(edit_type, "hist_edit")
+        self._open_history_merge_window(i18n.t(label_key))
+
+    def _open_history_merge_window(self, label):
+        """进入（或刷新）连续操作合并窗口，label 为操作名称。
+
+        已处于合并窗口时：
+        - 若操作类型与当前一致，仅刷新计时器（合并为一条历史，避免刷屏）；
+        - 若操作类型发生变化，先提交当前记录，再以新类型开启新窗口，
+          避免“移动+旋转”等不同操作被错误地合并为一条历史。
+        """
+        if self._history_suspend:
+            return
+        if self._history_merging:
+            cur = getattr(self, '_history_merge_label', None)
+            if cur != label:
+                self._close_history_merge_window()
+            else:
+                self._history_merge_timer.start()
+                return
+        self._history_merging = True
+        self._history_merge_before = self._capture_snapshot()
+        self._history_merge_label = label
+        self._history_merge_timer.start()
+
+    def _close_history_merge_window(self):
+        """立即关闭合并窗口并提交一条历史记录（由定时器或外部调用）。"""
+        if not self._history_merging:
+            return
+        self._history_merge_timer.stop()
+        self._history_merging = False
+        label = getattr(self, '_history_merge_label', None)
+        before = self._history_merge_before
+        self._history_merge_before = None
+        after = self._capture_snapshot()
+        if label is None or before == after:
+            return
+        self.history.push(label, before, after)
+        self._refresh_history_menu()
+        self.statusBar().showMessage(i18n.t("msg_history_recorded").format(label=label), 2000)
+
+    def _flush_pending_history(self):
+        """提交未完成的合并窗口（在其它非连续操作前调用，避免污染）。"""
+        if self._history_merging:
+            self._close_history_merge_window()
+
+    def record_history(self, label, before=None, after=None):
+        """记录一次完整的历史操作。before/after 缺省时自动抓取当前状态。"""
+        if self._history_suspend:
+            return
+        self._flush_pending_history()
+        if before is None:
+            before = self._capture_snapshot()
+        if after is None:
+            after = self._capture_snapshot()
+        # 跳过无实际变化的记录
+        if before == after:
+            return
+        self.history.push(label, before, after)
+        self._refresh_history_menu()
+        self.statusBar().showMessage(i18n.t("msg_history_recorded").format(label=label), 2000)
+
+    def undo_history(self):
+        self._flush_pending_history()
+        result = self.history.undo()
+        if result is None:
+            self.statusBar().showMessage(i18n.t("msg_undo_empty"), 2000)
+            return
+        label, snapshot = result
+        self._apply_snapshot(snapshot)
+        self._refresh_history_menu()
+        self.statusBar().showMessage(i18n.t("msg_history_undone").format(label=label), 3000)
+
+    def redo_history(self):
+        self._flush_pending_history()
+        result = self.history.redo()
+        if result is None:
+            self.statusBar().showMessage(i18n.t("msg_redo_empty"), 2000)
+            return
+        label, snapshot = result
+        self._apply_snapshot(snapshot)
+        self._refresh_history_menu()
+        self.statusBar().showMessage(i18n.t("msg_history_redone").format(label=label), 3000)
+
+    def jump_history_to(self, index):
+        self._flush_pending_history()
+        result = self.history.jump_to(index)
+        if result is None:
+            return
+        label, snapshot = result
+        self._apply_snapshot(snapshot)
+        self._refresh_history_menu()
+        self.statusBar().showMessage(i18n.t("msg_history_jumped").format(label=label), 3000)
+
+    def clear_history(self):
+        self._flush_pending_history()
+        self.history.clear()
+        self._refresh_history_menu()
+        self.statusBar().showMessage(i18n.t("msg_history_cleared"), 2000)
+
+    def _refresh_history_menu(self):
+        """增量刷新历史菜单：仅增删/更新变化的历史记录子项，避免每次全量重建。
+
+        撤销/重做已在编辑菜单中提供，这里只展示历史记录列表与「清空历史」。
+        """
+        if not hasattr(self, 'history_menu'):
+            return
+
+        self.undo_action.setEnabled(self.history.can_undo)
+        self.redo_action.setEnabled(self.history.can_redo)
+
+        # 首次调用时初始化持久化的菜单子项（条目 QAction、分隔符、空态提示、清空按钮）
+        if not hasattr(self, '_history_entry_actions'):
+            self._history_entry_actions = []
+            self._history_clear_action = None
+            self._history_separator_action = None
+            self._history_empty_action = None
+
+        entries = self.history.entries
+        count = len(entries)
+        index = self.history.index
+
+        # ---- 1. 同步历史条目数量：移除多余项 ----
+        while len(self._history_entry_actions) > count:
+            action = self._history_entry_actions.pop()
+            self.history_menu.removeAction(action)
+            action.deleteLater()
+
+        # ---- 2. 同步空态提示（空历史时显示） ----
+        if count == 0:
+            # 空态：仅保留「暂无历史」提示，隐藏底部分隔符与清空按钮
+            if self._history_empty_action is None:
+                self._history_empty_action = QAction(i18n.t("msg_history_empty"), self)
+                self._history_empty_action.setEnabled(False)
+                self.history_menu.addAction(self._history_empty_action)
+            self._remove_history_menu_footer()
+            return
+
+        if self._history_empty_action is not None:
+            self.history_menu.removeAction(self._history_empty_action)
+            self._history_empty_action.deleteLater()
+            self._history_empty_action = None
+
+        # ---- 3. 增量更新/追加历史条目子项（从旧到新，最近的位于底部） ----
+        for i, entry in enumerate(entries):
+            if i < len(self._history_entry_actions):
+                # 已有子项：仅更新文本与勾选/提示，不重建 QAction
+                action = self._history_entry_actions[i]
+                action.setText(entry.label)
+            else:
+                # 新增（纯追加）子项：新建并插入到分隔符/清空按钮之前，保持顺序
+                action = QAction(entry.label, self)
+                action.setCheckable(True)
+                action.triggered.connect(lambda checked, idx=i: self.jump_history_to(idx))
+                # 首次追加前先确保分隔符与「清空历史」已就位，以便插入其前
+                self._ensure_history_menu_footer()
+                if self._history_separator_action is not None:
+                    self.history_menu.insertAction(self._history_separator_action, action)
+                else:
+                    self.history_menu.addAction(action)
+                self._history_entry_actions.append(action)
+
+            action.setChecked(i == index)
+            action.setToolTip(i18n.t("msg_history_tooltip_done") if i <= index
+                              else i18n.t("msg_history_tooltip_redoable"))
+
+        # ---- 4. 确保分隔符与「清空历史」位于菜单底部 ----
+        self._ensure_history_menu_footer()
+        self._history_clear_action.setEnabled(count > 0)
+
+    def _ensure_history_menu_footer(self):
+        """确保历史菜单底部有分隔符与「清空历史」子项（幂等）。"""
+        if self._history_clear_action is not None:
+            return
+        self._history_separator_action = self.history_menu.addSeparator()
+        self._history_clear_action = QAction(i18n.t("action_history_clear"), self)
+        self._history_clear_action.triggered.connect(self.clear_history)
+        self.history_menu.addAction(self._history_clear_action)
+
+    def _remove_history_menu_footer(self):
+        """移除历史菜单底部的分隔符与「清空历史」子项（空态时调用，幂等）。"""
+        if self._history_clear_action is None:
+            return
+        if self._history_separator_action is not None:
+            self.history_menu.removeAction(self._history_separator_action)
+            self._history_separator_action.deleteLater()
+            self._history_separator_action = None
+        self.history_menu.removeAction(self._history_clear_action)
+        self._history_clear_action.deleteLater()
+        self._history_clear_action = None
+
     def create_actions(self):
         style = self.style()
         
@@ -616,6 +963,17 @@ class MainWindow(QMainWindow):
         self.refresh_file_action_labels()
 
         # Edit Actions
+        # 撤销 / 重做
+        self.undo_action = QAction(i18n.t("action_undo"), self)
+        self.undo_action.setShortcut(QKeySequence.StandardKey.Undo)
+        self.undo_action.triggered.connect(self.undo_history)
+        self.undo_action.setEnabled(False)
+
+        self.redo_action = QAction(i18n.t("action_redo"), self)
+        self.redo_action.setShortcut(QKeySequence.StandardKey.Redo)
+        self.redo_action.triggered.connect(self.redo_history)
+        self.redo_action.setEnabled(False)
+
         self.copy_props_action = QAction(i18n.t("action_copy_props"), self)
         self.copy_props_action.setShortcut(QKeySequence.StandardKey.Copy)
         self.copy_props_action.triggered.connect(self.copy_frame_properties)
@@ -977,6 +1335,10 @@ class MainWindow(QMainWindow):
         
         # Edit Menu
         edit_menu = menubar.addMenu(i18n.t("menu_edit"))
+        # 撤销 / 重做
+        edit_menu.addAction(self.undo_action)
+        edit_menu.addAction(self.redo_action)
+        edit_menu.addSeparator()
         edit_menu.addAction(self.copy_props_action)
         edit_menu.addAction(self.paste_props_action)
         edit_menu.addSeparator()
@@ -990,6 +1352,11 @@ class MainWindow(QMainWindow):
         repeat_menu = edit_menu.addMenu(i18n.t("menu_repeat_delay"))
         for ms in [0, 100, 250, 500, 1000]:
             repeat_menu.addAction(self.repeat_actions[ms])
+        edit_menu.addSeparator()
+
+        # 历史菜单组（撤销 / 重做 + 历史记录列表）
+        self.history_menu = edit_menu.addMenu(i18n.t("menu_history"))
+        self._refresh_history_menu()
         
         # Layout Menu
         layout_menu = menubar.addMenu(i18n.t("menu_layout"))
@@ -1211,6 +1578,10 @@ class MainWindow(QMainWindow):
         # toolbar.addAction(self.save_as_action) # Removed as per Cycle 33
         toolbar.addAction(self.load_action)
         toolbar.addSeparator()
+        # 撤销 / 重做
+        toolbar.addAction(self.undo_action)
+        toolbar.addAction(self.redo_action)
+        toolbar.addSeparator()
         toolbar.addAction(self.action_toggle_wheel_mode)
         toolbar.addSeparator()
         toolbar.addAction(self.settings_action)
@@ -1259,6 +1630,8 @@ class MainWindow(QMainWindow):
             prop_rescale = dlg.prop_rescale_check.isChecked()
             
             if new_w != self.project.width or new_h != self.project.height:
+                self._flush_pending_history()
+                before = self._capture_snapshot()
                 
                 # Proportional Rescaling
                 if prop_rescale:
@@ -1296,6 +1669,7 @@ class MainWindow(QMainWindow):
                 self.canvas.set_project_settings(new_w, new_h)
                 self.property_panel.set_project_info(new_w, new_h)
                 self.mark_dirty()
+                self.record_history(i18n.t("hist_canvas_resize"), before=before)
                 
                 # Refresh UI
                 self.canvas.update()
@@ -1344,6 +1718,8 @@ class MainWindow(QMainWindow):
 
         import_debug(f"[Import] Successfully added {added_count} files")
 
+        self._flush_pending_history()
+        before = self._capture_snapshot()
         # Insert logic - now uses TimelineModel
         # TimelineWidget handles both data and view updates
         if index == -1 or index >= self.timeline.get_frame_count():
@@ -1358,6 +1734,7 @@ class MainWindow(QMainWindow):
 
         self.mark_dirty()
         self.timeline.refresh_current_items()
+        self.record_history(i18n.t("hist_add_frames"), before=before)
 
     def copy_frame_properties(self):
         # Use unified interface to get selected frames
@@ -1387,6 +1764,8 @@ class MainWindow(QMainWindow):
 
         selected_indices = self.timeline.get_selected_indices_from_current_view()
 
+        self._flush_pending_history()
+        before = self._capture_snapshot()
         count = 0
         for frame_data in selected_frames:
             frame_data.scale = self.clipboard_frame_properties["scale"]
@@ -1402,6 +1781,7 @@ class MainWindow(QMainWindow):
         self.property_panel.update_ui_from_selection()
         self.mark_dirty()
         self.statusBar().showMessage(i18n.t("msg_props_pasted").format(count=count), 3000)
+        self.record_history(i18n.t("hist_paste_props"), before=before)
 
     def duplicate_frame(self):
         # Use unified interface to get selected indices
@@ -1411,6 +1791,8 @@ class MainWindow(QMainWindow):
 
         indices.sort()  # Sort in ascending order
 
+        self._flush_pending_history()
+        before = self._capture_snapshot()
         # Find the insertion point (BEFORE the first selected item)
         insert_pos = indices[0]
 
@@ -1448,6 +1830,7 @@ class MainWindow(QMainWindow):
         self.mark_dirty()
         self.timeline.refresh_current_items()
         self.statusBar().showMessage(i18n.t("msg_frames_duplicated").format(count=len(duplicates)), 3000)
+        self.record_history(i18n.t("hist_duplicate_frame"), before=before)
 
     def duplicate_frames_dialog(self):
         """Show dialog for advanced duplication with count and mode options"""
@@ -1469,6 +1852,8 @@ class MainWindow(QMainWindow):
         count = options['count']
         mode = options['mode']
 
+        self._flush_pending_history()
+        before = self._capture_snapshot()
         # Find the insertion point (BEFORE the first selected item)
         insert_pos = indices[0]
 
@@ -1531,6 +1916,7 @@ class MainWindow(QMainWindow):
         self.mark_dirty()
         self.timeline.refresh_current_items()
         self.statusBar().showMessage(i18n.t("msg_frames_duplicated").format(count=len(frames_to_insert)), 3000)
+        self.record_history(i18n.t("hist_duplicate_frame"), before=before)
 
     def remove_frame(self):
         # Use unified interface to get selected indices
@@ -1538,17 +1924,50 @@ class MainWindow(QMainWindow):
         if not indices:
             return
 
+        self._flush_pending_history()
+        before = self._capture_snapshot()
         # Remove through timeline model
         self.timeline.remove_frames_at(indices)
+
+        # 若被删帧恰为参考帧，清除参考帧
+        if self.reference_frame is not None:
+            # 从 before 快照中判断（此时帧已删除，indices 已失效，不能用模型取值）
+            removed_paths = {before["frames"][i].file_path for i in indices if 0 <= i < len(before["frames"])}
+            if self.reference_frame.file_path in removed_paths:
+                self.reference_frame = None
+                self.canvas.set_reference_frame(None)
+                self.timeline.set_visual_reference_frame(None)
+                self.set_ref_action.setText(i18n.t("action_set_reference"))
 
         self.mark_dirty()
         self.timeline.refresh_current_items() # Update numbers after removal
         self.canvas.set_selected_frames([])
         self.property_panel.set_selection([]) # Clear selection in property panel
         self.statusBar().showMessage(i18n.t("msg_frames_removed").format(count=len(indices)), 3000)
+        self.record_history(i18n.t("hist_remove_frame"), before=before)
 
     def on_frame_disabled_state_changed(self, frame_data, is_disabled):
-        # Data already updated in Timeline logic
+        # 注意：Timeline 已在发出信号前修改了 frame_data.is_disabled，
+        # 因此这里先抓取"修改后"快照，再把该帧的状态回退以重建"修改前"快照。
+        self._flush_pending_history()
+        after = self._capture_snapshot()
+        # 重建 before：仅将该帧的 is_disabled 反转回旧值
+        before = dict(after)
+        before["frames"] = []
+        for f in self.timeline.get_all_frames():
+            fb = FrameData(
+                file_path=f.file_path,
+                scale=f.scale,
+                position=tuple(f.position),
+                rotation=f.rotation,
+                aspect_ratio=f.aspect_ratio,
+                target_resolution=tuple(f.target_resolution) if f.target_resolution else None,
+                is_disabled=f.is_disabled,
+                crop_rect=tuple(f.crop_rect) if f.crop_rect else None,
+            )
+            if f is frame_data:
+                fb.is_disabled = not is_disabled
+            before["frames"].append(fb)
         self.mark_dirty()
         
         # If this frame is currently displayed in preview/canvas, update it.
@@ -1557,6 +1976,7 @@ class MainWindow(QMainWindow):
         # Update playlist if playing so that skip logic applies immediately
         if self.is_playing:
             self.update_playlist()
+        self.record_history(i18n.t("hist_toggle_disable"), before=before, after=after)
 
     def toggle_enable_disable(self, enable):
         selected = self.timeline.selectedItems()
@@ -1564,10 +1984,12 @@ class MainWindow(QMainWindow):
             return
 
         is_disabled = not enable
+        changed_frames = []
         for item in selected:
             # Use unified interface to extract frame data
             frame_data = self.timeline.extract_frame_data_from_item(item)
             if frame_data and frame_data.is_disabled != is_disabled:
+                changed_frames.append((frame_data, frame_data.is_disabled))
                 frame_data.is_disabled = is_disabled
 
                 # Update UI checkbox in list view
@@ -1576,6 +1998,26 @@ class MainWindow(QMainWindow):
                     item.setCheckState(0, Qt.CheckState.Checked if is_disabled else Qt.CheckState.Unchecked)
 
         # Refresh current view to show/hide disabled overlay
+        self._flush_pending_history()
+        after = self._capture_snapshot()
+        # 重建 before：将本次修改的帧回退为旧 is_disabled
+        before = dict(after)
+        before["frames"] = []
+        for f in self.timeline.get_all_frames():
+            fb = FrameData(
+                file_path=f.file_path,
+                scale=f.scale,
+                position=tuple(f.position),
+                rotation=f.rotation,
+                aspect_ratio=f.aspect_ratio,
+                target_resolution=tuple(f.target_resolution) if f.target_resolution else None,
+                is_disabled=f.is_disabled,
+                crop_rect=tuple(f.crop_rect) if f.crop_rect else None,
+            )
+            for cf, old_state in changed_frames:
+                if f is cf:
+                    fb.is_disabled = old_state
+            before["frames"].append(fb)
         self.timeline.refresh_current_items()
 
         self.mark_dirty()
@@ -1583,6 +2025,7 @@ class MainWindow(QMainWindow):
         if self.is_playing:
             self.update_playlist()
         self.statusBar().showMessage(i18n.t("msg_frames_enabled_disabled").format(action=i18n.t("action_enabled") if enable else i18n.t("action_disabled"), count=len(selected)), 3000)
+        self.record_history(i18n.t("hist_toggle_disable"), before=before, after=after)
 
     # --- Onion Skin & Reference Logic ---
         
@@ -2143,17 +2586,26 @@ class MainWindow(QMainWindow):
         # Update Timeline texts
         self.timeline.refresh_current_items()
         self.mark_dirty()
+        # 画布拖拽：合并窗口由 drag_started 打开，这里仅刷新计时器
+        if self._history_merging:
+            self._history_merge_timer.start()
 
     def on_property_changed(self, frame_data=None):
         self.canvas.update() # Redraw with new values
         self.timeline.refresh_current_items()
         self.mark_dirty()
+        # 属性面板连续调节：合并窗口由 edit_started 打开，这里仅刷新计时器
+        if self._history_merging:
+            self._history_merge_timer.start()
 
     def apply_relative_move(self, dx, dy, update_last=True):
         # Use unified interface to get selected frames
         selected_frames = self.timeline.get_selected_frames()
         if not selected_frames:
             return
+
+        # 连续相对移动：合并窗口
+        self._open_history_merge_window(i18n.t("hist_edit_move"))
 
         for frame_data in selected_frames:
             frame_data.position = (frame_data.position[0] + dx, frame_data.position[1] + dy)
@@ -2192,6 +2644,8 @@ class MainWindow(QMainWindow):
         if not selected_frames:
             return
 
+        self._flush_pending_history()
+        before = self._capture_snapshot()
         for frame_data in selected_frames:
             x, y = frame_data.position
             frame_data.position = (float(round(x)), float(round(y)))
@@ -2205,6 +2659,7 @@ class MainWindow(QMainWindow):
         self.property_panel.update_ui_from_selection()
         self.mark_dirty()
         self.statusBar().showMessage(i18n.t("msg_integerized"), 2000)
+        self.record_history(i18n.t("hist_integerize"), before=before)
 
     def smooth_params_dialog(self):
         """Open dialog to smooth parameters between first and last selected frames"""
@@ -2305,6 +2760,8 @@ class MainWindow(QMainWindow):
         # Get selected mode
         mode = mode_combo.currentData()
 
+        self._flush_pending_history()
+        before = self._capture_snapshot()
         # Apply smoothing
         self._apply_param_smoothing(
             selected_frames,
@@ -2326,6 +2783,7 @@ class MainWindow(QMainWindow):
         self.property_panel.update_ui_from_selection()
         self.mark_dirty()
         self.statusBar().showMessage(i18n.t("msg_params_smoothed").format(count=len(selected_frames)), 2000)
+        self.record_history(i18n.t("hist_smooth"), before=before)
 
     def _apply_param_smoothing(self, frames, first_frame, last_frame, mode,
                                 smooth_scale, smooth_pos_x, smooth_pos_y, smooth_rotation,
@@ -2464,6 +2922,8 @@ class MainWindow(QMainWindow):
         if not selected_frames:
             return
 
+        self._flush_pending_history()
+        before = self._capture_snapshot()
         for frame_data in selected_frames:
             frame_data.scale *= factor
 
@@ -2475,12 +2935,39 @@ class MainWindow(QMainWindow):
         self.canvas.update()
         self.property_panel.update_ui_from_selection()
         self.mark_dirty()
+        self.record_history(i18n.t("hist_scale"), before=before)
 
     def on_canvas_scale_requested(self, factor):
         # Use property panel to apply scale with proper anchor support
         self.property_panel.apply_rel_scale(factor)
 
     def on_order_changed(self):
+        # 视图拖拽调整顺序后，模型并未自动同步；这里把视图顺序同步回模型，
+        # 使保存、导出与撤销/重做都基于最新顺序。
+        try:
+            if self.timeline.get_view_mode() == "list":
+                root = self.timeline.list_view.invisibleRootItem()
+                view_order = [
+                    root.child(i).data(0, Qt.ItemDataRole.UserRole)
+                    for i in range(root.childCount())
+                ]
+            else:
+                view_order = [
+                    self.timeline.grid_view.item(i).data(Qt.ItemDataRole.UserRole)
+                    for i in range(self.timeline.grid_view.count())
+                ]
+        except Exception:
+            view_order = None
+
+        if view_order is not None and view_order:
+            model_frames = self.timeline.get_all_frames()
+            if view_order != model_frames:
+                self._flush_pending_history()
+                before = self._capture_snapshot()
+                # 仅当模型顺序真的发生了变更时才落历史，避免产生无效记录
+                if self.timeline.model.set_frames_order(view_order):
+                    self.record_history(i18n.t("hist_reorder"), before=before)
+
         # Refresh current items for both list and grid view (to update numbers)
         if self.timeline.get_view_mode() == "list":
             self.timeline.refresh_current_items()
@@ -2496,6 +2983,8 @@ class MainWindow(QMainWindow):
         if len(indices) < 2:
             return
 
+        self._flush_pending_history()
+        before = self._capture_snapshot()
         # Reverse selected frames through model
         from ui.timeline_model import TimelineModel
         if isinstance(self.timeline.model, TimelineModel):
@@ -2515,13 +3004,17 @@ class MainWindow(QMainWindow):
         self.canvas.update()
         self.property_panel.update_ui_from_selection()
         self.statusBar().showMessage(f"Reversed {len(indices)} frames.", 3000)
+        self.record_history(i18n.t("hist_reverse_order"), before=before)
 
     def update_fps(self, fps):
         if self.project.fps != fps:
+            self._flush_pending_history()
+            before = self._capture_snapshot()
             self.project.fps = fps
             if self.is_playing:
                 self.timer.start(1000 // self.project.fps)
             self.mark_dirty()
+            self.record_history(i18n.t("hist_set_fps"), before=before)
 
     def update_playlist(self):
         # Build Playlist
@@ -2777,6 +3270,10 @@ class MainWindow(QMainWindow):
             self.update_title()
             self.update_onion_state()
             self.update_menu_state()
+            # 新工程载入后清空操作历史
+            self._flush_pending_history()
+            self.history.clear()
+            self._refresh_history_menu()
             import_debug(f"[Import] Project loaded successfully: {len(self.project.frames)} frames")
             self.statusBar().showMessage(i18n.t("msg_project_loaded").format(path=path), 3000)
         except Exception as e:
@@ -2855,7 +3352,12 @@ class MainWindow(QMainWindow):
         # Reset project path and dirty flag
         self.current_project_path = None
         self.is_dirty = False
-        
+
+        # 新建空工程后清空操作历史
+        self._flush_pending_history()
+        self.history.clear()
+        self._refresh_history_menu()
+
         # Update UI
         self.update_title()
         self.update_menu_state()
@@ -3032,6 +3534,8 @@ class MainWindow(QMainWindow):
         self.export_sheet_action.setText(i18n.t("action_export_sheet"))
 
     def refresh_edit_action_labels(self):
+        self.undo_action.setText(i18n.t("action_undo"))
+        self.redo_action.setText(i18n.t("action_redo"))
         self.copy_props_action.setText(i18n.t("action_copy_props"))
         self.paste_props_action.setText(i18n.t("action_paste_props"))
         self.dup_frame_action.setText(i18n.t("action_dup_frame"))
@@ -3185,6 +3689,8 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event):
         if self.check_unsaved_changes():
+            # 提交未完成的连续操作历史
+            self._flush_pending_history()
             # Save settings
             self.settings.setValue("geometry", self.saveGeometry())
             self.settings.setValue("windowState", self.saveState())
@@ -3226,6 +3732,9 @@ class MainWindow(QMainWindow):
         results = dlg.get_results()
         mode = results["mode"]
         crops = results["crops"]
+
+        self._flush_pending_history()
+        before = self._capture_snapshot()
         
         if mode == "virtual":
             # Virtual Slicing: Add FrameData with crop_rect
@@ -3258,6 +3767,7 @@ class MainWindow(QMainWindow):
         self.timeline.refresh_current_items()
         import_debug(f"[Import] Sprite sheet imported: {len(crops)} slices, mode={mode}")
         self.statusBar().showMessage(i18n.t("msg_imported_slices").format(count=len(crops)), 3000)
+        self.record_history(i18n.t("hist_import_slice"), before=before)
 
     def import_gif(self):
         file, _ = QFileDialog.getOpenFileName(self, i18n.t("dlg_import_gif_title"), "", i18n.t("dlg_filter_gif"))
@@ -3265,6 +3775,11 @@ class MainWindow(QMainWindow):
             return
         
         import_debug(f"[Import] Importing GIF: {file}")
+
+        # 与 import_sprite_sheet 保持一致：抓取 before 快照前先提交挂起的合并窗口，
+        # 避免把刚导入的 GIF 帧混入拖拽历史的 after，导致两条历史快照错位。
+        self._flush_pending_history()
+        before = self._capture_snapshot()
             
         try:
             from PIL import Image, ImageSequence
@@ -3292,6 +3807,7 @@ class MainWindow(QMainWindow):
             self.timeline.refresh_current_items()
             import_debug(f"[Import] GIF imported: {count} frames extracted")
             self.statusBar().showMessage(i18n.t("msg_imported_gif").format(count=count), 3000)
+            self.record_history(i18n.t("hist_import_gif"), before=before)
             
         except Exception as e:
             msg_box = QMessageBox(self)
@@ -3454,9 +3970,12 @@ class MainWindow(QMainWindow):
         from ui.copy_assets_dialog import CopyAssetsDialog
         dlg = CopyAssetsDialog(self.project, self.current_project_path, self)
         if dlg.exec():
+            self._flush_pending_history()
+            before = self._capture_snapshot()
             self.mark_dirty()
             self.timeline.refresh_current_items() # Filenames might have changed or just to be sure
             self.canvas.update()
+            self.record_history(i18n.t("hist_copy_assets"), before=before)
 
     def add_recent_project(self, path):
         path = os.path.abspath(path)

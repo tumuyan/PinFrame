@@ -18,12 +18,27 @@ class PropertyPanel(QWidget):
     ANCHOR_CUSTOM_CANVAS = 2
     ANCHOR_CUSTOM_IMAGE = 3
     
+    # 历史记录操作类型（配合 edit_started 信号细分描述）
+    EDIT_MOVE = "move"
+    EDIT_ROTATE = "rotate"
+    EDIT_SCALE = "scale"
+    EDIT_MIRROR_H = "mirror_h"
+    EDIT_MIRROR_V = "mirror_v"
+    EDIT_TARGET_SIZE = "target_size"
+    EDIT_ASPECT = "aspect"
+    EDIT_FIT_WIDTH = "fit_width"
+    EDIT_FIT_HEIGHT = "fit_height"
+    EDIT_ALIGN = "align"
+    
     # Signals
     frame_data_changed = pyqtSignal(object) # Emits the first selected frame object
     relative_move_requested = pyqtSignal(float, float) # dx, dy
     # New signals for anchor sync
     custom_anchor_changed = pyqtSignal(QPointF) # x, y
     show_anchor_changed = pyqtSignal(bool)
+    # 用户开始编辑属性（数值框获得焦点/按下按钮），用于撤销历史记录起点。
+    # 携带操作类型（EDIT_* 常量），供历史记录细分描述（移动/旋转/缩放/镜像等）。
+    edit_started = pyqtSignal(str)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -470,7 +485,16 @@ class PropertyPanel(QWidget):
     def on_value_changed(self):
         if self.updating_ui or not self.selected_frames:
             return
-            
+
+        # 根据触发的控件细分历史记录操作类型
+        sender = self.sender()
+        if sender is self.rotation_spin:
+            edit_type = self.EDIT_ROTATE
+        elif sender is self.scale_spin:
+            edit_type = self.EDIT_SCALE
+        else:  # x_spin / y_spin 位置
+            edit_type = self.EDIT_MOVE
+        self.edit_started.emit(edit_type)
         new_scale = self.scale_spin.value()
         new_x = self.x_spin.value()
         new_y = self.y_spin.value()
@@ -601,7 +625,8 @@ class PropertyPanel(QWidget):
 
     def apply_mirror(self, axis):
         if not self.selected_frames: return
-        
+
+        self.edit_started.emit(self.EDIT_MIRROR_H if axis == "h" else self.EDIT_MIRROR_V)
         property_debug(f"[Property] Apply mirror: axis={axis}")
 
         # 1. Choose Pivot
@@ -646,6 +671,8 @@ class PropertyPanel(QWidget):
 
     def apply_rel_move(self, dx, dy):
         if not self.selected_frames: return
+
+        self.edit_started.emit(self.EDIT_MOVE)
         property_debug(f"[Property] Relative move: dx={dx:.1f}, dy={dy:.1f}")
         for f in self.selected_frames:
             f.position = (f.position[0] + dx, f.position[1] + dy)
@@ -656,7 +683,8 @@ class PropertyPanel(QWidget):
         
     def apply_rel_scale(self, factor):
         if not self.selected_frames: return
-        
+
+        self.edit_started.emit(self.EDIT_SCALE)
         property_debug(f"[Property] Relative scale: factor={factor:.4f}")
 
         # Share code: Both use self.custom_anchor_pos as pivot
@@ -677,7 +705,8 @@ class PropertyPanel(QWidget):
         
     def apply_rel_rotate(self, angle_deg):
         if not self.selected_frames: return
-        
+
+        self.edit_started.emit(self.EDIT_ROTATE)
         property_debug(f"[Property] Relative rotate: angle={angle_deg:.1f}°")
 
         rad = math.radians(angle_deg)
@@ -704,7 +733,8 @@ class PropertyPanel(QWidget):
     def on_t_w_changed(self):
         if self.updating_ui or not self.selected_frames:
             return
-            
+
+        self.edit_started.emit(self.EDIT_TARGET_SIZE)
         w = self.t_w_spin.value()
         if w <= 0: return
 
@@ -738,7 +768,8 @@ class PropertyPanel(QWidget):
     def on_t_h_changed(self):
         if self.updating_ui or not self.selected_frames:
             return
-            
+
+        self.edit_started.emit(self.EDIT_TARGET_SIZE)
         h = self.t_h_spin.value()
         if h <= 0: return
 
@@ -790,7 +821,8 @@ class PropertyPanel(QWidget):
         """Reset aspect_ratio to 1.0 for all selected frames."""
         if not self.selected_frames:
             return
-        
+
+        self.edit_started.emit(self.EDIT_ASPECT)
         for f in self.selected_frames:
             f.aspect_ratio = 1.0
         
@@ -802,7 +834,8 @@ class PropertyPanel(QWidget):
     def fit_to_canvas(self, mode):
         if not self.selected_frames:
             return
-            
+
+        self.edit_started.emit(self.EDIT_FIT_WIDTH if mode == "width" else self.EDIT_FIT_HEIGHT)
         for f in self.selected_frames:
             # 使用全局缓存获取图片
             img = image_cache.get(f.file_path)
@@ -825,7 +858,8 @@ class PropertyPanel(QWidget):
         # align_factor: 0.0 (Left/Top), 0.5 (Center), 1.0 (Right/Bottom)
         if not self.selected_frames:
             return
-            
+
+        self.edit_started.emit(self.EDIT_ALIGN)
         property_debug(f"[Property] Quick align: x={align_x_factor}, y={align_y_factor}")
             
         # Canvas Rect is centered at (0,0) in our Coordinate System logic?
@@ -1019,8 +1053,13 @@ class PropertyPanel(QWidget):
         self.repeat_requested.emit()
 
     def set_repeat_enabled(self, enabled):
-        self.btn_repeat.setEnabled(enabled)
-        self.btn_rev_repeat.setEnabled(enabled)
+        # 按钮可能未创建（旧版 UI），防御性处理
+        btn = getattr(self, 'btn_repeat', None)
+        if btn is not None:
+            btn.setEnabled(enabled)
+        btn = getattr(self, 'btn_rev_repeat', None)
+        if btn is not None:
+            btn.setEnabled(enabled)
 
     def set_repeat_interval(self, ms):
         """ ms <= 0 means disabled """

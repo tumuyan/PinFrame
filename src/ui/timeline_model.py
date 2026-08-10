@@ -319,3 +319,17 @@ class TimelineModel(QObject):
             return self._frames.index(frame_data)
         except ValueError:
             return None
+
+    def set_frames_order(self, frames: List[FrameData]) -> bool:
+        """用给定的帧顺序整体替换模型中的帧列表（用于视图拖拽排序后同步）。
+
+        注意：传入的列表应包含当前模型中的全部帧对象（同一批对象、仅顺序不同）。
+        返回是否真的发生了顺序变更（长度不符或顺序未变时返回 False）。
+        """
+        if len(frames) != len(self._frames):
+            return False
+        if frames == self._frames:
+            return False
+        self._frames = list(frames)
+        self.data_changed.emit(0, max(0, len(self._frames) - 1))
+        return True

@@ -10,6 +10,8 @@ class CanvasWidget(QWidget):
     transform_changed = pyqtSignal(object) # data_changed
     anchor_pos_changed = pyqtSignal(float, float) # x, y
     scale_change_requested = pyqtSignal(float) # factor
+    # 用户开始拖拽编辑（鼠标按下时发出，用于撤销历史记录起点）
+    drag_started = pyqtSignal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -579,6 +581,7 @@ class CanvasWidget(QWidget):
             elif event.key() == Qt.Key.Key_Down: dy = step
             
             if dx != 0 or dy != 0:
+                self.drag_started.emit()
                 for f in self.selected_frames_data:
                     old_x, old_y = f.position
                     f.position = (old_x + dx, old_y + dy)
@@ -630,6 +633,7 @@ class CanvasWidget(QWidget):
             if self.selected_frames_data:
                 self.is_dragging_image = True
                 self.last_mouse_pos = event.position()
+                self.drag_started.emit()
 
     def mouseMoveEvent(self, event):
         delta = event.position() - self.last_mouse_pos
