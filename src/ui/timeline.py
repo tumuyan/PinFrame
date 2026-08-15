@@ -340,8 +340,8 @@ class TimelineWidget(QStackedWidget):
             self.model.add_frame(frame_data)
 
     # ========== Unified interface methods (using model) ==========
-    def get_selected_indices_from_current_view(self) -> List[int]:
-        """Get selected indices from model"""
+    def get_selected_indices_from_model(self) -> List[int]:
+        """Get selected indices from the model (source of truth for selection)"""
         return self.model.get_selected_indices()
 
     def get_selected_frames(self) -> List[FrameData]:

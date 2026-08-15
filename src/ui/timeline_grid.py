@@ -418,6 +418,16 @@ class TimelineGridWidget(QListWidget, BaseTimelineView):
             self._is_dragging = True
             event.acceptProposedAction()
 
+    def _calc_insert_before(self, drop_pos, item_center) -> bool:
+        """Determine if a drop at drop_pos should insert before the target item.
+
+        In a grid (row-major layout) the Y coordinate only selects which row the
+        pointer is over (handled implicitly by itemAt). Within that row the
+        before/after decision depends solely on the X coordinate: left half of
+        the cell => insert before, right half => insert after.
+        """
+        return drop_pos.x() < item_center.x()
+
     def dragMoveEvent(self, event):
         if event.mimeData().hasUrls():
             event.accept()
@@ -432,8 +442,8 @@ class TimelineGridWidget(QListWidget, BaseTimelineView):
                 item_rect = self.visualItemRect(drop_item)
                 item_center = item_rect.center()
 
-                # Determine if drop is before or after based on position
-                if drop_pos.x() < item_center.x() and drop_pos.y() < item_center.y():
+                before = self._calc_insert_before(drop_pos, item_center)
+                if before:
                     self._drag_insert_position = (drop_index, True)  # Insert before
                 else:
                     self._drag_insert_position = (drop_index, False)  # Insert after
@@ -529,7 +539,7 @@ class TimelineGridWidget(QListWidget, BaseTimelineView):
                     drop_index = self.row(drop_item)
                     item_rect = self.visualItemRect(drop_item)
                     item_center = item_rect.center()
-                    if drop_pos.x() < item_center.x() or drop_pos.y() < item_center.y():
+                    if self._calc_insert_before(drop_pos, item_center):
                         insert_index = drop_index
                     else:
                         insert_index = drop_index + 1
@@ -544,38 +554,28 @@ class TimelineGridWidget(QListWidget, BaseTimelineView):
                     event.ignore()
                     return
 
-            # Collect the dragged items' data in ascending row order
-            dragged_items_data = []
-            for item in dragged_items:
-                dragged_items_data.append({
-                    'data': item.data(Qt.ItemDataRole.UserRole),
-                    'text': item.text(),
-                    'icon': item.icon(),
-                    'tooltip': item.toolTip(),
-                    'font': item.font(),
-                })
-
             # Calculate adjusted insert index after removal
             dragged_before_count = sum(1 for idx in selected_indices if idx < insert_index)
             remaining_count = self.count() - len(selected_indices)
             adjusted_insert_index = max(0, min(remaining_count, insert_index - dragged_before_count))
 
-            # Remove items from current positions in strict descending row order
+            # Remove items from current positions in strict descending row order,
+            # reusing the original QListWidgetItem objects (consistent with the
+            # List view's takeTopLevelItem/insertTopLevelItem approach) so that
+            # any extra item state (flags, sizeHint, custom roles, external
+            # references) is preserved.
+            taken_items = []
             for item in reversed(dragged_items):
                 r = self.row(item)
                 if r >= 0:
-                    self.takeItem(r)
+                    taken_items.append(self.takeItem(r))
+            taken_items.reverse()  # restore ascending row order
 
-            # Insert items at new position
+            # Insert items at new position, reusing the original objects
             new_items = []
-            for i, item_data in enumerate(dragged_items_data):
-                new_item = QListWidgetItem(item_data['text'])
-                new_item.setData(Qt.ItemDataRole.UserRole, item_data['data'])
-                new_item.setIcon(item_data['icon'])
-                new_item.setToolTip(item_data['tooltip'])
-                new_item.setFont(item_data['font'])
-                self.insertItem(adjusted_insert_index + i, new_item)
-                new_items.append(new_item)
+            for i, item in enumerate(taken_items):
+                self.insertItem(adjusted_insert_index + i, item)
+                new_items.append(item)
 
             event.accept()
 
@@ -602,6 +602,7 @@ class TimelineGridWidget(QListWidget, BaseTimelineView):
         """Clear drag state"""
         self._is_dragging = False
         self._drag_insert_position = None
+        self._dragged_items = []
         self.viewport().update()
 
     def startDrag(self, supportedActions):

@@ -610,7 +610,7 @@ class MainWindow(QMainWindow):
                 if f is self.reference_frame:
                     ref_index = i
                     break
-        selected_indices = self.timeline.get_selected_indices_from_current_view()
+        selected_indices = self.timeline.get_selected_indices_from_model()
         return {
             "fps": self.project.fps,
             "width": self.project.width,
@@ -1772,7 +1772,7 @@ class MainWindow(QMainWindow):
         if not selected_frames:
             return
 
-        selected_indices = self.timeline.get_selected_indices_from_current_view()
+        selected_indices = self.timeline.get_selected_indices_from_model()
 
         self._flush_pending_history()
         before = self._capture_snapshot()
@@ -1795,7 +1795,7 @@ class MainWindow(QMainWindow):
 
     def duplicate_frame(self):
         # Use unified interface to get selected indices
-        indices = self.timeline.get_selected_indices_from_current_view()
+        indices = self.timeline.get_selected_indices_from_model()
         if not indices:
             return
 
@@ -1847,7 +1847,7 @@ class MainWindow(QMainWindow):
         from ui.duplicate_dialog import DuplicateFramesDialog
 
         # Use unified interface to get selected indices
-        indices = self.timeline.get_selected_indices_from_current_view()
+        indices = self.timeline.get_selected_indices_from_model()
         if not indices:
             return
 
@@ -1930,7 +1930,7 @@ class MainWindow(QMainWindow):
 
     def remove_frame(self):
         # Use unified interface to get selected indices
-        indices = self.timeline.get_selected_indices_from_current_view()
+        indices = self.timeline.get_selected_indices_from_model()
         if not indices:
             return
 
@@ -2466,7 +2466,7 @@ class MainWindow(QMainWindow):
         onion_skins = []
         if self.onion_enabled and (self.onion_prev > 0 or self.onion_next > 0):
             # Find current frame index using unified interface
-            selected_indices = self.timeline.get_selected_indices_from_current_view()
+            selected_indices = self.timeline.get_selected_indices_from_model()
             if selected_indices:
                 index = selected_indices[0]  # Use first selected frame
 
@@ -2621,7 +2621,7 @@ class MainWindow(QMainWindow):
             frame_data.position = (frame_data.position[0] + dx, frame_data.position[1] + dy)
 
         # Update timeline display
-        selected_indices = self.timeline.get_selected_indices_from_current_view()
+        selected_indices = self.timeline.get_selected_indices_from_model()
         for idx in selected_indices:
             self.timeline.update_frame_data(idx)
 
@@ -2661,7 +2661,7 @@ class MainWindow(QMainWindow):
             frame_data.position = (float(round(x)), float(round(y)))
 
         # Update timeline display
-        selected_indices = self.timeline.get_selected_indices_from_current_view()
+        selected_indices = self.timeline.get_selected_indices_from_model()
         for idx in selected_indices:
             self.timeline.update_frame_data(idx)
 
@@ -2680,7 +2680,7 @@ class MainWindow(QMainWindow):
             return
 
         # Get selected indices (sorted)
-        selected_indices = sorted(self.timeline.get_selected_indices_from_current_view())
+        selected_indices = sorted(self.timeline.get_selected_indices_from_model())
         first_frame = selected_frames[0]
         last_frame = selected_frames[-1]
 
@@ -2938,7 +2938,7 @@ class MainWindow(QMainWindow):
             frame_data.scale *= factor
 
         # Update timeline display
-        selected_indices = self.timeline.get_selected_indices_from_current_view()
+        selected_indices = self.timeline.get_selected_indices_from_model()
         for idx in selected_indices:
             self.timeline.update_frame_data(idx)
 
@@ -3002,7 +3002,7 @@ class MainWindow(QMainWindow):
 
     def reverse_selected_frames(self):
         # Use unified interface to get selected indices
-        indices = self.timeline.get_selected_indices_from_current_view()
+        indices = self.timeline.get_selected_indices_from_model()
         if len(indices) < 2:
             return
 
@@ -3844,7 +3844,7 @@ class MainWindow(QMainWindow):
         """Helper to get list of indices based on mode."""
         if range_mode == "selected":
             # Use unified interface to get selected indices
-            return sorted(self.timeline.get_selected_indices_from_current_view())
+            return sorted(self.timeline.get_selected_indices_from_model())
         elif range_mode == "custom":
             from utils.exporter import Exporter
             return Exporter.parse_range_string(custom_range, self.timeline.get_frame_count())
