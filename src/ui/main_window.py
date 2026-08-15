@@ -2007,10 +2007,15 @@ class MainWindow(QMainWindow):
                 changed_frames.append((frame_data, frame_data.is_disabled))
                 frame_data.is_disabled = is_disabled
 
-                # Update UI checkbox in list view
-                if hasattr(item, 'setCheckState') and hasattr(item, 'column'):
-                    # QTreeWidgetItem needs column parameter
-                    item.setCheckState(0, Qt.CheckState.Checked if is_disabled else Qt.CheckState.Unchecked)
+                # Update UI checkbox to match the new disabled state.
+                # List view uses QTreeWidgetItem (checkbox on column 1);
+                # Grid view uses QListWidgetItem (setCheckState takes no column arg).
+                if hasattr(item, 'setCheckState'):
+                    state = Qt.CheckState.Checked if is_disabled else Qt.CheckState.Unchecked
+                    if isinstance(item, QTreeWidgetItem):
+                        item.setCheckState(1, state)
+                    else:
+                        item.setCheckState(state)
 
         # Refresh current view to show/hide disabled overlay
         self._flush_pending_history()
