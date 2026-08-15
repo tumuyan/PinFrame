@@ -510,11 +510,8 @@ class TimelineListView(QTreeWidget, BaseTimelineView):
 
     def update_item_display(self, item, frame_data, orig_w, orig_h):
         fname = os.path.basename(frame_data.file_path)
-        if frame_data.crop_rect:
-            x, y, w, h = frame_data.crop_rect
-            col = x // w
-            row = y // h
-            fname += f" [{col},{row}]"
+        if frame_data.slice_pos:
+            fname += f" [{frame_data.slice_pos[0]},{frame_data.slice_pos[1]}]"
         item.setText(2, fname)
 
         item.setText(3, f"{frame_data.scale:.4f}")

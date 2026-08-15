@@ -13,7 +13,8 @@ class FrameData:
     target_resolution: Optional[Tuple[int, int]] = None # Ephemeral
     is_disabled: bool = False
     crop_rect: Optional[Tuple[int, int, int, int]] = None # (x, y, w, h)
-    
+    slice_pos: Optional[Tuple[int, int]] = None # (col, row) for timeline display only, NOT a render source
+
     def to_dict(self, base_dir: Optional[str] = None):
         path = self.file_path
         if base_dir and os.path.isabs(path):
@@ -34,7 +35,8 @@ class FrameData:
             "rotation": self.rotation,
             "aspect_ratio": self.aspect_ratio,
             "is_disabled": self.is_disabled,
-            "crop_rect": self.crop_rect
+            "crop_rect": self.crop_rect,
+            "slice_pos": self.slice_pos
         }
 
     @classmethod
@@ -70,7 +72,10 @@ class FrameData:
         
         data_crop_rect = data.get("crop_rect", None)
         crop_rect = tuple(data_crop_rect) if data_crop_rect else None
-        
+
+        data_slice_pos = data.get("slice_pos", None)
+        slice_pos = tuple(data_slice_pos) if data_slice_pos else None
+
         return cls(
             file_path=file_path,
             scale=data.get("scale", 1.0),
@@ -78,7 +83,8 @@ class FrameData:
             rotation=data.get("rotation", 0.0),
             aspect_ratio=data.get("aspect_ratio", 1.0),
             is_disabled=data.get("is_disabled", data.get("is_active", False)),
-            crop_rect=crop_rect
+            crop_rect=crop_rect,
+            slice_pos=slice_pos
         )
 
 @dataclass

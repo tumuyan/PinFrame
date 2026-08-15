@@ -285,7 +285,8 @@ class TimelineModel(QObject):
                 rotation=original.rotation,
                 aspect_ratio=original.aspect_ratio,
                 is_disabled=original.is_disabled,
-                crop_rect=original.crop_rect if original.crop_rect else None
+                crop_rect=original.crop_rect if original.crop_rect else None,
+                slice_pos=original.slice_pos if original.slice_pos else None
             )
             duplicates.append(duplicate)
 

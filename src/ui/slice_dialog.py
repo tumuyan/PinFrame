@@ -189,11 +189,11 @@ class SliceImportDialog(QDialog):
         if order == "Z":
             for r in range(rows):
                 for c in range(cols):
-                    crops.append((c * cell_w, r * cell_h, cell_w, cell_h))
+                    crops.append(((c * cell_w, r * cell_h, cell_w, cell_h), c, r))
         else:
             for c in range(cols):
                 for r in range(rows):
-                    crops.append((c * cell_w, r * cell_h, cell_w, cell_h))
+                    crops.append(((c * cell_w, r * cell_h, cell_w, cell_h), c, r))
                     
         return {
             "mode": mode,

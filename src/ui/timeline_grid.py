@@ -336,11 +336,8 @@ class TimelineGridWidget(QListWidget, BaseTimelineView):
         
         # Set tooltip and display text
         fname = os.path.basename(filename)
-        if frame_data.crop_rect:
-            x, y, w, h = frame_data.crop_rect
-            col = x // w
-            row = y // h
-            fname += f" [{col},{row}]"
+        if frame_data.slice_pos:
+            fname += f" [{frame_data.slice_pos[0]},{frame_data.slice_pos[1]}]"
         
         item.setText(fname)
         item.setToolTip(fname)
@@ -369,11 +366,8 @@ class TimelineGridWidget(QListWidget, BaseTimelineView):
 
         # Update text
         fname = os.path.basename(filename)
-        if frame_data.crop_rect:
-            x, y, w, h = frame_data.crop_rect
-            col = x // w
-            row = y // h
-            fname += f" [{col},{row}]"
+        if frame_data.slice_pos:
+            fname += f" [{frame_data.slice_pos[0]},{frame_data.slice_pos[1]}]"
 
         item.setText(fname)
         item.setToolTip(fname)
@@ -740,11 +734,8 @@ class TimelineGridWidget(QListWidget, BaseTimelineView):
         item.setIcon(QIcon(thumbnail))
 
         fname = os.path.basename(frame_data.file_path)
-        if frame_data.crop_rect:
-            x, y, w, h = frame_data.crop_rect
-            col = x // w
-            row = y // h
-            fname += f" [{col},{row}]"
+        if frame_data.slice_pos:
+            fname += f" [{frame_data.slice_pos[0]},{frame_data.slice_pos[1]}]"
 
         item.setText(fname)
         item.setToolTip(fname)

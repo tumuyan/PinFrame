@@ -598,6 +598,7 @@ class MainWindow(QMainWindow):
             target_resolution=tuple(f.target_resolution) if f.target_resolution else None,
             is_disabled=f.is_disabled,
             crop_rect=tuple(f.crop_rect) if f.crop_rect else None,
+            slice_pos=tuple(f.slice_pos) if f.slice_pos else None,
         )
 
     def _capture_snapshot(self):
@@ -1820,7 +1821,8 @@ class MainWindow(QMainWindow):
                 rotation=orig_data.rotation,
                 target_resolution=orig_data.target_resolution,
                 is_disabled=orig_data.is_disabled,
-                crop_rect=orig_data.crop_rect
+                crop_rect=orig_data.crop_rect,
+                slice_pos=orig_data.slice_pos if orig_data.slice_pos else None
             )
 
             duplicates.append(new_data)
@@ -1886,7 +1888,8 @@ class MainWindow(QMainWindow):
                         rotation=orig_data.rotation,
                         target_resolution=orig_data.target_resolution,
                         is_disabled=orig_data.is_disabled,
-                        crop_rect=orig_data.crop_rect
+                        crop_rect=orig_data.crop_rect,
+                        slice_pos=orig_data.slice_pos if orig_data.slice_pos else None
                     )
 
                     frames_to_insert.append(new_data)
@@ -1906,7 +1909,8 @@ class MainWindow(QMainWindow):
                         rotation=orig_data.rotation,
                         target_resolution=orig_data.target_resolution,
                         is_disabled=orig_data.is_disabled,
-                        crop_rect=orig_data.crop_rect
+                        crop_rect=orig_data.crop_rect,
+                        slice_pos=orig_data.slice_pos if orig_data.slice_pos else None
                     )
 
                     frames_to_insert.append(new_data)
@@ -1974,6 +1978,7 @@ class MainWindow(QMainWindow):
                 target_resolution=tuple(f.target_resolution) if f.target_resolution else None,
                 is_disabled=f.is_disabled,
                 crop_rect=tuple(f.crop_rect) if f.crop_rect else None,
+                slice_pos=tuple(f.slice_pos) if f.slice_pos else None,
             )
             if f is frame_data:
                 fb.is_disabled = not is_disabled
@@ -2023,6 +2028,7 @@ class MainWindow(QMainWindow):
                 target_resolution=tuple(f.target_resolution) if f.target_resolution else None,
                 is_disabled=f.is_disabled,
                 crop_rect=tuple(f.crop_rect) if f.crop_rect else None,
+                slice_pos=tuple(f.slice_pos) if f.slice_pos else None,
             )
             for cf, old_state in changed_frames:
                 if f is cf:
@@ -3762,8 +3768,8 @@ class MainWindow(QMainWindow):
         if mode == "virtual":
             # Virtual Slicing: Add FrameData with crop_rect
             # 只加载一次图片（用于验证）
-            for crop in crops:
-                frame = FrameData(file_path=file, crop_rect=crop)
+            for crop, col, row in crops:
+                frame = FrameData(file_path=file, crop_rect=crop, slice_pos=(col, row))
                 self.timeline.add_frame(os.path.basename(file), frame, crop[2], crop[3])
                 
         else:
@@ -3777,7 +3783,8 @@ class MainWindow(QMainWindow):
             from PIL import Image
             src = Image.open(file).convert("RGBA")
             
-            for i, crop in enumerate(crops):
+            for i, crop_item in enumerate(crops):
+                crop, col, row = crop_item
                 x, y, w, h = crop
                 part = src.crop((x, y, x + w, y + h))
                 out_path = os.path.join(slice_dir, f"{base_name}_{i:03d}.png")
