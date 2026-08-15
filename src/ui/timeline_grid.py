@@ -1,6 +1,6 @@
 from PyQt6.QtWidgets import QListWidget, QListWidgetItem, QAbstractItemView, QMenu
-from PyQt6.QtCore import Qt, pyqtSignal, QSize, QTimer, QPoint, QRectF
-from PyQt6.QtGui import QColor, QImage, QPixmap, QPainter, QBrush, QPen, QFont, QIcon, QAction
+from PyQt6.QtCore import Qt, pyqtSignal, QSize, QTimer, QPoint, QRectF, QItemSelectionModel, QModelIndex, QMimeData
+from PyQt6.QtGui import QColor, QImage, QPixmap, QPainter, QBrush, QPen, QFont, QIcon, QAction, QDrag
 from i18n.manager import i18n
 from ui.timeline_base_view import BaseTimelineView
 from ui.timeline_grid_delegate import TimelineGridDelegate
@@ -500,13 +500,20 @@ class TimelineGridWidget(QListWidget, BaseTimelineView):
             event.accept()
             self.files_dropped.emit(links, final_index)
         else:
-            # Internal drag: manually handle reordering for IconMode
-            # Get selected items (being dragged)
-            selected_items = self.selectedItems()
+            # 内部重排：完全受控，保证原有先后顺序且绝不丢帧、拖拽后恢复高亮
+            dragged_items = getattr(self, '_dragged_items', [])
+            if not dragged_items:
+                selected_items = self.selectedItems()
+                if not selected_items:
+                    self._clear_drag_state()
+                    event.ignore()
+                    return
+                dragged_items = sorted(selected_items, key=lambda item: self.row(item))
 
-            if not selected_items:
-                super().dropEvent(event)
+            selected_indices = [self.row(it) for it in dragged_items if self.row(it) >= 0]
+            if not selected_indices:
                 self._clear_drag_state()
+                event.ignore()
                 return
 
             # Use the calculated insert position from dragMoveEvent
@@ -529,47 +536,60 @@ class TimelineGridWidget(QListWidget, BaseTimelineView):
                 else:
                     insert_index = self.count()
 
-            # Get selected indices before any modifications
-            selected_indices = sorted([self.row(item) for item in selected_items])
+            # Check if drop would result in identical order
+            is_contiguous = (selected_indices[-1] - selected_indices[0] + 1 == len(selected_indices))
+            if is_contiguous:
+                if insert_index == selected_indices[0] or insert_index == selected_indices[-1] + 1:
+                    self._clear_drag_state()
+                    event.ignore()
+                    return
 
-            # Don't process if drop position is the same
-            if insert_index == selected_indices[0]:
-                self._clear_drag_state()
-                event.ignore()
-                return
-
-            # Collect the dragged items' data
+            # Collect the dragged items' data in ascending row order
             dragged_items_data = []
-            for item in selected_items:
+            for item in dragged_items:
                 dragged_items_data.append({
                     'data': item.data(Qt.ItemDataRole.UserRole),
                     'text': item.text(),
                     'icon': item.icon(),
                     'tooltip': item.toolTip(),
                     'font': item.font(),
-                    'selected': item.isSelected()
                 })
 
-            # Remove items from current positions (in reverse order to maintain indices)
-            for item in reversed(selected_items):
-                self.takeItem(self.row(item))
-
             # Calculate adjusted insert index after removal
-            # If dragged items were before the insert position, their removal shifts the insert index
             dragged_before_count = sum(1 for idx in selected_indices if idx < insert_index)
-            adjusted_insert_index = insert_index - dragged_before_count
+            remaining_count = self.count() - len(selected_indices)
+            adjusted_insert_index = max(0, min(remaining_count, insert_index - dragged_before_count))
+
+            # Remove items from current positions in strict descending row order
+            for item in reversed(dragged_items):
+                r = self.row(item)
+                if r >= 0:
+                    self.takeItem(r)
 
             # Insert items at new position
+            new_items = []
             for i, item_data in enumerate(dragged_items_data):
                 new_item = QListWidgetItem(item_data['text'])
                 new_item.setData(Qt.ItemDataRole.UserRole, item_data['data'])
                 new_item.setIcon(item_data['icon'])
                 new_item.setToolTip(item_data['tooltip'])
                 new_item.setFont(item_data['font'])
-                new_item.setSelected(item_data['selected'])
                 self.insertItem(adjusted_insert_index + i, new_item)
+                new_items.append(new_item)
 
             event.accept()
+
+            # Restore selection to newly inserted items and update currentIndex/anchor
+            self.block_selection_signals_internal(True)
+            self.clearSelection()
+            for it in new_items:
+                it.setSelected(True)
+            if new_items:
+                last_item = new_items[-1]
+                model_idx = self.model().index(self.row(last_item), 0, QModelIndex())
+                if model_idx.isValid() and self.selectionModel():
+                    self.selectionModel().setCurrentIndex(model_idx, QItemSelectionModel.SelectionFlag.NoUpdate)
+            self.block_selection_signals_internal(False)
 
             # Clear drag state
             self._clear_drag_state()
@@ -585,8 +605,30 @@ class TimelineGridWidget(QListWidget, BaseTimelineView):
         self.viewport().update()
 
     def startDrag(self, supportedActions):
-        # Override to ensure proper drag behavior
-        super().startDrag(supportedActions)
+        selected_items = self.selectedItems()
+        if not selected_items:
+            return
+        # 严格按当前行号升序排列被拖拽的项目，避免受用户选择顺序影响
+        sorted_items = sorted(selected_items, key=lambda item: self.row(item))
+        self._dragged_items = sorted_items
+        self._is_dragging = True
+
+        drag = QDrag(self)
+        mime_data = QMimeData()
+        mime_data.setData("application/x-pinframe-internal-reorder", b"reorder")
+        drag.setMimeData(mime_data)
+
+        if sorted_items:
+            icon = sorted_items[0].icon()
+            if not icon.isNull():
+                pixmap = icon.pixmap(QSize(self.thumbnail_width, self.thumbnail_height))
+                if not pixmap.isNull():
+                    drag.setPixmap(pixmap)
+
+        # 执行拖拽（关键：不调用 super().startDrag，杜绝 Qt 内部二次删除导致帧消失）
+        drag.exec(Qt.DropAction.MoveAction)
+        self._dragged_items = []
+        self._clear_drag_state()
     
     def wheelEvent(self, event):
         """Handle mouse wheel for thumbnail size adjustment (with Ctrl key)"""

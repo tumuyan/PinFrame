@@ -1,5 +1,5 @@
 from PyQt6.QtWidgets import QStackedWidget, QListWidgetItem, QTreeWidgetItem
-from PyQt6.QtCore import Qt, pyqtSignal, QTimer
+from PyQt6.QtCore import Qt, pyqtSignal, QTimer, QItemSelectionModel, QModelIndex
 from i18n.manager import i18n
 from ui.timeline_grid import TimelineGridWidget
 from ui.timeline_list import TimelineListView
@@ -100,30 +100,26 @@ class TimelineWidget(QStackedWidget):
         if mode == "list":
             self.setCurrentWidget(self.list_view)
             self.current_view_mode = "list"
+            # Refresh list view with current data (in-place)
+            self.list_view.refresh_current_items()
             # Sync selection from model to list view
             selected_indices = self.model.get_selected_indices()
             # Block ALL Qt signals first
             self._block_all_signals()
             self.list_view.clearSelection()
-            for idx in selected_indices:
-                if idx < self.list_view.topLevelItemCount():
-                    item = self.list_view.topLevelItem(idx)
-                    item.setSelected(True)
+            self._apply_selection_to_view(selected_indices)
             self._unblock_all_signals()
         elif mode == "grid":
             self.setCurrentWidget(self.grid_view)
             self.current_view_mode = "grid"
-            # Refresh grid view with current data
-            self.refresh_current_items()
+            # Refresh grid view with current data (in-place)
+            self.grid_view.refresh_current_items()
             # Sync selection from model to grid view
             selected_indices = self.model.get_selected_indices()
             # Block ALL Qt signals first
             self._block_all_signals()
             self.grid_view.clearSelection()
-            for idx in selected_indices:
-                if idx < self.grid_view.count():
-                    item = self.grid_view.item(idx)
-                    item.setSelected(True)
+            self._apply_selection_to_view(selected_indices)
             self._unblock_all_signals()
 
     def get_view_mode(self):
@@ -194,9 +190,10 @@ class TimelineWidget(QStackedWidget):
         """Handle frame movement from model"""
         timeline_debug(f"[Timeline] Frames moved from {from_index} to {to_index}, count: {count}")
         # Rebuild both views
-        # This is simpler than moving individual items
         total_frames = self.model.get_frame_count()
+        selected_indices = self.model.get_selected_indices()
 
+        self._block_all_signals()
         # Rebuild list view
         self.list_view.clear()
         for i in range(total_frames):
@@ -215,6 +212,9 @@ class TimelineWidget(QStackedWidget):
             if frame_data:
                 filename = os.path.basename(frame_data.file_path)
                 self.grid_view.add_frame(filename, frame_data, i)
+
+        self._apply_selection_to_view(selected_indices)
+        self._unblock_all_signals()
 
     def _on_data_changed(self, start_index: int, end_index: int):
         """Handle frame data change from model"""
@@ -400,12 +400,17 @@ class TimelineWidget(QStackedWidget):
         self.grid_view.refresh_ui_text()
 
     def refresh_current_items(self):
-        """Refresh all items in current view"""
+        """Refresh all items in current view in-place (without clearing/rebuilding)"""
         if self.current_view_mode == "list":
-            # Rebuild list view from model
+            self.list_view.refresh_current_items()
+        else:
+            self.grid_view.refresh_current_items()
+
+    def rebuild_current_view(self):
+        """Full rebuild of current view from model (only when structure/order requires)"""
+        if self.current_view_mode == "list":
             self._rebuild_list_view()
         else:
-            # Rebuild grid view from model
             self._rebuild_grid_view()
 
     def _rebuild_list_view(self):
@@ -479,22 +484,46 @@ class TimelineWidget(QStackedWidget):
         self.grid_view.block_selection_signals_internal(False)
 
     def _apply_selection_to_view(self, selected_indices):
-        """Apply selection indices to the current view"""
+        """Apply selection indices to the current view and sync currentIndex/anchor"""
+        selected_set = selected_indices if isinstance(selected_indices, set) else set(selected_indices)
+
         if self.current_view_mode == "list":
-            # Use optimized set-based method for list view
-            if isinstance(selected_indices, set):
-                self.list_view._apply_selection_from_set(selected_indices)
+            # Apply selection to list items
+            self.list_view._apply_selection_from_set(selected_set)
+
+            # Sync currentIndex & anchor for Shift/Ctrl range selection
+            if selected_set:
+                target_idx = max(selected_set)
+                if 0 <= target_idx < self.list_view.topLevelItemCount():
+                    model_idx = self.list_view.model().index(target_idx, 0, QModelIndex())
+                    if model_idx.isValid() and self.list_view.selectionModel():
+                        self.list_view.selectionModel().setCurrentIndex(
+                            model_idx, QItemSelectionModel.SelectionFlag.NoUpdate
+                        )
             else:
-                self.list_view._apply_selection_from_set(set(selected_indices))
+                if self.list_view.selectionModel():
+                    self.list_view.selectionModel().clearCurrentIndex()
         else:
             # Grid view: iterate through items
             item_count = self.grid_view.count()
-            selected_set = selected_indices if isinstance(selected_indices, set) else set(selected_indices)
             for idx in range(item_count):
                 item = self.grid_view.item(idx)
                 should_select = idx in selected_set
                 if item.isSelected() != should_select:
                     item.setSelected(should_select)
+
+            # Sync currentIndex & anchor for Shift/Ctrl range selection
+            if selected_set:
+                target_idx = max(selected_set)
+                if 0 <= target_idx < self.grid_view.count():
+                    model_idx = self.grid_view.model().index(target_idx, 0, QModelIndex())
+                    if model_idx.isValid() and self.grid_view.selectionModel():
+                        self.grid_view.selectionModel().setCurrentIndex(
+                            model_idx, QItemSelectionModel.SelectionFlag.NoUpdate
+                        )
+            else:
+                if self.grid_view.selectionModel():
+                    self.grid_view.selectionModel().clearCurrentIndex()
 
     def _on_view_selection_changed(self, frames):
         """Handle selection change from views and update model"""

@@ -1,6 +1,6 @@
 from PyQt6.QtWidgets import QTreeWidget, QTreeWidgetItem, QAbstractItemView, QHeaderView, QMenu
-from PyQt6.QtCore import Qt, pyqtSignal, QTimer
-from PyQt6.QtGui import QColor, QAction
+from PyQt6.QtCore import Qt, pyqtSignal, QTimer, QItemSelectionModel, QModelIndex, QMimeData
+from PyQt6.QtGui import QColor, QAction, QDrag, QPixmap
 from i18n.manager import i18n
 from ui.timeline_base_view import BaseTimelineView
 from model.project_data import FrameData
@@ -231,17 +231,57 @@ class TimelineListView(QTreeWidget, BaseTimelineView):
 
         self._selection_debounce_timer.start()
 
+    def startDrag(self, supportedActions):
+        selected_items = self.selectedItems()
+        if not selected_items:
+            return
+        # 严格按当前行号升序排列被拖拽的项目，避免受用户选择顺序影响
+        sorted_items = sorted(selected_items, key=lambda item: self.indexOfTopLevelItem(item))
+        self._dragged_items = sorted_items
+
+        drag = QDrag(self)
+        mime_data = QMimeData()
+        mime_data.setData("application/x-pinframe-internal-reorder", b"reorder")
+        drag.setMimeData(mime_data)
+
+        # 简单的拖拽反馈图标
+        pixmap = QPixmap(100, 24)
+        pixmap.fill(QColor(60, 130, 220, 160))
+        drag.setPixmap(pixmap)
+
+        drag.exec(Qt.DropAction.MoveAction)
+        self._dragged_items = []
+
     def dragEnterEvent(self, event):
         if event.mimeData().hasUrls():
             event.accept()
+        elif event.mimeData().hasFormat("application/x-pinframe-internal-reorder"):
+            event.acceptProposedAction()
         else:
             super().dragEnterEvent(event)
 
     def dragMoveEvent(self, event):
         if event.mimeData().hasUrls():
             event.accept()
+        elif event.mimeData().hasFormat("application/x-pinframe-internal-reorder"):
+            drop_pos = event.position().toPoint()
+            drop_item = self.itemAt(drop_pos)
+            if drop_item:
+                drop_index = self.indexOfTopLevelItem(drop_item)
+                item_rect = self.visualItemRect(drop_item)
+                if drop_pos.y() < item_rect.center().y():
+                    self._drag_insert_position = (drop_index, True) # before
+                else:
+                    self._drag_insert_position = (drop_index, False) # after
+            else:
+                self._drag_insert_position = (self.topLevelItemCount(), False)
+            event.acceptProposedAction()
         else:
             super().dragMoveEvent(event)
+
+    def dragLeaveEvent(self, event):
+        self._drag_insert_position = None
+        super().dragLeaveEvent(event)
 
     def dropEvent(self, event):
         if event.mimeData().hasUrls():
@@ -266,6 +306,83 @@ class TimelineListView(QTreeWidget, BaseTimelineView):
 
             event.accept()
             self.files_dropped.emit(links, final_index)
+        elif event.mimeData().hasFormat("application/x-pinframe-internal-reorder"):
+            # 内部重排：完全受控，保证原有先后顺序且拖拽后恢复高亮
+            dragged_items = getattr(self, '_dragged_items', [])
+            if not dragged_items:
+                selected_items = self.selectedItems()
+                if not selected_items:
+                    self._drag_insert_position = None
+                    event.ignore()
+                    return
+                dragged_items = sorted(selected_items, key=lambda item: self.indexOfTopLevelItem(item))
+
+            selected_indices = [self.indexOfTopLevelItem(it) for it in dragged_items if self.indexOfTopLevelItem(it) >= 0]
+            if not selected_indices:
+                self._drag_insert_position = None
+                event.ignore()
+                return
+
+            # 计算插入位置
+            if getattr(self, '_drag_insert_position', None) is not None:
+                index, before = self._drag_insert_position
+                insert_index = index if before else index + 1
+            else:
+                item = self.itemAt(event.position().toPoint())
+                drop_pos = self.dropIndicatorPosition()
+                if item:
+                    index = self.indexOfTopLevelItem(item)
+                    if drop_pos == QAbstractItemView.DropIndicatorPosition.AboveItem:
+                        insert_index = index
+                    else:
+                        insert_index = index + 1
+                else:
+                    insert_index = self.topLevelItemCount()
+
+            # 检查连续块放置在原位的情况
+            is_contiguous = (selected_indices[-1] - selected_indices[0] + 1 == len(selected_indices))
+            if is_contiguous:
+                if insert_index == selected_indices[0] or insert_index == selected_indices[-1] + 1:
+                    self._drag_insert_position = None
+                    event.ignore()
+                    return
+
+            # 按照从前到后收集被拖拽项
+            # 在排除被拖拽项后的剩余列表中的插入位置
+            dragged_before_count = sum(1 for idx in selected_indices if idx < insert_index)
+            remaining_count = self.topLevelItemCount() - len(selected_indices)
+            target_pos = max(0, min(remaining_count, insert_index - dragged_before_count))
+
+            # 严格按照行号降序 takeTopLevelItem
+            taken_items = []
+            for it in reversed(dragged_items):
+                r = self.indexOfTopLevelItem(it)
+                if r >= 0:
+                    taken_items.append(self.takeTopLevelItem(r))
+            taken_items.reverse()  # 恢复为升序
+
+            # 在 target_pos 插入
+            for i, it in enumerate(taken_items):
+                self.insertTopLevelItem(target_pos + i, it)
+
+            event.accept()
+
+            # 恢复选中状态与 currentIndex / anchor
+            self.block_selection_signals_internal(True)
+            self.clearSelection()
+            for it in taken_items:
+                it.setSelected(True)
+            if taken_items:
+                last_item = taken_items[-1]
+                last_idx = self.indexOfTopLevelItem(last_item)
+                if last_idx >= 0 and self.selectionModel():
+                    model_idx = self.model().index(last_idx, 0, QModelIndex())
+                    if model_idx.isValid():
+                        self.selectionModel().setCurrentIndex(model_idx, QItemSelectionModel.SelectionFlag.NoUpdate)
+            self.block_selection_signals_internal(False)
+
+            self._drag_insert_position = None
+            self.order_changed.emit()
         else:
             super().dropEvent(event)
             self.flatten_tree()

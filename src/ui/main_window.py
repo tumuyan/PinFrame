@@ -610,6 +610,7 @@ class MainWindow(QMainWindow):
                 if f is self.reference_frame:
                     ref_index = i
                     break
+        selected_indices = self.timeline.get_selected_indices_from_current_view()
         return {
             "fps": self.project.fps,
             "width": self.project.width,
@@ -618,6 +619,7 @@ class MainWindow(QMainWindow):
             "is_dirty": self.is_dirty,
             "reference_frame": self.reference_frame.file_path if self.reference_frame else None,
             "reference_frame_index": ref_index,
+            "selected_indices": list(selected_indices),
             "frames": [self._clone_frame(f) for f in live_frames],
         }
 
@@ -657,14 +659,22 @@ class MainWindow(QMainWindow):
         # 不再 _clear_thumbnail_cache()，避免对无 crop_rect 的帧从磁盘重复加载原图。
         self.timeline.grid_view.refresh_all_items()
 
-        # 参考帧：按快照中保存的路径重新映射到新的时间轴帧对象，避免悬空引用
+        # 参考帧与选中项恢复
         live_frames = self.timeline.get_all_frames()
 
-        if frames:
-            self.timeline.model.set_selection([0])
-            self.canvas.set_selected_frames([live_frames[0]])
-            self.property_panel.set_selection([live_frames[0]])
+        raw_selected_indices = snap.get("selected_indices", [])
+        target_indices = [i for i in raw_selected_indices if 0 <= i < len(live_frames)]
+        if not target_indices and live_frames:
+            target_indices = [0]
+
+        if target_indices:
+            self.timeline.model.set_selection(target_indices)
+            selected_frames = [live_frames[i] for i in target_indices]
+            self.canvas.set_selected_frames(selected_frames)
+            self.property_panel.set_selection(selected_frames)
+            self.timeline._apply_selection_to_view(target_indices)
         else:
+            self.timeline.model.clear_selection()
             self.canvas.set_selected_frames([])
             self.property_panel.set_selection([])
 
@@ -2967,6 +2977,19 @@ class MainWindow(QMainWindow):
                 # 仅当模型顺序真的发生了变更时才落历史，避免产生无效记录
                 if self.timeline.model.set_frames_order(view_order):
                     self.record_history(i18n.t("hist_reorder"), before=before)
+
+        # 同步拖拽后的选中项到 Model / Canvas / PropertyPanel
+        if self.timeline.get_view_mode() == "list":
+            current_selected_indices = self.timeline.list_view.get_selected_indices()
+        else:
+            current_selected_indices = self.timeline.grid_view.get_selected_indices()
+
+        if current_selected_indices:
+            self.timeline.model.set_selection(current_selected_indices)
+            live_frames = self.timeline.get_all_frames()
+            selected_frames = [live_frames[i] for i in current_selected_indices if 0 <= i < len(live_frames)]
+            self.canvas.set_selected_frames(selected_frames)
+            self.property_panel.set_selection(selected_frames)
 
         # Refresh current items for both list and grid view (to update numbers)
         if self.timeline.get_view_mode() == "list":
