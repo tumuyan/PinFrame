@@ -1,6 +1,9 @@
-from PyQt6.QtWidgets import QTreeWidget, QTreeWidgetItem, QAbstractItemView, QHeaderView, QMenu
-from PyQt6.QtCore import Qt, pyqtSignal, QTimer, QItemSelectionModel, QModelIndex, QMimeData
-from PyQt6.QtGui import QColor, QAction, QDrag, QPixmap
+from PyQt6.QtWidgets import (
+    QTreeWidget, QTreeWidgetItem, QAbstractItemView, QHeaderView, QMenu,
+    QStyledItemDelegate, QStyleOptionViewItem, QStyle,
+)
+from PyQt6.QtCore import Qt, pyqtSignal, QTimer, QItemSelectionModel, QModelIndex, QMimeData, QRect
+from PyQt6.QtGui import QColor, QAction, QDrag, QPixmap, QPainter, QPen
 from i18n.manager import i18n
 from ui.timeline_base_view import BaseTimelineView
 from model.project_data import FrameData
@@ -9,6 +12,66 @@ import os
 
 # Debug flag - set to False to disable debug output
 DEBUG_LIST_VIEW = False
+
+
+class _DisableColumnDelegate(QStyledItemDelegate):
+    """Paints column 1 of every row using only our custom indicator.
+
+    Why a delegate instead of paintEvent overlay:
+      - The column-1 cell is set empty (no text, no role data other than
+        CheckStateRole), so QTreeWidget has no native decoration to draw.
+      - The delegate's paint() is invoked for every column (including 1),
+        guaranteeing we always own the visuals.
+      - We force-enable ItemIsUserCheckable from outside? No - by giving the
+        item *no* data role of CheckStateRole when not needed, plus no
+        ItemIsUserCheckable flag, Qt's QStyle draws nothing for the cell.
+        We draw the box / x ourselves.
+    """
+
+    def paint(self, painter: QPainter, option: QStyleOptionViewItem, index):
+        # Only paint column 1 (disable indicator); other columns delegate normally.
+        if index.column() != 1:
+            super().paint(painter, option, index)
+            return
+
+        painter.save()
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        rect = option.rect
+        is_disabled = (index.data(Qt.ItemDataRole.CheckStateRole) == Qt.CheckState.Checked)
+        is_selected = bool(option.state & QStyle.StateFlag.State_Selected)
+
+        # Erase any Qt-drawn remnants inside the cell (focus rectangles, default
+        # checkbox indicators, etc.). We don't know what was drawn before us,
+        # so we paint the palette base colour over the whole cell first.
+        painter.fillRect(rect, option.palette.base())
+
+        # Compute a square indicator area, centred both horizontally and
+        # vertically in the cell. Using min(width, height) keeps the indicator
+        # a perfect square regardless of the column's actual aspect ratio,
+        # which avoids the 'squashed x' rendering when column width differs
+        # from row height.
+        side = max(8, min(rect.width(), rect.height()) - 6)
+        cx = rect.left() + rect.width() // 2
+        cy = rect.top() + rect.height() // 2
+        box = QRect(cx - side // 2, cy - side // 2, side, side)
+
+        # Inset further so the 1-px stroke doesn't get clipped at the edges.
+        pad = 3
+        inner = QRect(box.left() + pad, box.top() + pad,
+                      box.width() - 2 * pad, box.height() - 2 * pad)
+
+        if is_disabled:
+            x_color = QColor(230, 80, 80) if is_selected else QColor(200, 60, 60)
+            painter.setPen(QPen(x_color, 1.8))
+            painter.drawLine(inner.left(), inner.top(),
+                             inner.right(), inner.bottom())
+            painter.drawLine(inner.right(), inner.top(),
+                             inner.left(), inner.bottom())
+        else:
+            box_color = QColor(180, 180, 180) if is_selected else QColor(150, 150, 150)
+            painter.setPen(QPen(box_color, 1))
+            painter.drawRect(inner)
+        painter.restore()
 
 
 class TimelineListView(QTreeWidget, BaseTimelineView):
@@ -73,8 +136,6 @@ class TimelineListView(QTreeWidget, BaseTimelineView):
         self.setRootIsDecorated(False)
         self.setUniformRowHeights(True)
 
-        self.itemChanged.connect(self.on_item_changed)
-
         self.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.customContextMenuRequested.connect(self.show_context_menu)
 
@@ -90,6 +151,17 @@ class TimelineListView(QTreeWidget, BaseTimelineView):
         self.reference_frame_data = None
         self.is_dark_theme = True
         self.setMinimumHeight(120)
+
+        # Disable-column rendering (column 1):
+        #   - state is stored as CheckStateRole data via setData() on column 1,
+        #   - items do NOT carry Qt.ItemFlag.ItemIsUserCheckable (Qt's built-in
+        #     checkbox indicator would draw a 'v' tick we don't want),
+        #   - column 1's visuals are owned by _DisableColumnDelegate, which
+        #     paints a soft empty box for enabled rows and a red 'x' for
+        #     disabled rows,
+        #   - clicks on column 1 are intercepted in mousePressEvent() to toggle
+        #     the stored state and emit disabled_state_changed.
+        self.setItemDelegateForColumn(1, _DisableColumnDelegate(self))
 
     # BaseTimelineView abstract methods implementation
     def get_selected_indices(self) -> List[int]:
@@ -477,13 +549,35 @@ class TimelineListView(QTreeWidget, BaseTimelineView):
 
         menu.exec(self.viewport().mapToGlobal(position))
 
-    def on_item_changed(self, item, column):
-        if column == 1:
-            frame_data = item.data(0, Qt.ItemDataRole.UserRole)
-            is_disabled = (item.checkState(1) == Qt.CheckState.Checked)
-            if frame_data.is_disabled != is_disabled:
-                frame_data.is_disabled = is_disabled
-                self.disabled_state_changed.emit(frame_data, is_disabled)
+    def mousePressEvent(self, event):
+        """Intercept clicks on the disable column (column 1) to toggle state.
+
+        We don't use Qt's ItemIsUserCheckable because its built-in checkbox
+        indicator draws an unwanted 'v' tick. Instead, the user clicks on
+        column 1 of any row, we flip the stored CheckStateRole value, update
+        the underlying FrameData, emit disabled_state_changed, and repaint.
+        """
+        if event.button() == Qt.MouseButton.LeftButton:
+            pos = event.position().toPoint()
+            item = self.itemAt(pos)
+            if item is not None:
+                x_start = self.columnViewportPosition(1)
+                w = self.columnWidth(1)
+                if x_start <= pos.x() < x_start + w:
+                    rect = self.visualItemRect(item)
+                    new_state = Qt.CheckState.Unchecked
+                    if item.data(1, Qt.ItemDataRole.CheckStateRole) == Qt.CheckState.Unchecked:
+                        new_state = Qt.CheckState.Checked
+                    item.setData(1, Qt.ItemDataRole.CheckStateRole, new_state)
+                    self.viewport().update(rect)
+                    frame_data = item.data(0, Qt.ItemDataRole.UserRole)
+                    is_disabled = (new_state == Qt.CheckState.Checked)
+                    if frame_data and frame_data.is_disabled != is_disabled:
+                        frame_data.is_disabled = is_disabled
+                        self.disabled_state_changed.emit(frame_data, is_disabled)
+                    event.accept()
+                    return
+        super().mousePressEvent(event)
 
     def add_frame(self, filename, frame_data, orig_width=0, orig_height=0, index=None):
         # If index is specified, create item first, then insert it at position
@@ -496,10 +590,22 @@ class TimelineListView(QTreeWidget, BaseTimelineView):
         item.setData(0, Qt.ItemDataRole.UserRole, frame_data)
         item.setData(3, Qt.ItemDataRole.UserRole, (orig_width, orig_height))
 
-        # IMPORTANT: Set checkState BEFORE setting text to avoid triggering itemChanged signal
-        # which would incorrectly reset is_disabled to False
-        item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
-        item.setCheckState(1, Qt.CheckState.Checked if frame_data.is_disabled else Qt.CheckState.Unchecked)
+        # Defensive: explicitly remove any Qt.ItemFlag.ItemIsUserCheckable /
+        # ItemIsTristate so Qt's built-in checkbox indicator never paints.
+        # Without this, a stale flag left over by older code paths could draw
+        # the unwanted 'v' tick on top of our custom 'x'.
+        flags = item.flags()
+        flags &= ~Qt.ItemFlag.ItemIsUserCheckable
+        flags &= ~Qt.ItemFlag.ItemIsAutoTristate
+        item.setFlags(flags)
+
+        # IMPORTANT: Set check state BEFORE setting text — this keeps the itemChanged
+#   signal from being interpreted as a user toggle during initial population.
+# We store the state as CheckStateRole data on column 1 (the column-1
+# _DisableColumnDelegate paints the cell from this role; mousePressEvent
+# handles clicks). See the disable-column note in __init__ above.
+        item.setData(1, Qt.ItemDataRole.CheckStateRole,
+                     Qt.CheckState.Checked if frame_data.is_disabled else Qt.CheckState.Unchecked)
 
         # Now set the text
         item.setText(0, str(self.indexOfTopLevelItem(item) + 1))

@@ -53,6 +53,13 @@ Two independent render paths must stay in sync when you change transform logic:
 ### i18n (`src/i18n/`)
 Singleton `I18nManager` (`i18n`) loaded from `en_US.json` / `zh_CN.json`. Call `i18n.t("key")` for all user-visible strings; add new keys to both JSON files. Resource path resolution handles both dev and PyInstaller (`sys._MEIPASS`) bundles.
 
+### Timeline internal drag-reorder contract (non-obvious, respect when editing)
+`TimelineListView` and `TimelineGridWidget` fully take over internal reordering (they never let Qt delete/move items itself) to avoid frame loss. Invariants to preserve:
+- **Insert before/after**: decided by `_calc_insert_before(drop_pos, item_center)` in `timeline_grid.py` (Grid is row-major — Y only picks the row via `itemAt`; X alone decides before/after). `dragMoveEvent` (preview) and `dropEvent` fallback (landing) must call the SAME method so the blue insert indicator matches the final drop. Never reintroduce separate `and`/`or` logic.
+- **Item reuse**: both views `takeItem`/`takeTopLevelItem` then re-`insertItem` the *original* item objects (Grid copies from List's pattern). Do NOT rebuild `QListWidgetItem` (drops flags/sizeHint/custom roles and breaks external references).
+- **State lifecycle**: `startDrag` sets `self._dragged_items`; `_clear_drag_state()` resets `_is_dragging`, `_drag_insert_position`, and `_dragged_items`. Selection is restored onto the re-inserted items after drop.
+- **Selection source of truth**: read selected indices via `get_selected_indices_from_model()` (it reads the model, not the view) — the old `get_selected_indices_from_current_view` name was misleading and renamed.
+
 ### Conventions & gotchas
 - Imports are `src`-relative (no `src.` prefix). Run anything with the repo root as CWD.
 - Image loading = `image_cache.get(...)`. Image rendering transform logic exists in **two places** (canvas + exporter); keep them consistent.
