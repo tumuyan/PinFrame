@@ -9,19 +9,19 @@ $:
         CNB_WELCOME_CMD: echo "Welcome to oracle in cnb";code-server --install-extension ms-python.python --install-extension ms-python.debugpy; ./dev/setup.sh;cd dev;./install_fonts.sh;./novnc_install.sh;./novnc_start.sh
         PYTHONUNBUFFERED: "1"
 
-main:
-  push:
-    - name: 生成 Code Wiki
-      stages:
-        - name: 生成 Code Wiki 文档
-          timeout: 4h
-          image: cnbcool/codewiki:latest
-          settings:
-            # git_doc_dir: /${CNB_BUILD_WORKSPACE}/${CNB_REPO_SLUG}/codewiki
-            # use_codebuddy: 0
-            # llm_model_name: 'deepseek-v4-pro'
-            # knowledge_enabled: true
-            # knowledge_embedding_model: hunyuan
-            # knowledge_chunk_size: 1500
-            # knowledge_chunk_overlap: 0
-            git_doc_dir: /data/codewiki/${CNB_REPO_SLUG}
+# main:
+#   tag_push:
+#     - name: 生成 Code Wiki
+#       stages:
+#         - name: 生成 Code Wiki 文档
+#           timeout: 4h
+#           image: cnbcool/codewiki:latest
+#           settings:
+#             # git_doc_dir: /${CNB_BUILD_WORKSPACE}/${CNB_REPO_SLUG}/codewiki
+#             # use_codebuddy: 0
+#             # llm_model_name: 'deepseek-v4-pro'
+#             # knowledge_enabled: true
+#             # knowledge_embedding_model: hunyuan
+#             # knowledge_chunk_size: 1500
+#             # knowledge_chunk_overlap: 0
+#             git_doc_dir: /data/codewiki/${CNB_REPO_SLUG}

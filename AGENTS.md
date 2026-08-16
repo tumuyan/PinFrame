@@ -81,3 +81,11 @@ Singleton `I18nManager` (`i18n`) loaded from `en_US.json` / `zh_CN.json`. Call `
 - Cross-preset switching must fully `removeDockWidget` all docks (incl. `stack_dock`) before rebuilding, so stale split/area state doesn't carry over.
 - Startup: skip `restoreState` for `custom` and `stack_*` presets (apply the preset directly); otherwise stale dock-area memories fight the rebuild.
 
+## Documentation & file-location conventions
+
+- **`doc/` is for end-user documentation** — written for **final users** of the shipped application. Explain features, UI operations, and workflows in plain user-facing language (e.g. `doc/使用说明.md`).
+- **`dev/` is for developer-facing material** — scattered developer files (scripts AND docs): environment/screenshot/novnc helper scripts and developer notes (e.g. `dev/*.md`, `dev/*.sh`). Code architecture, internal APIs, signal contracts, and implementation details live here or in this `AGENTS.md`, never in `doc/`.
+- Put user-facing guides in `doc/`, developer notes/scripts in `dev/`. Do not mix the two.
+- In the user-facing usage guide, avoid duplicating `README.md` / `README_EN.md` (installation, running, packaging); focus on **how to use the app**, not how to build it.
+- Keep each guide in the same language tone as the README it complements (Chinese guide pairs with `README.md`).
+
