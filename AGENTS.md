@@ -66,3 +66,18 @@ Singleton `I18nManager` (`i18n`) loaded from `en_US.json` / `zh_CN.json`. Call `
 - `src/core/version.py` is auto-generated — never commit hand edits.
 - No automated test suite; verify via `test_full_slice.py` and `dev/screenshot.sh`.
 - `dev/` holds environment/screenshot/novnc helper scripts, not app code.
+
+### Debug logging framework (use this instead of print)
+`src/utils/debug_config.py` provides a categorized, opt-in logger. Enable the master switch + per-category checkboxes in the debug settings dialog (categories are dynamically read from `CATEGORY_KEYS`, so adding a key auto-adds a UI toggle). Import the per-category helper and call it:
+- Helpers: `import_debug`, `export_debug`, `property_debug`, `canvas_debug`, `timeline_debug`, `grid_text_debug`, `layout_debug`, `layout_debug`.
+- Default-enabled: `timeline`, `canvas`, `property`, `export`, `import`. `grid_text` and `layout` are OFF by default — add a new category to `CATEGORY_KEYS` + `CATEGORY_I18N_KEYS` + a `xxx_debug()` fn, and add the i18n key `debug_cat_<name>` to both `zh_CN.json`/`en_US.json`.
+
+### Layout system (MainWindow dock/splitter) — non-obvious Qt pitfalls
+`apply_layout_preset(preset)` in `main_window.py` switches between dock-based presets (`standard`/`side`/`stack_*`) and a custom non-dock `QSplitter` layout (`custom`). Presets persist via `settings` key `last_layout`; stacked ratio persists as `stack_split_sizes`; custom splitter sizes as `custom_layout_v_sizes`/`custom_layout_h_sizes`.
+- **Do NOT split two independent docks in the same area.** `addDockWidget(area, dock)` IGNORES the `area` argument for a dock that has ever been docked before — the dock snaps back to the area it "remembers" (e.g. `timeline_dock` always returns to Bottom and fills the width). This is why stacked presets use a SINGLE `stack_dock` holding an internal `QSplitter` (timeline + property), not two docks split in one area.
+- **`setSizes()` on a QSplitter must run AFTER the splitter is laid out** (`QTimer.singleShot(0, ...)` after `setCentralWidget`/`addDockWidget`). Calling it earlier lets Qt recompute from children `sizeHint` and collapse a pane to 0 (observed `[640,0]` / `[759,0]`).
+- **Never persist a collapsed `[x, 0]` splitter size.** Filter saved ratios so both values are `> 0`, and delete the key if corrupted — otherwise the bad value is reused on every launch (it survives in QSettings).
+- When moving a widget between a dock and a splitter, `setWidget(widget)` reparents it out of its current parent automatically; always `setWidget(None)` before re-homing.
+- Cross-preset switching must fully `removeDockWidget` all docks (incl. `stack_dock`) before rebuilding, so stale split/area state doesn't carry over.
+- Startup: skip `restoreState` for `custom` and `stack_*` presets (apply the preset directly); otherwise stale dock-area memories fight the rebuild.
+

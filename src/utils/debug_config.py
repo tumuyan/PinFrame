@@ -14,7 +14,7 @@ class DebugConfig:
     _instance = None
     
     # Category keys (display names are i18n keys) - reversed order
-    CATEGORY_KEYS = ["import", "export", "property", "canvas", "timeline", "grid_text"]
+    CATEGORY_KEYS = ["layout", "import", "export", "property", "canvas", "timeline", "grid_text"]
     
     # I18n keys for category display names
     CATEGORY_I18N_KEYS = {
@@ -24,9 +24,10 @@ class DebugConfig:
         "property": "debug_cat_property",
         "export": "debug_cat_export",
         "import": "debug_cat_import",
+        "layout": "debug_cat_layout",
     }
     
-    # Default enabled categories (grid_text disabled by default, others enabled)
+    # Default enabled categories (grid_text and layout disabled by default, others enabled)
     DEFAULT_ENABLED = {"timeline", "canvas", "property", "export", "import"}
     
     def __new__(cls):
@@ -167,3 +168,8 @@ def export_debug(*args, **kwargs):
 def import_debug(*args, **kwargs):
     """Print import debug message if enabled"""
     debug_print("import", *args, **kwargs)
+
+
+def layout_debug(*args, **kwargs):
+    """Print layout (dock/splitter) debug message if enabled"""
+    debug_print("layout", *args, **kwargs)
