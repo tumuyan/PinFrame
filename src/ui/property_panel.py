@@ -4,8 +4,7 @@ from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel,
                              QDoubleSpinBox, QGroupBox, QSpinBox, QPushButton, 
                              QGridLayout, QCheckBox, QRadioButton, QButtonGroup,
                              QScrollArea)
-from PyQt6.QtCore import Qt, pyqtSignal, QRect, QTimer, QPointF
-from PyQt6.QtCore import Qt, pyqtSignal, QRect, QTimer, QPointF, QRectF
+from PyQt6.QtCore import Qt, pyqtSignal, QRect, QRectF, QTimer, QPointF
 from PyQt6.QtGui import QImage, QPixmap, QPainter, QColor, QTransform
 from i18n.manager import i18n
 from src.core.image_cache import image_cache
@@ -29,6 +28,7 @@ class PropertyPanel(QWidget):
     EDIT_FIT_WIDTH = "fit_width"
     EDIT_FIT_HEIGHT = "fit_height"
     EDIT_ALIGN = "align"
+    EDIT_CROP = "crop"
     
     # Signals
     frame_data_changed = pyqtSignal(object) # Emits the first selected frame object
@@ -129,6 +129,33 @@ class PropertyPanel(QWidget):
         form.addWidget(self.y_spin, 3, 1)
         
         layout.addWidget(self.transform_group)
+
+        # 裁切组（虚拟/像素裁切，crop_rect）
+        crop_group = QGroupBox(i18n.t("prop_crop"))
+        crop_layout = QGridLayout()
+        crop_layout.setColumnStretch(1, 1)
+        crop_layout.setColumnStretch(3, 1)
+        self.crop_x_spin = QSpinBox(); self.crop_x_spin.setRange(0, 100000); self.crop_x_spin.setSuffix(" px")
+        self.crop_y_spin = QSpinBox(); self.crop_y_spin.setRange(0, 100000); self.crop_y_spin.setSuffix(" px")
+        self.crop_w_spin = QSpinBox(); self.crop_w_spin.setRange(1, 100000); self.crop_w_spin.setSuffix(" px")
+        self.crop_h_spin = QSpinBox(); self.crop_h_spin.setRange(1, 100000); self.crop_h_spin.setSuffix(" px")
+        self.crop_x_spin.valueChanged.connect(self.on_crop_changed)
+        self.crop_y_spin.valueChanged.connect(self.on_crop_changed)
+        self.crop_w_spin.valueChanged.connect(self.on_crop_changed)
+        self.crop_h_spin.valueChanged.connect(self.on_crop_changed)
+        crop_layout.addWidget(QLabel(i18n.t("prop_crop_x")), 0, 0)
+        crop_layout.addWidget(self.crop_x_spin, 0, 1)
+        crop_layout.addWidget(QLabel(i18n.t("prop_crop_y")), 0, 2)
+        crop_layout.addWidget(self.crop_y_spin, 0, 3)
+        crop_layout.addWidget(QLabel(i18n.t("prop_crop_w")), 1, 0)
+        crop_layout.addWidget(self.crop_w_spin, 1, 1)
+        crop_layout.addWidget(QLabel(i18n.t("prop_crop_h")), 1, 2)
+        crop_layout.addWidget(self.crop_h_spin, 1, 3)
+        self.crop_toggle_btn = QPushButton(i18n.t("prop_crop_enable"))
+        self.crop_toggle_btn.clicked.connect(self.on_crop_toggle)
+        crop_layout.addWidget(self.crop_toggle_btn, 2, 0, 1, 4)
+        crop_group.setLayout(crop_layout)
+        layout.addWidget(crop_group)
         
         # 1.5 Mirror Group
         self.mirror_group = QGroupBox(i18n.t("prop_mirror"))
@@ -473,6 +500,29 @@ class PropertyPanel(QWidget):
             else:
                 self.t_w_spin.setValue(0)
                 self.t_h_spin.setValue(0)
+
+            # 裁切参数显示
+            if first.crop_rect:
+                cx, cy, cw, ch = first.crop_rect
+                self.crop_x_spin.setValue(cx)
+                self.crop_y_spin.setValue(cy)
+                self.crop_w_spin.setValue(cw)
+                self.crop_h_spin.setValue(ch)
+                self.crop_x_spin.setEnabled(True)
+                self.crop_y_spin.setEnabled(True)
+                self.crop_w_spin.setEnabled(True)
+                self.crop_h_spin.setEnabled(True)
+                self.crop_toggle_btn.setText(i18n.t("prop_crop_disable"))
+            else:
+                self.crop_x_spin.setValue(0)
+                self.crop_y_spin.setValue(0)
+                self.crop_w_spin.setValue(0)
+                self.crop_h_spin.setValue(0)
+                self.crop_x_spin.setEnabled(False)
+                self.crop_y_spin.setEnabled(False)
+                self.crop_w_spin.setEnabled(False)
+                self.crop_h_spin.setEnabled(False)
+                self.crop_toggle_btn.setText(i18n.t("prop_crop_enable"))
             
         self.updating_ui = False
 
@@ -794,6 +844,69 @@ class PropertyPanel(QWidget):
                     f.aspect_ratio = (orig_h * f.scale) / h
 
         self.refresh_t_res_ui()
+
+    def on_crop_changed(self):
+        """直接设定选中帧的裁切矩形 (x, y, w, h)。会联动目标分辨率。"""
+        if self.updating_ui or not self.selected_frames:
+            return
+        x = self.crop_x_spin.value()
+        y = self.crop_y_spin.value()
+        w = self.crop_w_spin.value()
+        h = self.crop_h_spin.value()
+        if w <= 0 or h <= 0:
+            return
+
+        self.edit_started.emit(self.EDIT_CROP)
+        for f in self.selected_frames:
+            img = image_cache.get(f.file_path)
+            if not img:
+                # 没有图像尺寸时，仅做基础夹取
+                new_x = max(0, x)
+                new_y = max(0, y)
+                new_w = max(1, w)
+                new_h = max(1, h)
+                f.crop_rect = (new_x, new_y, new_w, new_h)
+                continue
+
+            iw, ih = img.width(), img.height()
+            # 夹取到图像边界内
+            nx = max(0, min(x, iw - 1))
+            ny = max(0, min(y, ih - 1))
+            nw = max(1, min(w, iw - nx))
+            nh = max(1, min(h, ih - ny))
+
+            old_orig_w = f.crop_rect[2] if f.crop_rect else iw
+            old_orig_h = f.crop_rect[3] if f.crop_rect else ih
+            # 若锁定目标分辨率，保持目标不变、反推 scale
+            if self.t_res_lock.isChecked() and old_orig_w > 0 and old_orig_h > 0:
+                tw = abs(old_orig_w * f.scale)
+                th = abs(old_orig_h * (f.scale / f.aspect_ratio))
+                s_sign = 1 if f.scale >= 0 else -1
+                f.scale = (tw / nw) * s_sign
+                if abs(f.aspect_ratio - 1.0) > 0.001:
+                    f.aspect_ratio = (th * f.scale) / nh if nh > 0 else f.aspect_ratio
+            f.crop_rect = (nx, ny, nw, nh)
+
+        self.refresh_t_res_ui()
+
+    def on_crop_toggle(self):
+        """启用/取消裁切：启用时以整图作为 crop_rect，取消时置 None。"""
+        if not self.selected_frames:
+            return
+        first = self.selected_frames[0]
+        img = image_cache.get(first.file_path)
+        self.edit_started.emit(self.EDIT_CROP)
+        if first.crop_rect:
+            for f in self.selected_frames:
+                f.crop_rect = None
+        else:
+            if not img:
+                return
+            for f in self.selected_frames:
+                f.crop_rect = (0, 0, img.width(), img.height())
+        self.update_ui_from_selection()
+        self.update_preview()
+        self.frame_data_changed.emit(self.frame_data)
 
     def refresh_t_res_ui(self):
         """Update scale spin and canvas after any target res change."""

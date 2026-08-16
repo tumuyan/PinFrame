@@ -96,19 +96,21 @@ class TimelineListView(QTreeWidget, BaseTimelineView):
     def __init__(self, parent=None):
         super().__init__(parent)
 
-        self.setColumnCount(6)
+        self.setColumnCount(7)
         self.setHeaderLabels([
             i18n.t("col_index"),
-            i18n.t("col_disabled"),
+            i18n.t("col_disabled_header"),
             i18n.t("col_filename"),
             i18n.t("col_scale"),
             i18n.t("col_position"),
+            i18n.t("col_crop"),
             i18n.t("col_res_combined")
         ])
 
         header = self.header()
         header.setStretchLastSection(False)
         header.setMinimumSectionSize(0)
+        header.setDefaultAlignment(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignVCenter)
 
         # Column 0: Index
         header.setSectionResizeMode(0, QHeaderView.ResizeMode.Interactive)
@@ -124,7 +126,9 @@ class TimelineListView(QTreeWidget, BaseTimelineView):
         header.setSectionResizeMode(4, QHeaderView.ResizeMode.Interactive)
         header.resizeSection(4, 100)
         header.setSectionResizeMode(5, QHeaderView.ResizeMode.Interactive)
-        header.resizeSection(5, 150)
+        header.resizeSection(5, 130)
+        header.setSectionResizeMode(6, QHeaderView.ResizeMode.Interactive)
+        header.resizeSection(6, 150)
 
         # Column 2: Filename - STRETCH
         header.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
@@ -621,9 +625,20 @@ class TimelineListView(QTreeWidget, BaseTimelineView):
         item.setText(2, fname)
 
         item.setText(3, f"{frame_data.scale:.4f}")
+        item.setTextAlignment(3, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
 
-        pos_str = f"({int(frame_data.position[0])}, {int(frame_data.position[1])})"
+        px, py = frame_data.position
+        pos_str = f"{int(px):>4d} {int(py):>4d}"
         item.setText(4, pos_str)
+        item.setTextAlignment(4, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+
+        if frame_data.crop_rect:
+            cx, cy, cw, ch = frame_data.crop_rect
+            crop_str = f"{cx:>4d} {cy:>4d} {cw:>4d} {ch:>4d}"
+        else:
+            crop_str = f"{'-':>4} {'-':>4} {'-':>4} {'-':>4}"
+        item.setText(5, crop_str)
+        item.setTextAlignment(5, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
 
         if orig_w > 0:
             final_w = int(orig_w * frame_data.scale)
@@ -636,15 +651,16 @@ class TimelineListView(QTreeWidget, BaseTimelineView):
         else:
             res_str = "?x?"
 
-        item.setText(5, res_str)
+        item.setText(6, res_str)
 
     def refresh_ui_text(self):
         self.setHeaderLabels([
             i18n.t("col_index"),
-            i18n.t("col_disabled"),
+            i18n.t("col_disabled_header"),
             i18n.t("col_filename"),
             i18n.t("col_scale"),
             i18n.t("col_position"),
+            i18n.t("col_crop"),
             i18n.t("col_res_combined")
         ])
         self.refresh_current_items()

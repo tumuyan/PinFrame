@@ -72,6 +72,8 @@ class MainWindow(QMainWindow):
         self.canvas.transform_changed.connect(self.on_canvas_transform_changed)
         self.canvas.scale_change_requested.connect(self.on_canvas_scale_requested)
         self.canvas.drag_started.connect(lambda: self._open_history_merge_window(i18n.t("hist_edit_move")))
+        self.canvas.crop_drag_started.connect(lambda: self._open_history_merge_window(i18n.t("hist_edit_crop")))
+        self.canvas.crop_rect_changed.connect(self.on_canvas_transform_changed)
 
         # Dock Widget (Timeline)
         self.timeline_dock = QDockWidget(i18n.t("dock_timeline"), self)
@@ -1222,6 +1224,11 @@ class MainWindow(QMainWindow):
         self.action_toggle_wheel_mode.setCheckable(True)
         self.action_toggle_wheel_mode.triggered.connect(self.toggle_wheel_mode)
 
+        # Crop edit mode toggle
+        self.action_toggle_crop_edit = QAction(i18n.t("action_crop_edit"), self)
+        self.action_toggle_crop_edit.setCheckable(True)
+        self.action_toggle_crop_edit.triggered.connect(self.toggle_crop_edit_mode)
+
         # Initial State
         self.action_wheel_zoom_view.setChecked(True)
         self.update_wheel_toggle_ui()
@@ -1594,6 +1601,7 @@ class MainWindow(QMainWindow):
         toolbar.addAction(self.redo_action)
         toolbar.addSeparator()
         toolbar.addAction(self.action_toggle_wheel_mode)
+        toolbar.addAction(self.action_toggle_crop_edit)
         toolbar.addSeparator()
         toolbar.addAction(self.settings_action)
         toolbar.addAction(self.export_action)
@@ -2409,6 +2417,13 @@ class MainWindow(QMainWindow):
     def set_wheel_mode_actual(self, mode):
         self.canvas.set_wheel_mode(mode)
         self.update_wheel_toggle_ui()
+
+    def toggle_crop_edit_mode(self, checked):
+        self.canvas.set_crop_edit_mode(checked)
+        if checked:
+            self.statusBar().showMessage(i18n.t("crop_edit_on"), 3000)
+        else:
+            self.statusBar().showMessage(i18n.t("crop_edit_off"), 3000)
     
 
         

@@ -12,6 +12,10 @@ class CanvasWidget(QWidget):
     scale_change_requested = pyqtSignal(float) # factor
     # 用户开始拖拽编辑（鼠标按下时发出，用于撤销历史记录起点）
     drag_started = pyqtSignal()
+    # 裁切矩形被编辑（拖拽手柄）后发出，参数为主帧 FrameData
+    crop_rect_changed = pyqtSignal(object)
+    # 裁切拖拽开始时发出，用于历史记录起点（避免与图像拖拽 history 标签混淆）
+    crop_drag_started = pyqtSignal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -75,7 +79,48 @@ class CanvasWidget(QWidget):
         self.border_inner_width = 2
         self.border_outer_color = QColor(0, 0, 0)
         self.border_outer_width = 1
-        
+
+        # Crop Edit Mode (draw/edit crop_rect of primary frame on full source image)
+        self.crop_edit_mode = False
+        self._crop_drag = None        # handle id ('tl','tc',... ) or 'move' or None
+        self._crop_drag_orig = None   # original crop_rect tuple at drag start
+        self._crop_drag_orig_list = []  # (frame, original crop_rect) for all selected frames
+        self._crop_drag_start_src = QPointF()  # source-space point at drag start (for move)
+        self._crop_handles = []       # list of (handle_id, QRectF in screen coords)
+        self._crop_s = 1.0            # fit scale for source image in crop-edit mode
+        self._crop_ox = 0.0           # screen x of source image origin
+        self._crop_oy = 0.0           # screen y of source image origin
+
+    def set_crop_edit_mode(self, enabled):
+        if self.crop_edit_mode == enabled:
+            return
+        self.crop_edit_mode = enabled
+        self._crop_drag = None
+        self._crop_handles = []
+        self.setCursor(Qt.CursorShape.CrossCursor if enabled else Qt.CursorShape.ArrowCursor)
+        self.update()
+
+    def _crop_screen_to_src(self, pos):
+        return QPointF((pos.x() - self._crop_ox) / self._crop_s,
+                       (pos.y() - self._crop_oy) / self._crop_s)
+
+    def _crop_handle_at(self, pos):
+        for hid, r in self._crop_handles:
+            if r.contains(pos):
+                return hid
+        return None
+
+    def _crop_inside(self, pos):
+        if not self._crop_handles or not self.selected_frames_data:
+            return False
+        primary = self.selected_frames_data[0]
+        if not primary.crop_rect:
+            return False
+        cx, cy, cw, ch = primary.crop_rect
+        rect = QRectF(self._crop_ox + cx * self._crop_s, self._crop_oy + cy * self._crop_s,
+                      cw * self._crop_s, ch * self._crop_s)
+        return rect.contains(pos)
+
     def set_rasterization_settings(self, enabled, grid_color, scale_threshold, show_grid):
         self.raster_enabled = enabled
         self.raster_grid_color = grid_color
@@ -287,6 +332,70 @@ class CanvasWidget(QWidget):
             
             # Step 4: Draw UI elements (anchor, selection outlines, canvas border)
             self._draw_ui_elements(painter, base_x, base_y)
+
+        # Crop Edit Overlay (drawn in screen space, on top of everything)
+        if self.crop_edit_mode:
+            self._draw_crop_edit_overlay(painter)
+
+    def _draw_crop_edit_overlay(self, painter):
+        """在裁切编辑模式下，绘制整张源图 + 可拖拽的裁切矩形与手柄。"""
+        if not self.selected_frames_data:
+            return
+        primary = self.selected_frames_data[0]
+        if not primary.crop_rect:
+            return
+        img = image_cache.get(primary.file_path)
+        if not img:
+            return
+        iw, ih = img.width(), img.height()
+        vw, vh = self.width(), self.height()
+        pad = 40
+        if iw <= 0 or ih <= 0:
+            return
+        s = min((vw - 2 * pad) / iw, (vh - 2 * pad) / ih)
+        if s <= 0:
+            return
+        ox = (vw - iw * s) / 2
+        oy = (vh - ih * s) / 2
+        self._crop_s, self._crop_ox, self._crop_oy = s, ox, oy
+
+        painter.save()
+        # 暗化背景，突出编辑区
+        painter.setBrush(QColor(0, 0, 0, 170))
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.drawRect(0, 0, vw, vh)
+
+        # 整张源图
+        painter.drawImage(QRectF(ox, oy, iw * s, ih * s), img)
+
+        cx, cy, cw, ch = primary.crop_rect
+        crop_screen = QRectF(ox + cx * s, oy + cy * s, cw * s, ch * s)
+
+        # 裁切区域高亮
+        painter.setPen(QPen(Qt.GlobalColor.yellow, 2))
+        painter.setBrush(QColor(255, 255, 0, 45))
+        painter.drawRect(crop_screen)
+
+        # 8 个调整手柄
+        self._crop_handles = []
+        hs = 7
+        handles = {
+            'tl': crop_screen.topLeft(),
+            'tc': QPointF(crop_screen.center().x(), crop_screen.top()),
+            'tr': crop_screen.topRight(),
+            'ml': QPointF(crop_screen.left(), crop_screen.center().y()),
+            'mr': QPointF(crop_screen.right(), crop_screen.center().y()),
+            'bl': crop_screen.bottomLeft(),
+            'bc': QPointF(crop_screen.center().x(), crop_screen.bottom()),
+            'br': crop_screen.bottomRight(),
+        }
+        for hid, p in handles.items():
+            r = QRectF(p.x() - hs, p.y() - hs, hs * 2, hs * 2)
+            painter.setPen(QPen(Qt.GlobalColor.white, 1))
+            painter.setBrush(QColor(255, 255, 0, 220))
+            painter.drawRect(r)
+            self._crop_handles.append((hid, r))
+        painter.restore()
 
     def _render_to_buffer(self):
         """Render canvas content to a QImage buffer at project resolution.
@@ -506,8 +615,8 @@ class CanvasWidget(QWidget):
         
         painter.restore()
 
-        # Draw Custom Anchor
-        if self.show_custom_anchor:
+        # Draw Custom Anchor (hidden during crop editing to avoid overlap)
+        if self.show_custom_anchor and not self.crop_edit_mode:
             painter.setPen(QPen(Qt.GlobalColor.yellow, 2 / self.view_scale))
             painter.setBrush(Qt.BrushStyle.NoBrush)
 
@@ -608,11 +717,111 @@ class CanvasWidget(QWidget):
         
         painter.restore()
 
+    def _handle_crop_mouse_press(self, event):
+        if not self.selected_frames_data:
+            return
+        primary = self.selected_frames_data[0]
+        if not primary.crop_rect:
+            return
+        hit = self._crop_handle_at(event.position())
+        if hit is not None:
+            self._crop_drag = hit
+        elif self._crop_inside(event.position()):
+            self._crop_drag = 'move'
+        else:
+            self._crop_drag = None
+            return
+        self._crop_drag_orig = primary.crop_rect
+        # Record original crop rect of every selected frame so we can apply
+        # the same relative delta to all of them during multi-selection drag.
+        self._crop_drag_orig_list = [(f, f.crop_rect) for f in self.selected_frames_data]
+        self._crop_drag_start_src = self._crop_screen_to_src(event.position())
+        self.crop_drag_started.emit()  # 历史记录起点
+
+    def _handle_crop_mouse_move(self, event):
+        if not self.selected_frames_data:
+            return
+        primary = self.selected_frames_data[0]
+        if not primary.crop_rect or self._crop_drag_orig is None:
+            return
+        img = image_cache.get(primary.file_path)
+        if not img:
+            return
+        iw, ih = img.width(), img.height()
+        ox, oy, ow, oh = self._crop_drag_orig
+        cur_src = self._crop_screen_to_src(event.position())
+        px, py = cur_src.x(), cur_src.y()
+        hid = self._crop_drag
+
+        x0, y0, x1, y1 = ox, oy, ox + ow, oy + oh
+        if hid == 'move':
+            start = self._crop_drag_start_src
+            dx = px - start.x()
+            dy = py - start.y()
+            x0 = ox + dx
+            y0 = oy + dy
+            x1 = x0 + ow
+            y1 = y0 + oh
+        else:
+            if 'l' in hid:
+                x0 = px
+            if 'r' in hid:
+                x1 = px
+            if 't' in hid:
+                y0 = py
+            if 'b' in hid:
+                y1 = py
+
+        # normalize (allow flipping then normalize)
+        if x1 < x0:
+            x0, x1 = x1, x0
+        if y1 < y0:
+            y0, y1 = y1, y0
+        # clamp to image bounds
+        x0 = max(0, min(x0, iw - 1))
+        y0 = max(0, min(y0, ih - 1))
+        x1 = max(x0 + 1, min(x1, iw))
+        y1 = max(y0 + 1, min(y1, ih))
+
+        new_crop = (int(round(x0)), int(round(y0)),
+                    int(round(x1 - x0)), int(round(y1 - y0)))
+        primary.crop_rect = new_crop
+        # Propagate the crop edit to all other selected frames. We compute the
+        # relative delta of each edge (left/right/top/bottom) on the primary and
+        # apply the same delta to every frame's own original crop rect. This makes
+        # both move and resize behave as a consistent relative adjustment across
+        # multi-selection, regardless of each frame's source image or origin.
+        owx, owy, oww, owh = self._crop_drag_orig
+        ox1, oy1 = owx + oww, owy + owh
+        d_left = new_crop[0] - owx
+        d_top = new_crop[1] - owy
+        d_right = (x1) - ox1
+        d_bottom = (y1) - oy1
+        for f, orig in self._crop_drag_orig_list:
+            if not orig or orig[2] <= 0 or orig[3] <= 0:
+                continue
+            fx0, fy0, fx1, fy1 = orig[0], orig[1], orig[0] + orig[2], orig[1] + orig[3]
+            fim = image_cache.get(f.file_path)
+            fiw, fih = (fim.width(), fim.height()) if fim else (fx1, fy1)
+            nfx0 = max(0, min(fx0 + d_left, fiw - 1))
+            nfy0 = max(0, min(fy0 + d_top, fih - 1))
+            nfx1 = max(nfx0 + 1, min(fx1 + d_right, fiw))
+            nfy1 = max(nfy0 + 1, min(fy1 + d_bottom, fih))
+            f.crop_rect = (int(round(nfx0)), int(round(nfy0)),
+                           int(round(nfx1 - nfx0)), int(round(nfy1 - nfy0)))
+        self.crop_rect_changed.emit(primary)
+        self.update()
+
     def mousePressEvent(self, event):
         if event.button() == Qt.MouseButton.MiddleButton:
             self.is_panning = True
             self.last_mouse_pos = event.position()
         elif event.button() == Qt.MouseButton.LeftButton:
+            # Crop Edit Mode: handle crop rect dragging first
+            if self.crop_edit_mode:
+                self._handle_crop_mouse_press(event)
+                return
+
             # Check for Anchor Hit FIRST if enabled
             if self.show_custom_anchor:
                 # Map mouse pos to World Coords
@@ -639,6 +848,10 @@ class CanvasWidget(QWidget):
         delta = event.position() - self.last_mouse_pos
         self.last_mouse_pos = event.position()
 
+        if self.crop_edit_mode and self._crop_drag is not None:
+            self._handle_crop_mouse_move(event)
+            return
+
         if self.is_panning:
             self.view_offset += delta
             self.update()
@@ -663,6 +876,7 @@ class CanvasWidget(QWidget):
         self.is_panning = False
         self.is_dragging_image = False
         self.is_dragging_anchor = False
+        self._crop_drag = None
 
     def wheelEvent(self, event):
         if self.wheel_mode == self.WHEEL_ZOOM:
