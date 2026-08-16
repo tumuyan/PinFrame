@@ -90,7 +90,12 @@ class PropertyPanel(QWidget):
         self.btn_flip_v = QPushButton(i18n.t("prop_mirror_v"))
         self.btn_flip_v.clicked.connect(lambda: self.apply_mirror("v"))
         mirror_layout.addWidget(self.btn_flip_v)
-        
+
+        self.btn_reset_mirror = QPushButton(i18n.t("prop_mirror_reset"))
+        self.btn_reset_mirror.setMinimumWidth(70)
+        self.btn_reset_mirror.clicked.connect(self.reset_mirror)
+        mirror_layout.addWidget(self.btn_reset_mirror)
+
         layout.addWidget(self.mirror_group)
         
         # Advanced Sizing (Existing)
@@ -472,6 +477,21 @@ class PropertyPanel(QWidget):
             
         self.update_ui_from_selection()
         self.frame_data_changed.emit(0,0,0)
+
+    def reset_mirror(self):
+        """复位镜像: 对当前已激活镜像的轴各再执行一次 apply_mirror (两次=恒等)。
+
+        复用 apply_mirror 的锚点位置反射逻辑，确保 position 与镜像操作对称还原。
+        """
+        if not self.selected_frames: return
+        # scale 只被 H 影响; V 只翻 aspect。精确区分:
+        # need_h = scale<0 ; need_v = (aspect<0) XOR (scale<0)
+        need_h = any(f.scale < 0 for f in self.selected_frames)
+        need_v = any((f.aspect_ratio < 0) != (f.scale < 0) for f in self.selected_frames)
+        if need_v:
+            self.apply_mirror("v")
+        if need_h:
+            self.apply_mirror("h")
 
     def apply_rel_move(self, dx, dy):
         if not self.selected_frames: return

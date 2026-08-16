@@ -23,6 +23,7 @@ class PropertyPanel(QWidget):
     EDIT_SCALE = "scale"
     EDIT_MIRROR_H = "mirror_h"
     EDIT_MIRROR_V = "mirror_v"
+    EDIT_MIRROR_RESET = "mirror_reset"
     EDIT_TARGET_SIZE = "target_size"
     EDIT_ASPECT = "aspect"
     EDIT_FIT_WIDTH = "fit_width"
@@ -138,10 +139,10 @@ class PropertyPanel(QWidget):
         crop_layout = QGridLayout()
         crop_layout.setColumnStretch(1, 1)
         crop_layout.setColumnStretch(3, 1)
-        self.crop_x_spin = QSpinBox(); self.crop_x_spin.setRange(0, 100000); self.crop_x_spin.setSuffix(" px")
-        self.crop_y_spin = QSpinBox(); self.crop_y_spin.setRange(0, 100000); self.crop_y_spin.setSuffix(" px")
-        self.crop_w_spin = QSpinBox(); self.crop_w_spin.setRange(1, 100000); self.crop_w_spin.setSuffix(" px")
-        self.crop_h_spin = QSpinBox(); self.crop_h_spin.setRange(1, 100000); self.crop_h_spin.setSuffix(" px")
+        self.crop_x_spin = QSpinBox(); self.crop_x_spin.setRange(0, 100000)
+        self.crop_y_spin = QSpinBox(); self.crop_y_spin.setRange(0, 100000)
+        self.crop_w_spin = QSpinBox(); self.crop_w_spin.setRange(1, 100000)
+        self.crop_h_spin = QSpinBox(); self.crop_h_spin.setRange(1, 100000)
         self.crop_x_spin.valueChanged.connect(self.on_crop_changed)
         self.crop_y_spin.valueChanged.connect(self.on_crop_changed)
         self.crop_w_spin.valueChanged.connect(self.on_crop_changed)
@@ -171,7 +172,12 @@ class PropertyPanel(QWidget):
         self.btn_flip_v = QPushButton(i18n.t("prop_mirror_v"))
         self.btn_flip_v.clicked.connect(lambda: self.apply_mirror("v"))
         mirror_layout.addWidget(self.btn_flip_v)
-        
+
+        self.btn_reset_mirror = QPushButton(i18n.t("prop_mirror_reset"))
+        self.btn_reset_mirror.setMinimumWidth(70)
+        self.btn_reset_mirror.clicked.connect(self.reset_mirror)
+        mirror_layout.addWidget(self.btn_reset_mirror)
+
         layout.addWidget(self.mirror_group)
         
         # Advanced Sizing (Existing)
@@ -183,16 +189,23 @@ class PropertyPanel(QWidget):
         self.btn_fit_w = QPushButton(i18n.t("btn_fit_width"))
         self.btn_fit_w.clicked.connect(lambda: self.fit_to_canvas("width"))
         quick_layout.addWidget(self.btn_fit_w)
-        
+
         self.btn_fit_h = QPushButton(i18n.t("btn_fit_height"))
         self.btn_fit_h.clicked.connect(lambda: self.fit_to_canvas("height"))
         quick_layout.addWidget(self.btn_fit_h)
+
+        # 原始比例（恢复 aspect_ratio=1.0，消除 X/Y 拉伸失真）
+        self.btn_reset_ar = QPushButton(i18n.t("prop_res_reset"))
+        self.btn_reset_ar.setMinimumWidth(70)
+        self.btn_reset_ar.clicked.connect(self.reset_aspect_ratio)
+        quick_layout.addWidget(self.btn_reset_ar)
         size_layout.addLayout(quick_layout)
         
         # Target Resolution
         t_res_layout = QHBoxLayout()
         self.label_target_res = QLabel(i18n.t("prop_target_res"))
         t_res_layout.addWidget(self.label_target_res)
+        
         self.t_w_spin = QSpinBox()
         self.t_w_spin.setRange(0, 9999)
         self.t_w_spin.setSpecialValueText(i18n.t("prop_res_none"))
@@ -203,21 +216,20 @@ class PropertyPanel(QWidget):
         self.t_h_spin.setSpecialValueText(i18n.t("prop_res_none"))
         self.t_h_spin.valueChanged.connect(self.on_t_h_changed)
         
-        t_res_layout.addWidget(self.t_w_spin)
+        t_res_layout.addWidget(self.t_w_spin, stretch=2)
+        
         self.label_x_sep = QLabel("x")
+        self.label_x_sep.setFixedWidth(16)
+        self.label_x_sep.setAlignment(Qt.AlignmentFlag.AlignCenter)
         t_res_layout.addWidget(self.label_x_sep)
-        t_res_layout.addWidget(self.t_h_spin)
+        
+        t_res_layout.addWidget(self.t_h_spin, stretch=2)
         
         # AR Lock
         self.t_res_lock = QCheckBox(i18n.t("prop_res_lock"))
         self.t_res_lock.setChecked(True)
         t_res_layout.addWidget(self.t_res_lock)
-        
-        # Reset AR Button
-        self.btn_reset_ar = QPushButton(i18n.t("prop_res_reset"))
-        self.btn_reset_ar.clicked.connect(self.reset_aspect_ratio)
-        t_res_layout.addWidget(self.btn_reset_ar)
-        
+
         size_layout.addLayout(t_res_layout)
         
         layout.addWidget(self.size_group)
@@ -488,21 +500,35 @@ class PropertyPanel(QWidget):
             else:
                 self.custom_anchor_changed.emit(self.get_anchor_pos())
             
-            # Calculate target resolution from scale and aspect_ratio
-            # 使用全局缓存获取图片
-            img = image_cache.get(first.file_path)
-            if img:
-                orig_w = first.crop_rect[2] if first.crop_rect else img.width()
-                orig_h = first.crop_rect[3] if first.crop_rect else img.height()
-                if orig_w > 0 and orig_h > 0:
-                    self.t_w_spin.setValue(int(abs(orig_w * first.scale)))
-                    self.t_h_spin.setValue(int(abs(orig_h * (first.scale / first.aspect_ratio))))
+            # Calculate target resolution — 与 Timeline "缩放后分辨率" 共用
+            # FrameData.effective_target_size() 算法 (基准尺寸×scale÷aspect_ratio)
+            # 多选时若各帧目标分辨率不一致，显示 "多值" 占位
+            target_w_list = []
+            target_h_list = []
+            for f in self.selected_frames:
+                tw, th = f.effective_target_size()
+                if tw > 0 and th > 0:
+                    target_w_list.append(tw)
+                    target_h_list.append(th)
                 else:
-                    self.t_w_spin.setValue(0)
-                    self.t_h_spin.setValue(0)
+                    target_w_list.append(None)
+                    target_h_list.append(None)
+
+            # 判断是否一致
+            w_consistent = len(set(target_w_list)) == 1 and target_w_list[0] is not None
+            h_consistent = len(set(target_h_list)) == 1 and target_h_list[0] is not None
+
+            if w_consistent:
+                self.t_w_spin.setValue(target_w_list[0])
             else:
-                self.t_w_spin.setValue(0)
-                self.t_h_spin.setValue(0)
+                self.t_w_spin.setValue(self.t_w_spin.minimum())  # 占位（specialValueText）
+                self.t_w_spin.setSpecialValueText(i18n.t("prop_res_mixed"))
+
+            if h_consistent:
+                self.t_h_spin.setValue(target_h_list[0])
+            else:
+                self.t_h_spin.setValue(self.t_h_spin.minimum())
+                self.t_h_spin.setSpecialValueText(i18n.t("prop_res_mixed"))
 
             # 裁切参数显示
             if first.crop_rect:
@@ -682,8 +708,20 @@ class PropertyPanel(QWidget):
         self.edit_started.emit(self.EDIT_MIRROR_H if axis == "h" else self.EDIT_MIRROR_V)
         property_debug(f"[Property] Apply mirror: axis={axis}")
 
+        self._mirror_axis(axis)
+
+        self.update_ui_from_selection()
+        # Emit signal for first frame or all? Logic uses first frame for panel signals.
+        self.frame_data_changed.emit(self.frame_data)
+
+    def _mirror_axis(self, axis):
+        """对选中帧执行一次镜像 (含锚点位置反射)。
+
+        apply_mirror 调用两次 = 恒等变换 (scale/aspect_ratio/rotation 取负两次回原值，
+        position 绕锚点反射两次回原位)，故 reset_mirror 复用此方法即可精确撤销。
+        """
         # 1. Choose Pivot
-        pivot = self.get_anchor_pos() 
+        pivot = self.get_anchor_pos()
 
         # 2. Mirror Anchor handle itself if in custom mode and not mirroring around itself
         if self.anchor_mode == self.ANCHOR_CUSTOM_CANVAS or self.anchor_mode == self.ANCHOR_CUSTOM_IMAGE:
@@ -701,25 +739,52 @@ class PropertyPanel(QWidget):
                 f.aspect_ratio *= -1
             else:
                 f.aspect_ratio *= -1
-            
+
             # Content Mirror Rule: Negate rotation to keep content at anchor visually aligned
             f.rotation = self.normalize_rotation(-f.rotation)
-            
+
             # Position reflection around pivot
             vx = f.position[0] - pivot.x()
             vy = f.position[1] - pivot.y()
             if axis == "h": vx = -vx
             else: vy = -vy
             f.position = (pivot.x() + vx, pivot.y() + vy)
-            
+
         # 4. Sync Offset for Custom Image
         if self.anchor_mode == self.ANCHOR_CUSTOM_IMAGE:
              # Anchor handle moved (or stayed), image center moved.
              # Re-bind for correct translation following later.
              self.update_image_anchor_offset()
 
+    def reset_mirror(self):
+        """复位镜像: 对当前已激活镜像的轴各再执行一次镜像 (apply_mirror 两次=恒等)。
+
+        复用 _mirror_axis 的锚点逻辑，确保 position 反射、锚点手柄、custom image offset
+        与镜像操作完全对称地还原，避免"内容正向但位置仍停在镜像后"的不一致。
+        """
+        if not self.selected_frames:
+            return
+
+        self.edit_started.emit(self.EDIT_MIRROR_RESET)
+        property_debug("[Property] Reset mirror")
+
+        # 判断各轴当前是否处于镜像激活状态。
+        # 由于 H 镜像翻转 scale 和 aspect_ratio，V 镜像只翻转 aspect_ratio，
+        # 两者都翻转 rotation，故可用符号组合精确区分（而非简单"aspect<0 即 V"）：
+        #   仅 H:  scale<0, aspect<0
+        #   H+V:  scale<0, aspect>=0
+        #   仅 V:  scale>=0, aspect<0
+        # 因此: need_h = scale<0 (scale 只被 H 影响); need_v = (aspect<0) XOR (scale<0)
+        need_h = any(f.scale < 0 for f in self.selected_frames)
+        need_v = any((f.aspect_ratio < 0) != (f.scale < 0) for f in self.selected_frames)
+
+        # 依次对激活轴再镜像一次 = 撤销 (apply_mirror 两次=恒等)
+        if need_v:
+            self._mirror_axis("v")
+        if need_h:
+            self._mirror_axis("h")
+
         self.update_ui_from_selection()
-        # Emit signal for first frame or all? Logic uses first frame for panel signals.
         self.frame_data_changed.emit(self.frame_data)
 
     def apply_rel_move(self, dx, dy):
@@ -787,6 +852,10 @@ class PropertyPanel(QWidget):
         if self.updating_ui or not self.selected_frames:
             return
 
+        # 恢复特殊值文本（可能在多选"多值"状态下残留）
+        self.t_w_spin.setSpecialValueText(i18n.t("prop_res_none"))
+        self.t_h_spin.setSpecialValueText(i18n.t("prop_res_none"))
+
         self.edit_started.emit(self.EDIT_TARGET_SIZE)
         w = self.t_w_spin.value()
         if w <= 0: return
@@ -803,11 +872,12 @@ class PropertyPanel(QWidget):
             s_sign = 1 if f.scale >= 0 else -1
             if self.t_res_lock.isChecked():
                 if abs(f.aspect_ratio - 1.0) < 0.001:
-                    # 锁定 + 比例为1
+                    # 锁定 + 比例近似为1: 吸附为精确的 1.0，避免浮点累积漂移，
+                    # 保证"原始比例"按钮（强制 1.0）在视觉上始终生效。
                     f.scale = (w / orig_w) * s_sign
                     f.aspect_ratio = 1.0
                 else:
-                    # 锁定 + 比例不为1
+                    # 锁定 + 比例明显不为1: 保留原有 aspect_ratio，仅按宽度推算 scale
                     f.scale = (w / orig_w) * s_sign
             else:
                 # 不锁定
@@ -821,6 +891,10 @@ class PropertyPanel(QWidget):
     def on_t_h_changed(self):
         if self.updating_ui or not self.selected_frames:
             return
+
+        # 恢复特殊值文本（可能在多选"多值"状态下残留）
+        self.t_w_spin.setSpecialValueText(i18n.t("prop_res_none"))
+        self.t_h_spin.setSpecialValueText(i18n.t("prop_res_none"))
 
         self.edit_started.emit(self.EDIT_TARGET_SIZE)
         h = self.t_h_spin.value()
@@ -838,9 +912,11 @@ class PropertyPanel(QWidget):
             s_sign = 1 if f.scale >= 0 else -1
             if self.t_res_lock.isChecked():
                 if abs(f.aspect_ratio - 1.0) < 0.001:
+                    # 锁定 + 比例近似为1: 吸附为精确的 1.0（同 on_t_w_changed 的吸附逻辑）
                     f.scale = (h / orig_h) * s_sign
                     f.aspect_ratio = 1.0
                 else:
+                    # 锁定 + 比例明显不为1: 保留原有 aspect_ratio，按高度推算 scale
                     f.scale = (h * f.aspect_ratio) / orig_h
             else:
                 if h > 0:
@@ -920,14 +996,13 @@ class PropertyPanel(QWidget):
         
         # Update H spin if W changed (locked) or vice versa
         first = self.selected_frames[0]
-        # 使用全局缓存获取图片
-        img = image_cache.get(first.file_path)
-        if img:
-            orig_w = first.crop_rect[2] if first.crop_rect else img.width()
-            orig_h = first.crop_rect[3] if first.crop_rect else img.height()
-            if orig_w > 0 and orig_h > 0:
-                self.t_w_spin.setValue(int(abs(orig_w * first.scale)))
-                self.t_h_spin.setValue(int(abs(orig_h * (first.scale / first.aspect_ratio))))
+        # 使用统一算法 (与 Timeline 同源)
+        tw, th = first.effective_target_size()
+        if tw > 0 and th > 0:
+            self.t_w_spin.setSpecialValueText(i18n.t("prop_res_none"))
+            self.t_h_spin.setSpecialValueText(i18n.t("prop_res_none"))
+            self.t_w_spin.setValue(tw)
+            self.t_h_spin.setValue(th)
         
         self.updating_ui = False
         

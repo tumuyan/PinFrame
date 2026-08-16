@@ -199,9 +199,7 @@ class TimelineWidget(QStackedWidget):
         for i in range(total_frames):
             frame_data = self.model.get_frame_at(i)
             if frame_data:
-                orig_w, orig_h = 0, 0
-                if hasattr(frame_data, 'target_resolution') and frame_data.target_resolution:
-                    orig_w, orig_h = frame_data.target_resolution
+                orig_w, orig_h = frame_data.base_size()
                 filename = os.path.basename(frame_data.file_path)
                 self.list_view.add_frame(filename, frame_data, orig_w, orig_h, index=i)
 
@@ -228,9 +226,7 @@ class TimelineWidget(QStackedWidget):
             for idx in range(start_index, end_index + 1):
                 frame_data = self.model.get_frame_at(idx)
                 if frame_data:
-                    orig_w, orig_h = 0, 0
-                    if hasattr(frame_data, 'target_resolution') and frame_data.target_resolution:
-                        orig_w, orig_h = frame_data.target_resolution
+                    orig_w, orig_h = frame_data.base_size()
                     filename = os.path.basename(frame_data.file_path)
 
                     # Update list view only
@@ -333,10 +329,6 @@ class TimelineWidget(QStackedWidget):
         """Load frames into model and views"""
         self.model.clear()
         for frame_data in frames:
-            orig_w, orig_h = 0, 0
-            if hasattr(frame_data, 'target_resolution') and frame_data.target_resolution:
-                orig_w, orig_h = frame_data.target_resolution
-            filename = os.path.basename(frame_data.file_path)
             self.model.add_frame(frame_data)
 
     # ========== Unified interface methods (using model) ==========

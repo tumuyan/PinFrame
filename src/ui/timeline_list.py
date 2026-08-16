@@ -669,19 +669,21 @@ class TimelineListView(QTreeWidget, BaseTimelineView):
         item.setText(6, crop_res_str)
         item.setTextAlignment(6, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
 
-        # Column 7: Scaled resolution = source/crop size * scale
-        if frame_data.crop_rect:
-            _, _, base_w, base_h = frame_data.crop_rect
-        elif orig_w > 0:
-            base_w, base_h = orig_w, orig_h
+        # Column 7: Scaled resolution = effective target size (含 aspect_ratio 失真)
+        # 与属性面板"目标分辨率"共用 FrameData.effective_target_size() 算法
+        if frame_data.crop_rect or orig_w > 0:
+            # 优先用与列6 一致的基准尺寸来源，确保两列算法统一
+            base_w, base_h = (frame_data.crop_rect[2], frame_data.crop_rect[3]) if frame_data.crop_rect else (orig_w, orig_h)
+            if base_w > 0 and base_h > 0:
+                final_w = int(abs(base_w * frame_data.scale))
+                final_h = int(abs(base_h * (frame_data.scale / frame_data.aspect_ratio)))
+                scaled_res_str = f"{final_w} x {final_h}"
+            else:
+                scaled_res_str = "? x ?"
         else:
-            base_w, base_h = _source_size(frame_data.file_path)
-        if base_w > 0:
-            final_w = int(base_w * frame_data.scale)
-            final_h = int(base_h * frame_data.scale)
-            scaled_res_str = f"{final_w} x {final_h}"
-        else:
-            scaled_res_str = "? x ?"
+            # 无 crop_rect 且 orig_w 未知: 直接调用统一算法 (零解码源图)
+            tw, th = frame_data.effective_target_size()
+            scaled_res_str = f"{tw} x {th}" if tw > 0 else "? x ?"
         item.setText(7, scaled_res_str)
         item.setTextAlignment(7, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
 
@@ -696,6 +698,8 @@ class TimelineListView(QTreeWidget, BaseTimelineView):
             i18n.t("col_crop_res"),
             i18n.t("col_scaled_res")
         ])
+        # 列7 tooltip: 与属性面板"目标分辨率"同源 (含比例失真)
+        self.setHeaderToolTip(7, i18n.t("col_scaled_res_tip"))
         self.refresh_current_items()
 
     def refresh_current_items(self):

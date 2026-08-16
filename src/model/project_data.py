@@ -3,6 +3,19 @@ import os
 from dataclasses import dataclass, field
 from typing import List, Tuple, Optional
 
+from PyQt6.QtGui import QImageReader
+
+
+def source_image_size(file_path: str) -> Tuple[int, int]:
+    """零解码读取源图尺寸 (w, h)，失败返回 (0, 0)。供分辨率计算共享使用。"""
+    if not file_path or not os.path.exists(file_path):
+        return 0, 0
+    reader = QImageReader(file_path)
+    if reader.canRead():
+        s = reader.size()
+        return s.width(), s.height()
+    return 0, 0
+
 @dataclass
 class FrameData:
     file_path: str
@@ -86,6 +99,29 @@ class FrameData:
             crop_rect=crop_rect,
             slice_pos=slice_pos
         )
+
+    def effective_target_size(self) -> Tuple[int, int]:
+        """统一计算该帧的"目标分辨率" = 基准尺寸 × scale ÷ aspect_ratio。
+
+        基准尺寸优先级: crop_rect(w,h) > 源图尺寸(零解码)。
+        aspect_ratio 为 X/Y 失真系数 (负值=镜像)，1.0 表示无失真=原始比例。
+        这是属性面板"目标分辨率"与 Timeline"缩放后分辨率"共用的唯一算法来源。
+        """
+        if self.crop_rect:
+            base_w, base_h = self.crop_rect[2], self.crop_rect[3]
+        else:
+            base_w, base_h = source_image_size(self.file_path)
+        if base_w <= 0 or base_h <= 0:
+            return 0, 0
+        w = int(abs(base_w * self.scale))
+        h = int(abs(base_h * (self.scale / self.aspect_ratio)))
+        return w, h
+
+    def base_size(self) -> Tuple[int, int]:
+        """未缩放的基准尺寸 (裁切尺寸优先, 回退源图尺寸)。用于 Timeline 列6 显示。"""
+        if self.crop_rect:
+            return self.crop_rect[2], self.crop_rect[3]
+        return source_image_size(self.file_path)
 
 @dataclass
 class ProjectData:
