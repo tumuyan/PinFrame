@@ -62,6 +62,7 @@
     "preset_stack_lpt": "左侧堆叠 (属性在上)",
     "preset_stack_rtp": "右侧堆叠 (时间轴在上)",
     "preset_stack_rpt": "右侧堆叠 (属性在上)",
+    "preset_custom": "自定义布局 (属性全高 + 底部时间轴)",
     "action_reset_view": "重置视图",
     "menu_background": "画布背景",
     "bg_checkerboard": "棋盘格",

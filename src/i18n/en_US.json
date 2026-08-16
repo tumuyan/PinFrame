@@ -62,6 +62,7 @@
     "preset_stack_lpt": "Stacked Left (Prop Top)",
     "preset_stack_rtp": "Stacked Right (Timeline Top)",
     "preset_stack_rpt": "Stacked Right (Prop Top)",
+    "preset_custom": "Custom (Prop Full-Height + Bottom Timeline)",
     "action_reset_view": "Reset View",
     "menu_background": "Background",
     "bg_checkerboard": "Checkerboard",

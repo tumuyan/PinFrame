@@ -2,7 +2,7 @@
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
                              QDockWidget, QToolBar, QFileDialog, QSpinBox,
                              QLabel, QPushButton, QInputDialog, QTreeWidgetItem, QMenu, QStyle,
-                             QMessageBox, QDialog)
+                             QMessageBox, QDialog, QSplitter)
 from PyQt6.QtGui import QAction, QIcon, QKeySequence, QImage, QActionGroup, QImageReader, QDesktopServices, QColor
 from PyQt6.QtCore import Qt, QTimer, QSettings, QByteArray, QUrl, QDateTime, QLocale
 import subprocess
@@ -126,6 +126,12 @@ class MainWindow(QMainWindow):
         self.property_dock.setWidget(self.property_panel)
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.property_dock)
 
+        # Custom (non-dock) layout state
+        self._custom_layout_active = False
+        self._custom_v_splitter = None
+        self._custom_h_splitter = None
+        self._restore_property_width = False
+
         # Connect Anchor Sync
         self.property_panel.custom_anchor_changed.connect(self.canvas.set_custom_anchor_pos)
         self.property_panel.show_anchor_changed.connect(self.canvas.set_show_custom_anchor)
@@ -235,6 +241,12 @@ class MainWindow(QMainWindow):
         state = self.settings.value("windowState")
         if state:
             self.restoreState(state)
+
+        # Restore last layout. If it was the custom (non-dock) layout, apply it now
+        # (restoreState above only handles dock-based layouts).
+        last_layout = self.settings.value("last_layout", "standard")
+        if last_layout == "custom":
+            self.apply_layout_preset("custom")
             
         # Restore repeat interval
         repeat_ms = int(self.settings.value("repeat_interval", 250))
@@ -1181,6 +1193,9 @@ class MainWindow(QMainWindow):
         self.layout_stack_rpt_action = QAction(i18n.t("preset_stack_rpt"), self)
         self.layout_stack_rpt_action.triggered.connect(lambda: self.apply_layout_preset("stack_rpt"))
 
+        self.layout_custom_action = QAction(i18n.t("preset_custom"), self)
+        self.layout_custom_action.triggered.connect(lambda: self.apply_layout_preset("custom"))
+
         # Set labels for layout actions
         self.refresh_layout_action_labels()
 
@@ -1386,7 +1401,9 @@ class MainWindow(QMainWindow):
         layout_menu.addSeparator()
         layout_menu.addAction(self.layout_stack_rtp_action)
         layout_menu.addAction(self.layout_stack_rpt_action)
-        
+        layout_menu.addSeparator()
+        layout_menu.addAction(self.layout_custom_action)
+
         # Playback Menu
         play_menu = menubar.addMenu(i18n.t("menu_playback"))
         play_menu.addAction(self.play_pause_action)
@@ -3453,10 +3470,14 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(i18n.t("action_reload_images"), 3000) # Reusing label for status for now or simple msg
         
     def apply_layout_preset(self, preset):
-        # Default area configuration for stacking
-        # We need to unstack first? restoreState handles it.
-        # But we can align docks manually.
-        
+        if preset == "custom":
+            self._enter_custom_layout()
+            self.settings.setValue("last_layout", "custom")
+            return
+
+        # Any dock-based preset: make sure we leave the custom (splitter) mode first.
+        self._exit_custom_layout_if_needed()
+
         if preset == "standard":
             # Timeline Bottom, Property Right
             self.timeline_dock.setFloating(False)
@@ -3465,7 +3486,7 @@ class MainWindow(QMainWindow):
             self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.property_dock)
             self.timeline_dock.show()
             self.property_dock.show()
-            
+
         elif preset == "side":
             # Timeline Left, Property Right
             self.timeline_dock.setFloating(False)
@@ -3474,7 +3495,7 @@ class MainWindow(QMainWindow):
             self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.property_dock)
             self.timeline_dock.show()
             self.property_dock.show()
-            
+
         elif preset == "stack_ltp":
             # Stacked Left, Timeline on Top
             self.timeline_dock.setFloating(False)
@@ -3509,32 +3530,110 @@ class MainWindow(QMainWindow):
             # Stacked Right, Property on Top
             self.timeline_dock.setFloating(False)
             self.property_dock.setFloating(False)
-            self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.timeline_dock)
             self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.property_dock)
-            self.splitDockWidget(self.property_dock, self.timeline_dock, Qt.Orientation.Vertical)
-            self.timeline_dock.show()
-            self.property_dock.show()
-            self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, self.property_dock)
-            self.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, self.timeline_dock)
+            self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.timeline_dock)
             self.splitDockWidget(self.property_dock, self.timeline_dock, Qt.Orientation.Vertical)
             self.timeline_dock.show()
             self.property_dock.show()
 
-        elif preset == "stack_rtp":
-            # Stacked Right, Timeline on Top
-            self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.timeline_dock)
-            self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.property_dock)
-            self.splitDockWidget(self.timeline_dock, self.property_dock, Qt.Orientation.Vertical)
-            self.timeline_dock.show()
-            self.property_dock.show()
+        # After leaving the custom layout the property dock was re-added; reset its
+        # width to a sensible default so it does not come back stretched.
+        if self._restore_property_width:
+            self.resizeDocks([self.property_dock], [320], Qt.Orientation.Horizontal)
+            self._restore_property_width = False
 
-        elif preset == "stack_rpt":
-            # Stacked Right, Property on Top
-            self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.property_dock)
-            self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, self.timeline_dock)
-            self.splitDockWidget(self.property_dock, self.timeline_dock, Qt.Orientation.Vertical)
-            self.timeline_dock.show()
-            self.property_dock.show()
+        self.settings.setValue("last_layout", preset)
+
+    def _enter_custom_layout(self):
+        """Custom (non-dock) layout: property panel full-height on the right,
+        timeline as a bottom bar on the LEFT of the property panel.
+
+        Structure:
+            HorizontalSplitter
+            ├─ VerticalSplitter (left column)
+            │   ├─ canvas
+            │   └─ timeline
+            └─ property_panel (right column, full height)
+
+        This cannot be achieved with QMainWindow docks because the Right/Bottom
+        dock areas mutually cut the corner: either the property panel is shortened
+        by the bottom timeline, or the timeline spans the full width."""
+        if self._custom_layout_active:
+            return
+        self._custom_layout_active = True
+
+        # Detach widgets from their docks (keep the widget objects alive).
+        self.timeline_dock.setWidget(None)
+        self.property_dock.setWidget(None)
+        self.timeline_dock.hide()
+        self.property_dock.hide()
+        # Fully remove the docks from the main window so they don't retain/impose
+        # any stretched geometry from the splitter while in custom mode. They are
+        # re-added by the dock-based presets when leaving custom mode.
+        self.removeDockWidget(self.timeline_dock)
+        self.removeDockWidget(self.property_dock)
+
+        # Take canvas out of the central area WITHOUT deleting it.
+        self.takeCentralWidget()
+
+        # Left column: canvas on top, timeline at the bottom.
+        v_split = QSplitter(Qt.Orientation.Vertical)
+        v_split.addWidget(self.canvas)
+        v_split.addWidget(self.timeline)
+
+        # Top level: left column + property panel on the right.
+        h_split = QSplitter(Qt.Orientation.Horizontal)
+        h_split.addWidget(v_split)
+        h_split.addWidget(self.property_panel)
+
+        self._custom_v_splitter = v_split
+        self._custom_h_splitter = h_split
+
+        v_sizes = self.settings.value("custom_layout_v_sizes")
+        h_sizes = self.settings.value("custom_layout_h_sizes")
+        if v_sizes:
+            v_split.setSizes([int(x) for x in v_sizes])
+        else:
+            v_split.setSizes([700, 260])
+        if h_sizes:
+            h_split.setSizes([int(x) for x in h_sizes])
+        else:
+            h_split.setSizes([1080, 340])
+
+        self.setCentralWidget(h_split)
+        self.timeline.show()
+        self.property_panel.show()
+
+    def _exit_custom_layout_if_needed(self):
+        if not self._custom_layout_active:
+            return
+        self._custom_layout_active = False
+        # The property dock was removed in custom mode; after it is re-added its
+        # width needs to be reset to a sensible value (otherwise it can come back
+        # stretched from the splitter geometry).
+        self._restore_property_width = True
+
+        # Persist splitter sizes for next time.
+        self.settings.setValue("custom_layout_v_sizes", self._custom_v_splitter.sizes())
+        self.settings.setValue("custom_layout_h_sizes", self._custom_h_splitter.sizes())
+
+        # Reparent the detached widgets back into their docks FIRST. setWidget()
+        # reparents them out of the splitter tree, so that deleting the splitters
+        # afterwards will not cascade-delete our canvas / property_panel / timeline.
+        self.timeline_dock.setWidget(self.timeline)
+        self.property_dock.setWidget(self.property_panel)
+
+        # Now canvas is the only widget still inside the splitter tree — detach it
+        # before deleting the splitters.
+        self.takeCentralWidget()  # removes the top-level h_split from central (no delete)
+        self.canvas.setParent(None)
+        self._custom_h_splitter.deleteLater()
+        self._custom_v_splitter.deleteLater()
+        self._custom_v_splitter = None
+        self._custom_h_splitter = None
+
+        # Canvas becomes the central widget again.
+        self.setCentralWidget(self.canvas)
 
     def update_repeat_interval(self, ms):
         self.property_panel.set_repeat_interval(ms)
@@ -3640,6 +3739,7 @@ class MainWindow(QMainWindow):
         self.layout_stack_lpt_action.setText(i18n.t("preset_stack_lpt"))
         self.layout_stack_rtp_action.setText(i18n.t("preset_stack_rtp"))
         self.layout_stack_rpt_action.setText(i18n.t("preset_stack_rpt"))
+        self.layout_custom_action.setText(i18n.t("preset_custom"))
 
     def refresh_repeat_action_labels(self):
         for ms, action in self.repeat_actions.items():
@@ -3735,7 +3835,12 @@ class MainWindow(QMainWindow):
             self._flush_pending_history()
             # Save settings
             self.settings.setValue("geometry", self.saveGeometry())
-            self.settings.setValue("windowState", self.saveState())
+            if self._custom_layout_active:
+                # Custom layout has no dock state; persist splitter sizes instead.
+                self.settings.setValue("custom_layout_v_sizes", self._custom_v_splitter.sizes())
+                self.settings.setValue("custom_layout_h_sizes", self._custom_h_splitter.sizes())
+            else:
+                self.settings.setValue("windowState", self.saveState())
             self.settings.setValue("recent_projects", self.recent_projects)
             self.settings.setValue("theme", self.current_theme)
             self.settings.setValue("onion_exclusive", self.onion_ref_exclusive)
