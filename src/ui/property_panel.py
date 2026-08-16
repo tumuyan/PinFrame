@@ -83,7 +83,7 @@ class PropertyPanel(QWidget):
         # Preview
         self.preview_label = QLabel(i18n.t("msg_no_selection"))
         self.preview_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.preview_label.setMinimumHeight(200)
+        self.preview_label.setMinimumSize(200, 200)
         layout.addWidget(self.preview_label)
         
         # Rotation spinbox needs to be added to transform_group or we refactor it completely.
@@ -1135,6 +1135,30 @@ class PropertyPanel(QWidget):
             self.update_image_anchor_offset()
         self.frame_data_changed.emit(self.frame_data)
 
+    @staticmethod
+    def _rotated_bbox(bw, bh, scale, aspect, rotation):
+        """Bounding box of a (bw x bh) rect after CanvasWidget's transform
+        (scale(scale, scale/aspect_ratio), then rotate).
+
+        aspect_ratio is X/Y distortion (negative = vertical mirror). The X factor
+        is ``scale`` and the Y factor is ``scale / aspect``; magnitudes are used
+        for extents because mirror just flips the rect.
+        Returns (width, height) of the axis-aligned bounding box, centered at origin.
+        """
+        x_factor = abs(scale)
+        y_factor = abs(scale / aspect) if aspect != 0 else 0.0
+        hw = bw / 2.0 * x_factor
+        hh = bh / 2.0 * y_factor
+        rad = math.radians(rotation)
+        cos_t, sin_t = math.cos(rad), math.sin(rad)
+        max_x = max_y = 0.0
+        for sx, sy in ((hw, hh), (hw, -hh), (-hw, hh), (-hw, -hh)):
+            rx = sx * cos_t - sy * sin_t
+            ry = sx * sin_t + sy * cos_t
+            max_x = max(max_x, abs(rx))
+            max_y = max(max_y, abs(ry))
+        return 2 * max_x, 2 * max_y
+
     def update_preview(self):
         if not self.selected_frames:
             self.preview_label.setPixmap(QPixmap())
@@ -1146,7 +1170,8 @@ class PropertyPanel(QWidget):
         frames_to_preview = self.selected_frames[:MAX_PREVIEW_FRAMES]
         show_simplified = len(self.selected_frames) > MAX_PREVIEW_FRAMES
             
-        w, h = 200, 200
+        w = self.preview_label.width() or 200
+        h = self.preview_label.height() or 200
         preview_img = QImage(w, h, QImage.Format.Format_ARGB32)
         preview_img.fill(Qt.GlobalColor.transparent)
         
@@ -1159,15 +1184,20 @@ class PropertyPanel(QWidget):
             img = image_cache.get(f.file_path)
             if img:
                 valid_frames.append((img, f))
-                # Calculate corners
-                fw = img.width() * f.scale
-                fh = img.height() * f.scale
+                # Compute drawn extents using rotated bbox so rotation/mirror/scale
+                # are reflected in the spread (matches the main canvas).
+                if f.crop_rect:
+                    base_w, base_h = f.crop_rect[2], f.crop_rect[3]
+                else:
+                    base_w, base_h = img.width(), img.height()
+                bw, bh = self._rotated_bbox(
+                    base_w, base_h, f.scale, f.aspect_ratio, f.rotation)
                 cx, cy = f.position
-                
-                min_x = min(min_x, cx - fw/2)
-                max_x = max(max_x, cx + fw/2)
-                min_y = min(min_y, cy - fh/2)
-                max_y = max(max_y, cy + fh/2)
+
+                min_x = min(min_x, cx - bw / 2)
+                max_x = max(max_x, cx + bw / 2)
+                min_y = min(min_y, cy - bh / 2)
+                max_y = max(max_y, cy + bh / 2)
         
         if not valid_frames:
             if show_simplified:
@@ -1183,26 +1213,38 @@ class PropertyPanel(QWidget):
             painter.setRenderHint(QPainter.RenderHint.SmoothPixmapTransform)
             
             # Target padding
-            padding = 10
-            target_area = 200 - 2 * padding
+            padding = 4
+            # Cap target_area to the smaller dim so the fit is square and stays
+            # inside the label even when the label is wider than tall.
+            target_area = min(w, h) - 2 * padding
             
             if len(valid_frames) == 1:
-                # Single selection: Fit image to 180x180 area
+                # Single selection: Fit image (with full transform) to the preview area.
+                # The main canvas applies: translate(pos) -> rotate -> scale(scale, scale/aspect)
+                # -> draw centered. We do the same minus position (thumbnail centered).
                 img, f = valid_frames[0]
                 
                 if f.crop_rect:
                     cx, cy, cw, ch = f.crop_rect
-                    src_w, src_h = cw, ch
-                    scale = min(target_area / src_w, target_area / src_h)
-                    final_w, final_h = int(src_w * scale), int(src_h * scale)
-                    dest_x, dest_y = (w - final_w) // 2, (h - final_h) // 2
-                    painter.drawImage(QRect(dest_x, dest_y, final_w, final_h), img, QRect(cx, cy, cw, ch))
+                    base_w, base_h = cw, ch
                 else:
-                    src_w, src_h = img.width(), img.height()
-                    scale = min(target_area / src_w, target_area / src_h)
-                    final_w, final_h = int(src_w * scale), int(src_h * scale)
-                    dest_x, dest_y = (w - final_w) // 2, (h - final_h) // 2
-                    painter.drawImage(QRect(dest_x, dest_y, final_w, final_h), img)
+                    cx, cy, cw, ch = 0, 0, img.width(), img.height()
+                    base_w, base_h = img.width(), img.height()
+                
+                aspect = f.aspect_ratio
+                box_w, box_h = self._rotated_bbox(
+                    base_w, base_h, f.scale, aspect, f.rotation)
+                fit = min(target_area / box_w, target_area / box_h) if box_w > 0 and box_h > 0 else 1
+                
+                painter.translate(w / 2, h / 2)        # center preview
+                painter.scale(fit, fit)                 # fit-to-preview scale
+                painter.rotate(f.rotation)              # rotation
+                painter.scale(f.scale, f.scale / aspect if aspect != 0 else 0.0)  # matches canvas
+                if f.crop_rect:
+                    painter.drawImage(QRect(int(-cw / 2), int(-ch / 2), int(cw), int(ch)),
+                                      img, QRect(cx, cy, cw, ch))
+                else:
+                    painter.drawImage(int(-img.width() / 2), int(-img.height() / 2), img)
             else:
                 # Multiple selection: Fit bounding box to 180x180 area
                 box_w = max_x - min_x
@@ -1221,8 +1263,9 @@ class PropertyPanel(QWidget):
                         painter.save()
                         painter.setOpacity(0.5)
                         painter.translate(f.position[0], f.position[1])
-                        painter.scale(f.scale, f.scale)
-                        
+                        painter.rotate(f.rotation)
+                        painter.scale(f.scale, f.scale / f.aspect_ratio if f.aspect_ratio != 0 else 0.0)
+
                         if f.crop_rect:
                             cx, cy, cw, ch = f.crop_rect
                             painter.drawImage(QRect(int(-cw/2), int(-ch/2), int(cw), int(ch)), img, QRect(cx, cy, cw, ch))

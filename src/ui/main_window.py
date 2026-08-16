@@ -2046,15 +2046,15 @@ class MainWindow(QMainWindow):
                 changed_frames.append((frame_data, frame_data.is_disabled))
                 frame_data.is_disabled = is_disabled
 
-                # Update UI checkbox to match the new disabled state.
-                # List view uses QTreeWidgetItem (checkbox data stored on column 1);
-                # Grid view uses QListWidgetItem (CheckStateRole stored per item).
-                # Both views expose the same role-based API via setData().
+                # List view uses QTreeWidgetItem with a custom disable column:
+                # store the state in CheckStateRole on column 1 so the column-1
+                # delegate can paint the 'x' overlay. The grid view reflects the
+                # disabled state purely via the grayscale effect in its delegate,
+                # so it must NOT carry CheckStateRole (doing so makes Qt draw an
+                # unwanted built-in checkbox indicator).
                 state = Qt.CheckState.Checked if is_disabled else Qt.CheckState.Unchecked
                 if isinstance(item, QTreeWidgetItem):
                     item.setData(1, Qt.ItemDataRole.CheckStateRole, state)
-                elif hasattr(item, 'setData'):
-                    item.setData(Qt.ItemDataRole.CheckStateRole, state)
 
         # Refresh current view to show/hide disabled overlay
         self._flush_pending_history()
