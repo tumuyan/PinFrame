@@ -157,22 +157,9 @@ class TimelineWidget(QStackedWidget):
         for i in range(count):
             frame_data = self.model.get_frame_at(index + i)
             if frame_data:
-                # Determine dimensions for display
-                orig_w, orig_h = 0, 0
-                if frame_data.crop_rect:
-                    # Use crop rect size for virtual sliced frames
-                    orig_w, orig_h = frame_data.crop_rect[2], frame_data.crop_rect[3]
-                elif os.path.exists(frame_data.file_path):
-                    # Read original image size
-                    from PyQt6.QtGui import QImageReader
-                    reader = QImageReader(frame_data.file_path)
-                    if reader.canRead():
-                        size = reader.size()
-                        orig_w, orig_h = size.width(), size.height()
-
-                # Add to both views
+                # Add to both views (尺寸统一由 FrameData.base_size/effective_target_size 计算)
                 filename = os.path.basename(frame_data.file_path)
-                self.list_view.add_frame(filename, frame_data, orig_w, orig_h, index=index + i)
+                self.list_view.add_frame(filename, frame_data, index=index + i)
                 self.grid_view.add_frame(filename, frame_data, index + i)
 
     def _on_frames_removed(self, index: int, count: int):
@@ -199,9 +186,8 @@ class TimelineWidget(QStackedWidget):
         for i in range(total_frames):
             frame_data = self.model.get_frame_at(i)
             if frame_data:
-                orig_w, orig_h = frame_data.base_size()
                 filename = os.path.basename(frame_data.file_path)
-                self.list_view.add_frame(filename, frame_data, orig_w, orig_h, index=i)
+                self.list_view.add_frame(filename, frame_data, index=i)
 
         # Rebuild grid view
         self.grid_view.clear()
@@ -226,13 +212,12 @@ class TimelineWidget(QStackedWidget):
             for idx in range(start_index, end_index + 1):
                 frame_data = self.model.get_frame_at(idx)
                 if frame_data:
-                    orig_w, orig_h = frame_data.base_size()
                     filename = os.path.basename(frame_data.file_path)
 
                     # Update list view only
                     if idx < self.list_view.topLevelItemCount():
                         item = self.list_view.topLevelItem(idx)
-                        self.list_view.update_item_display(item, frame_data, orig_w, orig_h)
+                        self.list_view.update_item_display(item, frame_data)
         else:
             # Grid mode - only update grid view
             for idx in range(start_index, end_index + 1):
@@ -275,7 +260,7 @@ class TimelineWidget(QStackedWidget):
             self.grid_view.blockSignals(False)
 
     # ========== Model access methods ==========
-    def add_frame(self, filename: str, frame_data: FrameData, orig_width=0, orig_height=0, index: Optional[int] = None):
+    def add_frame(self, filename: str, frame_data: FrameData, index: Optional[int] = None):
         """Add frame through model"""
         self.model.add_frame(frame_data, index)
 
@@ -380,12 +365,12 @@ class TimelineWidget(QStackedWidget):
         self.list_view.refresh_visuals()
         self.grid_view.refresh_visuals()
 
-    def update_item_display(self, item, frame_data, orig_w, orig_h):
+    def update_item_display(self, item, frame_data):
         """Update display of a single item in current view"""
         if self.current_view_mode == "list":
-            self.list_view.update_item_display(item, frame_data, orig_w, orig_h)
+            self.list_view.update_item_display(item, frame_data)
         else:
-            self.grid_view.update_item_display(item, frame_data, orig_w, orig_h)
+            self.grid_view.update_item_display(item, frame_data)
 
     def refresh_ui_text(self):
         self.list_view.refresh_ui_text()
@@ -416,18 +401,9 @@ class TimelineWidget(QStackedWidget):
         for i in range(total_frames):
             frame_data = self.model.get_frame_at(i)
             if frame_data:
-                # Determine dimensions for display
-                orig_w, orig_h = 0, 0
-                if frame_data.crop_rect:
-                    orig_w, orig_h = frame_data.crop_rect[2], frame_data.crop_rect[3]
-                elif os.path.exists(frame_data.file_path):
-                    from PyQt6.QtGui import QImageReader
-                    reader = QImageReader(frame_data.file_path)
-                    if reader.canRead():
-                        size = reader.size()
-                        orig_w, orig_h = size.width(), size.height()
+                # 尺寸统一由 FrameData.base_size/effective_target_size 计算
                 filename = os.path.basename(frame_data.file_path)
-                self.list_view.add_frame(filename, frame_data, orig_w, orig_h, index=i)
+                self.list_view.add_frame(filename, frame_data, index=i)
 
         # Restore selection after rebuild (block signals to avoid triggering model update)
         if selected_indices:

@@ -724,7 +724,7 @@ class TimelineGridWidget(QListWidget, BaseTimelineView):
     def refresh_current_items(self):
         self.refresh_all_items()
 
-    def update_item_display(self, item, frame_data, _orig_w, _orig_h):
+    def update_item_display(self, item, frame_data):
         """Update display of a single item (refreshes thumbnail and text)"""
         if item is None:
             return

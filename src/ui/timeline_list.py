@@ -14,17 +14,6 @@ import os
 DEBUG_LIST_VIEW = False
 
 
-def _source_size(file_path: str):
-    """零解码读取源图尺寸 (w, h)，失败返回 (0, 0)。"""
-    if not file_path or not os.path.exists(file_path):
-        return 0, 0
-    reader = QImageReader(file_path)
-    if reader.canRead():
-        s = reader.size()
-        return s.width(), s.height()
-    return 0, 0
-
-
 class _DisableColumnDelegate(QStyledItemDelegate):
     """Paints column 1 of every row using only our custom indicator.
 
@@ -211,10 +200,7 @@ class TimelineListView(QTreeWidget, BaseTimelineView):
         """Update frame in view at specified index"""
         if 0 <= index < self.topLevelItemCount():
             item = self.topLevelItem(index)
-            # Get original resolution from data
-            orig_res = item.data(3, Qt.ItemDataRole.UserRole)
-            w, h = orig_res if orig_res else (0, 0)
-            self.update_item_display(item, frame_data, w, h)
+            self.update_item_display(item, frame_data)
 
     def refresh_view(self):
         """Refresh the entire view"""
@@ -597,7 +583,7 @@ class TimelineListView(QTreeWidget, BaseTimelineView):
                     return
         super().mousePressEvent(event)
 
-    def add_frame(self, filename, frame_data, orig_width=0, orig_height=0, index=None):
+    def add_frame(self, filename, frame_data, index=None):
         # If index is specified, create item first, then insert it at position
         if index is not None:
             item = QTreeWidgetItem()
@@ -606,7 +592,6 @@ class TimelineListView(QTreeWidget, BaseTimelineView):
             item = QTreeWidgetItem(self)
 
         item.setData(0, Qt.ItemDataRole.UserRole, frame_data)
-        item.setData(3, Qt.ItemDataRole.UserRole, (orig_width, orig_height))
 
         # Defensive: explicitly remove any Qt.ItemFlag.ItemIsUserCheckable /
         # ItemIsTristate so Qt's built-in checkbox indicator never paints.
@@ -630,9 +615,9 @@ class TimelineListView(QTreeWidget, BaseTimelineView):
         item.setText(1, "")
         item.setText(2, filename)
 
-        self.update_item_display(item, frame_data, orig_width, orig_height)
+        self.update_item_display(item, frame_data)
 
-    def update_item_display(self, item, frame_data, orig_w, orig_h):
+    def update_item_display(self, item, frame_data):
         fname = os.path.basename(frame_data.file_path)
         if frame_data.slice_pos:
             fname += f" [{frame_data.slice_pos[0]},{frame_data.slice_pos[1]}]"
@@ -656,34 +641,20 @@ class TimelineListView(QTreeWidget, BaseTimelineView):
         item.setTextAlignment(5, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
 
         # Column 6: Crop resolution. If cropped, show cw x ch; otherwise show
-        # source resolution in parentheses (zero-decode via QImageReader if needed).
+        # source resolution in parentheses (zero-decode via FrameData.base_size()).
         if frame_data.crop_rect:
             _, _, cw, ch = frame_data.crop_rect
             crop_res_str = f"{cw} x {ch}"
         else:
-            if orig_w > 0:
-                sw, sh = orig_w, orig_h
-            else:
-                sw, sh = _source_size(frame_data.file_path)
+            sw, sh = frame_data.base_size()
             crop_res_str = f"({sw} x {sh})" if sw > 0 else "(? x ?)"
         item.setText(6, crop_res_str)
         item.setTextAlignment(6, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
 
         # Column 7: Scaled resolution = effective target size (含 aspect_ratio 失真)
-        # 与属性面板"目标分辨率"共用 FrameData.effective_target_size() 算法
-        if frame_data.crop_rect or orig_w > 0:
-            # 优先用与列6 一致的基准尺寸来源，确保两列算法统一
-            base_w, base_h = (frame_data.crop_rect[2], frame_data.crop_rect[3]) if frame_data.crop_rect else (orig_w, orig_h)
-            if base_w > 0 and base_h > 0:
-                final_w = int(abs(base_w * frame_data.scale))
-                final_h = int(abs(base_h * (frame_data.scale / frame_data.aspect_ratio)))
-                scaled_res_str = f"{final_w} x {final_h}"
-            else:
-                scaled_res_str = "? x ?"
-        else:
-            # 无 crop_rect 且 orig_w 未知: 直接调用统一算法 (零解码源图)
-            tw, th = frame_data.effective_target_size()
-            scaled_res_str = f"{tw} x {th}" if tw > 0 else "? x ?"
+        # 与属性面板"目标分辨率"共用 FrameData.effective_target_size() 单一算法来源
+        tw, th = frame_data.effective_target_size()
+        scaled_res_str = f"{tw} x {th}" if tw > 0 else "? x ?"
         item.setText(7, scaled_res_str)
         item.setTextAlignment(7, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
 
@@ -708,9 +679,4 @@ class TimelineListView(QTreeWidget, BaseTimelineView):
             item = root.child(i)
             item.setText(0, str(i + 1))
             frame_data = item.data(0, Qt.ItemDataRole.UserRole)
-            orig_res = item.data(3, Qt.ItemDataRole.UserRole)
-            if orig_res:
-                w, h = orig_res
-                self.update_item_display(item, frame_data, w, h)
-            else:
-                self.update_item_display(item, frame_data, 0, 0)
+            self.update_item_display(item, frame_data)

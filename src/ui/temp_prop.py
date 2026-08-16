@@ -441,57 +441,75 @@ class PropertyPanel(QWidget):
 
     def apply_mirror(self, axis):
         if not self.selected_frames: return
-        
+
+        self._mirror_axis(axis)
+
+        self.update_ui_from_selection()
+        self.frame_data_changed.emit(0,0,0)
+
+    def _mirror_axis(self, axis):
+        """对选中帧执行一次镜像 (含锚点位置反射)。
+
+        apply_mirror 调用两次 = 恒等变换 (scale/aspect_ratio 取负两次回原值，
+        position 绕锚点反射两次回原位)，故 reset_mirror 复用此方法即可精确撤销。
+        与 property_panel.PropertyPanel._mirror_axis 同构 (本模板版不含 rotation
+        取负与 custom anchor handle 移动，保持与主面板差异一致)。
+        """
         center_mode = self.anchor_bg.checkedId()
-        
+
         for f in self.selected_frames:
             # 1. Logic for flipping scale/AR
             # Flip H: scale *= -1
             # Flip V: aspect_ratio *= -1
-            
+
             if axis == "h":
                 f.scale *= -1
                 f.aspect_ratio *= -1
             else:
                 f.aspect_ratio *= -1
-            
+
             # 2. Logic for position mirror around Anchor
-            # If Image Center, position doesn't change relative to itself? 
+            # If Image Center, position doesn't change relative to itself?
             # Wait. If I flip an image horizontally around its center, it stays in place.
             # If I flip around Canvas Center (0,0), and image is at (100,0), it should go to (-100, 0).
-            
+
             anchor = self.get_anchor_pos(f)
-            
+
             # Vector from anchor to images pos
             vx = f.position[0] - anchor.x()
             vy = f.position[1] - anchor.y()
-            
+
             if axis == "h":
                 # Reflect X
                 vx = -vx
             else:
                 # Reflect Y
                 vy = -vy
-                
+
             f.position = (anchor.x() + vx, anchor.y() + vy)
-            
-        self.update_ui_from_selection()
-        self.frame_data_changed.emit(0,0,0)
 
     def reset_mirror(self):
-        """复位镜像: 对当前已激活镜像的轴各再执行一次 apply_mirror (两次=恒等)。
+        """复位镜像: 逐帧对其已激活镜像的轴各再执行一次 apply_mirror (两次=恒等)。
 
-        复用 apply_mirror 的锚点位置反射逻辑，确保 position 与镜像操作对称还原。
+        逐帧判断，解决"多选帧镜像状态不一致"时全局 OR 导致的误判。
+        符号区分 (scale 只被 H 影响; V 只翻 aspect):
+           仅 H:  scale<0, aspect<0
+           H+V:  scale<0, aspect>=0
+           仅 V:  scale>=0, aspect<0
         """
         if not self.selected_frames: return
-        # scale 只被 H 影响; V 只翻 aspect。精确区分:
-        # need_h = scale<0 ; need_v = (aspect<0) XOR (scale<0)
-        need_h = any(f.scale < 0 for f in self.selected_frames)
-        need_v = any((f.aspect_ratio < 0) != (f.scale < 0) for f in self.selected_frames)
-        if need_v:
-            self.apply_mirror("v")
-        if need_h:
-            self.apply_mirror("h")
+        for f in self.selected_frames:
+            need_h = f.scale < 0
+            need_v = (f.aspect_ratio < 0) != (f.scale < 0)
+            saved = self.selected_frames
+            self.selected_frames = [f]
+            try:
+                if need_v:
+                    self.apply_mirror("v")
+                if need_h:
+                    self.apply_mirror("h")
+            finally:
+                self.selected_frames = saved
 
     def apply_rel_move(self, dx, dy):
         if not self.selected_frames: return

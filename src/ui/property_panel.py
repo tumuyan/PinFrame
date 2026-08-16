@@ -714,25 +714,35 @@ class PropertyPanel(QWidget):
         # Emit signal for first frame or all? Logic uses first frame for panel signals.
         self.frame_data_changed.emit(self.frame_data)
 
-    def _mirror_axis(self, axis):
-        """对选中帧执行一次镜像 (含锚点位置反射)。
+    def _mirror_axis(self, axis, frames=None, move_handle=True):
+        """对指定帧执行一次镜像 (含锚点位置反射)。
 
         apply_mirror 调用两次 = 恒等变换 (scale/aspect_ratio/rotation 取负两次回原值，
         position 绕锚点反射两次回原位)，故 reset_mirror 复用此方法即可精确撤销。
-        """
-        # 1. Choose Pivot
-        pivot = self.get_anchor_pos()
 
-        # 2. Mirror Anchor handle itself if in custom mode and not mirroring around itself
-        if self.anchor_mode == self.ANCHOR_CUSTOM_CANVAS or self.anchor_mode == self.ANCHOR_CUSTOM_IMAGE:
+        frames: 要镜像的帧列表；为 None 时作用于 self.selected_frames。
+        每帧使用自身锚点 (get_anchor_pos(f)) 计算 pivot，因此多选时各帧绕各自锚点
+        反射，互不干扰 (修复多选复位时所有帧被统一反射到首帧锚点的 bug)。
+        move_handle: 是否移动 custom anchor 手柄 (逐帧撤销时仅首帧移动，避免重复偏移)。
+        """
+        if frames is None:
+            frames = self.selected_frames
+        if not frames:
+            return
+
+        # 1. Move Custom Anchor handle once (基于首帧锚点，custom 模式各帧锚点共享)
+        if move_handle and (self.anchor_mode == self.ANCHOR_CUSTOM_CANVAS or self.anchor_mode == self.ANCHOR_CUSTOM_IMAGE):
+             pivot0 = self.get_anchor_pos(frames[0])
              ax, ay = self.custom_anchor_pos.x(), self.custom_anchor_pos.y()
              if axis == "h":
-                 self.custom_anchor_pos = QPointF(pivot.x() - (ax - pivot.x()), ay)
+                 self.custom_anchor_pos = QPointF(pivot0.x() - (ax - pivot0.x()), ay)
              else:
-                 self.custom_anchor_pos = QPointF(ax, pivot.y() - (ay - pivot.y()))
+                 self.custom_anchor_pos = QPointF(ax, pivot0.y() - (ay - pivot0.y()))
 
-        # 3. Mirror Frames
-        for f in self.selected_frames:
+        # 2. Mirror Frames (逐帧以其自身锚点为 pivot)
+        for f in frames:
+            pivot = self.get_anchor_pos(f)
+
             # Mirror scaling and rotation
             if axis == "h":
                 f.scale *= -1
@@ -743,46 +753,46 @@ class PropertyPanel(QWidget):
             # Content Mirror Rule: Negate rotation to keep content at anchor visually aligned
             f.rotation = self.normalize_rotation(-f.rotation)
 
-            # Position reflection around pivot
+            # Position reflection around this frame's pivot
             vx = f.position[0] - pivot.x()
             vy = f.position[1] - pivot.y()
             if axis == "h": vx = -vx
             else: vy = -vy
             f.position = (pivot.x() + vx, pivot.y() + vy)
 
-        # 4. Sync Offset for Custom Image
+        # 3. Sync Offset for Custom Image
         if self.anchor_mode == self.ANCHOR_CUSTOM_IMAGE:
              # Anchor handle moved (or stayed), image center moved.
              # Re-bind for correct translation following later.
              self.update_image_anchor_offset()
 
     def reset_mirror(self):
-        """复位镜像: 对当前已激活镜像的轴各再执行一次镜像 (apply_mirror 两次=恒等)。
+        """复位镜像: 逐帧对其已激活镜像的轴各再执行一次镜像 (apply_mirror 两次=恒等)。
 
-        复用 _mirror_axis 的锚点逻辑，确保 position 反射、锚点手柄、custom image offset
-        与镜像操作完全对称地还原，避免"内容正向但位置仍停在镜像后"的不一致。
+        逐帧判断，解决"多选帧镜像状态不一致"时全局 OR 导致的误判。由于 H 镜像翻转
+        scale 和 aspect_ratio，V 镜像只翻转 aspect_ratio，两者都翻转 rotation，用符号
+        组合精确区分每帧的激活轴 (而非简单"aspect<0 即 V")：
+           仅 H:  scale<0, aspect<0
+           H+V:  scale<0, aspect>=0
+           仅 V:  scale>=0, aspect<0
+        逐帧调用 _mirror_axis (各帧用自身锚点)，锚点手柄全局唯一、仅首帧移动一次。
         """
         if not self.selected_frames:
             return
 
         self.edit_started.emit(self.EDIT_MIRROR_RESET)
-        property_debug("[Property] Reset mirror")
+        property_debug("[Property] Reset mirror (per-frame)")
 
-        # 判断各轴当前是否处于镜像激活状态。
-        # 由于 H 镜像翻转 scale 和 aspect_ratio，V 镜像只翻转 aspect_ratio，
-        # 两者都翻转 rotation，故可用符号组合精确区分（而非简单"aspect<0 即 V"）：
-        #   仅 H:  scale<0, aspect<0
-        #   H+V:  scale<0, aspect>=0
-        #   仅 V:  scale>=0, aspect<0
-        # 因此: need_h = scale<0 (scale 只被 H 影响); need_v = (aspect<0) XOR (scale<0)
-        need_h = any(f.scale < 0 for f in self.selected_frames)
-        need_v = any((f.aspect_ratio < 0) != (f.scale < 0) for f in self.selected_frames)
-
-        # 依次对激活轴再镜像一次 = 撤销 (apply_mirror 两次=恒等)
-        if need_v:
-            self._mirror_axis("v")
-        if need_h:
-            self._mirror_axis("h")
+        moved = False
+        for f in self.selected_frames:
+            need_h = f.scale < 0
+            need_v = (f.aspect_ratio < 0) != (f.scale < 0)
+            if need_v:
+                self._mirror_axis("v", frames=[f], move_handle=not moved)
+                moved = True
+            if need_h:
+                self._mirror_axis("h", frames=[f], move_handle=not moved)
+                moved = True
 
         self.update_ui_from_selection()
         self.frame_data_changed.emit(self.frame_data)

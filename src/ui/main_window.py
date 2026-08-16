@@ -690,10 +690,8 @@ class MainWindow(QMainWindow):
         # 克隆快照中的帧对象，避免后续编辑污染历史快照
         for frame in frames:
             new_frame = self._clone_frame(frame)
-            # 尺寸仅供视图展示；add_frame 走模型插入，视图会在 _on_frames_inserted 中
-            # 自行读取所需尺寸，这里传入的 orig_w/orig_h 会被丢弃，故不再做 QImageReader 读取。
-            w, h = (new_frame.crop_rect[2], new_frame.crop_rect[3]) if new_frame.crop_rect else (0, 0)
-            self.timeline.add_frame(os.path.basename(new_frame.file_path), new_frame, w, h)
+            # add_frame 走模型插入，视图会在 _on_frames_inserted 中自行读取所需尺寸。
+            self.timeline.add_frame(os.path.basename(new_frame.file_path), new_frame)
 
         # 帧插入时缩略图已按 file_path/crop_rect 生成并写入缓存；此处仅刷新（复用缓存），
         # 不再 _clear_thumbnail_cache()，避免对无 crop_rect 的帧从磁盘重复加载原图。
@@ -1759,18 +1757,9 @@ class MainWindow(QMainWindow):
             _, ext = os.path.splitext(f)
             if ext.lower() not in valid_extensions:
                 continue
-                
+
             frame_data = FrameData(file_path=f)
-            
-            w, h = 0, 0
-            try:
-                from PIL import Image
-                with Image.open(f) as img:
-                    w, h = img.size
-            except:
-                pass
-            
-            new_items.append((os.path.basename(f), frame_data, w, h))
+            new_items.append((os.path.basename(f), frame_data))
             added_count += 1
 
         if added_count == 0:
@@ -1785,13 +1774,13 @@ class MainWindow(QMainWindow):
         # TimelineWidget handles both data and view updates
         if index == -1 or index >= self.timeline.get_frame_count():
             # Append all frames
-            for name, data, w, h in new_items:
-                self.timeline.add_frame(name, data, w, h)
+            for name, data in new_items:
+                self.timeline.add_frame(name, data)
         else:
             # Insert at specific index - insert in reverse order to maintain correct positions
             for i in range(len(new_items) - 1, -1, -1):
-                name, data, w, h = new_items[i]
-                self.timeline.add_frame(name, data, w, h)  # Model handles insertion at index
+                name, data = new_items[i]
+                self.timeline.add_frame(name, data)
 
         self.mark_dirty()
         self.timeline.refresh_current_items()
@@ -3344,7 +3333,7 @@ class MainWindow(QMainWindow):
                         size = reader.size()
                         w, h = size.width(), size.height()
 
-                self.timeline.add_frame(os.path.basename(frame.file_path), frame, w, h)
+                self.timeline.add_frame(os.path.basename(frame.file_path), frame)
 
             # Clear thumbnail cache after loading project and refresh grid view
             self.timeline.grid_view._clear_thumbnail_cache()
@@ -4043,7 +4032,7 @@ class MainWindow(QMainWindow):
             # 只加载一次图片（用于验证）
             for crop, col, row in crops:
                 frame = FrameData(file_path=file, crop_rect=crop, slice_pos=(col, row))
-                self.timeline.add_frame(os.path.basename(file), frame, crop[2], crop[3])
+                self.timeline.add_frame(os.path.basename(file), frame)
                 
         else:
             # Real Slicing: Save files to a subfolder
@@ -4064,7 +4053,7 @@ class MainWindow(QMainWindow):
                 part.save(out_path)
 
                 frame = FrameData(file_path=out_path)
-                self.timeline.add_frame(os.path.basename(out_path), frame, w, h)
+                self.timeline.add_frame(os.path.basename(out_path), frame)
 
         self.mark_dirty()
         self.timeline.refresh_current_items()
@@ -4103,7 +4092,7 @@ class MainWindow(QMainWindow):
 
                 # Add to project through timeline model
                 f_data = FrameData(file_path=out_path)
-                self.timeline.add_frame(os.path.basename(out_path), f_data, png_frame.width, png_frame.height)
+                self.timeline.add_frame(os.path.basename(out_path), f_data)
                 count += 1
 
             self.mark_dirty()

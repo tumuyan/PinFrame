@@ -106,6 +106,9 @@ class FrameData:
         基准尺寸优先级: crop_rect(w,h) > 源图尺寸(零解码)。
         aspect_ratio 为 X/Y 失真系数 (负值=镜像)，1.0 表示无失真=原始比例。
         这是属性面板"目标分辨率"与 Timeline"缩放后分辨率"共用的唯一算法来源。
+
+        注: 源图尺寸通过 QImageReader 零解码获取文件原始像素尺寸，与 image_cache
+        加载的完整 QImage 尺寸一致 (PyQt6 默认不应用 EXIF 方向)，故两者等价。
         """
         if self.crop_rect:
             base_w, base_h = self.crop_rect[2], self.crop_rect[3]
