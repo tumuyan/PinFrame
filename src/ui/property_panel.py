@@ -88,8 +88,11 @@ class PropertyPanel(QWidget):
         # Rotation spinbox needs to be added to transform_group or we refactor it completely.
         
         # 1. Transform Group (Scale, Rotate, Position)
+        # 4 列网格：每行放 2 个属性（标签+输入框占 2 列），与裁切组风格一致
         self.transform_group = QGroupBox(i18n.t("prop_transform"))
         form = QGridLayout(self.transform_group)
+        form.setColumnStretch(1, 1)
+        form.setColumnStretch(3, 1)
         
         # Scale
         self.label_scale = QLabel(i18n.t("prop_scale_label"))
@@ -104,29 +107,29 @@ class PropertyPanel(QWidget):
         
         # Rotation
         self.label_rotation = QLabel(i18n.t("prop_rotation_label"))
-        form.addWidget(self.label_rotation, 1, 0)
+        form.addWidget(self.label_rotation, 0, 2)
         self.rotation_spin = QDoubleSpinBox()
         self.rotation_spin.setRange(-3600, 3600)
         self.rotation_spin.setSingleStep(15)
         self.rotation_spin.setSuffix("°")
         self.rotation_spin.valueChanged.connect(self.on_value_changed)
-        form.addWidget(self.rotation_spin, 1, 1)
+        form.addWidget(self.rotation_spin, 0, 3)
         
         # Position X
         self.label_x = QLabel(i18n.t("prop_pos_x"))
-        form.addWidget(self.label_x, 2, 0)
+        form.addWidget(self.label_x, 1, 0)
         self.x_spin = QDoubleSpinBox()
         self.x_spin.setRange(-9999, 9999)
         self.x_spin.valueChanged.connect(self.on_value_changed)
-        form.addWidget(self.x_spin, 2, 1)
+        form.addWidget(self.x_spin, 1, 1)
         
         # Position Y
         self.label_y = QLabel(i18n.t("prop_pos_y"))
-        form.addWidget(self.label_y, 3, 0)
+        form.addWidget(self.label_y, 1, 2)
         self.y_spin = QDoubleSpinBox()
         self.y_spin.setRange(-9999, 9999)
         self.y_spin.valueChanged.connect(self.on_value_changed)
-        form.addWidget(self.y_spin, 3, 1)
+        form.addWidget(self.y_spin, 1, 3)
         
         layout.addWidget(self.transform_group)
 
