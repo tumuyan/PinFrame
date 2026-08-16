@@ -3,7 +3,7 @@ from PyQt6.QtWidgets import (
     QStyledItemDelegate, QStyleOptionViewItem, QStyle,
 )
 from PyQt6.QtCore import Qt, pyqtSignal, QTimer, QItemSelectionModel, QModelIndex, QMimeData, QRect
-from PyQt6.QtGui import QColor, QAction, QDrag, QPixmap, QPainter, QPen
+from PyQt6.QtGui import QColor, QAction, QDrag, QPixmap, QPainter, QPen, QImageReader
 from i18n.manager import i18n
 from ui.timeline_base_view import BaseTimelineView
 from model.project_data import FrameData
@@ -12,6 +12,17 @@ import os
 
 # Debug flag - set to False to disable debug output
 DEBUG_LIST_VIEW = False
+
+
+def _source_size(file_path: str):
+    """零解码读取源图尺寸 (w, h)，失败返回 (0, 0)。"""
+    if not file_path or not os.path.exists(file_path):
+        return 0, 0
+    reader = QImageReader(file_path)
+    if reader.canRead():
+        s = reader.size()
+        return s.width(), s.height()
+    return 0, 0
 
 
 class _DisableColumnDelegate(QStyledItemDelegate):
@@ -96,15 +107,16 @@ class TimelineListView(QTreeWidget, BaseTimelineView):
     def __init__(self, parent=None):
         super().__init__(parent)
 
-        self.setColumnCount(7)
+        self.setColumnCount(8)
         self.setHeaderLabels([
             i18n.t("col_index"),
             i18n.t("col_disabled_header"),
             i18n.t("col_filename"),
             i18n.t("col_scale"),
             i18n.t("col_position"),
-            i18n.t("col_crop"),
-            i18n.t("col_res_combined")
+            i18n.t("col_crop_origin"),
+            i18n.t("col_crop_res"),
+            i18n.t("col_scaled_res")
         ])
 
         header = self.header()
@@ -120,15 +132,17 @@ class TimelineListView(QTreeWidget, BaseTimelineView):
         header.setSectionResizeMode(1, QHeaderView.ResizeMode.Fixed)
         header.resizeSection(1, 24)
 
-        # Columns 3-5: Fixed/Interactive sizes
+        # Columns 3-7: Fixed/Interactive sizes
         header.setSectionResizeMode(3, QHeaderView.ResizeMode.Interactive)
         header.resizeSection(3, 80)
         header.setSectionResizeMode(4, QHeaderView.ResizeMode.Interactive)
-        header.resizeSection(4, 100)
+        header.resizeSection(4, 110)
         header.setSectionResizeMode(5, QHeaderView.ResizeMode.Interactive)
-        header.resizeSection(5, 130)
+        header.resizeSection(5, 120)
         header.setSectionResizeMode(6, QHeaderView.ResizeMode.Interactive)
-        header.resizeSection(6, 150)
+        header.resizeSection(6, 130)
+        header.setSectionResizeMode(7, QHeaderView.ResizeMode.Interactive)
+        header.resizeSection(7, 130)
 
         # Column 2: Filename - STRETCH
         header.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
@@ -628,30 +642,48 @@ class TimelineListView(QTreeWidget, BaseTimelineView):
         item.setTextAlignment(3, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
 
         px, py = frame_data.position
-        pos_str = f"{int(px):>4d} {int(py):>4d}"
+        pos_str = f"{int(px):>4d} , {int(py):>4d}"
         item.setText(4, pos_str)
         item.setTextAlignment(4, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
 
+        # Column 5: Crop origin (cx, cy); empty if no crop
         if frame_data.crop_rect:
             cx, cy, cw, ch = frame_data.crop_rect
-            crop_str = f"{cx:>4d} {cy:>4d} {cw:>4d} {ch:>4d}"
+            crop_origin_str = f"{cx:>4d} , {cy:>4d}"
         else:
-            crop_str = f"{'-':>4} {'-':>4} {'-':>4} {'-':>4}"
-        item.setText(5, crop_str)
+            crop_origin_str = ""
+        item.setText(5, crop_origin_str)
         item.setTextAlignment(5, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
 
-        if orig_w > 0:
-            final_w = int(orig_w * frame_data.scale)
-            final_h = int(orig_h * frame_data.scale)
-            res_str = f"{orig_w}x{orig_h} -> {final_w}x{final_h}"
-
-            if frame_data.target_resolution:
-                tw, th = frame_data.target_resolution
-                res_str += f" ({tw}x{th})"
+        # Column 6: Crop resolution. If cropped, show cw x ch; otherwise show
+        # source resolution in parentheses (zero-decode via QImageReader if needed).
+        if frame_data.crop_rect:
+            _, _, cw, ch = frame_data.crop_rect
+            crop_res_str = f"{cw} x {ch}"
         else:
-            res_str = "?x?"
+            if orig_w > 0:
+                sw, sh = orig_w, orig_h
+            else:
+                sw, sh = _source_size(frame_data.file_path)
+            crop_res_str = f"({sw} x {sh})" if sw > 0 else "(? x ?)"
+        item.setText(6, crop_res_str)
+        item.setTextAlignment(6, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
 
-        item.setText(6, res_str)
+        # Column 7: Scaled resolution = source/crop size * scale
+        if frame_data.crop_rect:
+            _, _, base_w, base_h = frame_data.crop_rect
+        elif orig_w > 0:
+            base_w, base_h = orig_w, orig_h
+        else:
+            base_w, base_h = _source_size(frame_data.file_path)
+        if base_w > 0:
+            final_w = int(base_w * frame_data.scale)
+            final_h = int(base_h * frame_data.scale)
+            scaled_res_str = f"{final_w} x {final_h}"
+        else:
+            scaled_res_str = "? x ?"
+        item.setText(7, scaled_res_str)
+        item.setTextAlignment(7, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
 
     def refresh_ui_text(self):
         self.setHeaderLabels([
@@ -660,8 +692,9 @@ class TimelineListView(QTreeWidget, BaseTimelineView):
             i18n.t("col_filename"),
             i18n.t("col_scale"),
             i18n.t("col_position"),
-            i18n.t("col_crop"),
-            i18n.t("col_res_combined")
+            i18n.t("col_crop_origin"),
+            i18n.t("col_crop_res"),
+            i18n.t("col_scaled_res")
         ])
         self.refresh_current_items()
 

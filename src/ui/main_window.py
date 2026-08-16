@@ -3722,14 +3722,7 @@ class MainWindow(QMainWindow):
 
         # Update Sub-widgets
         self.property_panel.refresh_ui_text()
-        self.timeline.list_view.setHeaderLabels([
-            i18n.t("col_index"),
-            i18n.t("col_disabled"),
-            i18n.t("col_filename"),
-            i18n.t("col_scale"),
-            i18n.t("col_position"),
-            i18n.t("col_res_combined")
-        ])
+        self.timeline.refresh_ui_text()
         self.timeline.refresh_current_items()
 
         # This is enough for now. A restart is always safer.
