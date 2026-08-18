@@ -9,6 +9,7 @@ import subprocess
 import sys
 import os
 
+from core import image_formats
 from core.version import VERSION as BUILD_VERSION, BUILD_DATE, REPO_URL as BUILD_REPO_URL
 from model.project_data import ProjectData, FrameData
 from ui.canvas import CanvasWidget
@@ -992,6 +993,15 @@ class MainWindow(QMainWindow):
         self.copy_assets_action = QAction(i18n.t("action_copy_assets"), self)
         self.copy_assets_action.triggered.connect(self.copy_assets_to_local)
 
+        self.asset_manager_action = QAction(i18n.t("action_asset_manager"), self)
+        self.asset_manager_action.triggered.connect(self.open_asset_manager)
+
+        self.delete_unused_action = QAction(i18n.t("action_delete_unused"), self)
+        self.delete_unused_action.triggered.connect(self.delete_unused_assets)
+
+        self.image_formats_action = QAction(i18n.t("action_image_formats"), self)
+        self.image_formats_action.triggered.connect(self.open_image_formats)
+
         self.reload_images_action = QAction(i18n.t("action_reload_images"), self)
         self.reload_images_action.triggered.connect(self.reload_image_resources)
 
@@ -1366,6 +1376,8 @@ class MainWindow(QMainWindow):
         self.update_recent_projects_menu()
 
         file_menu.addAction(self.copy_assets_action)
+        file_menu.addAction(self.asset_manager_action)
+        file_menu.addAction(self.delete_unused_action)
         file_menu.addSeparator()
         file_menu.addAction(self.action_open_dir)
         file_menu.addSeparator()
@@ -1384,6 +1396,8 @@ class MainWindow(QMainWindow):
         image_menu.addAction(self.import_action)
         image_menu.addAction(self.import_slice_action)
         image_menu.addAction(self.import_gif_action)
+        image_menu.addSeparator()
+        image_menu.addAction(self.image_formats_action)
         
         # Onion & Reference Submenu
         # View Menu
@@ -1735,7 +1749,8 @@ class MainWindow(QMainWindow):
                 self.property_panel.update_ui_from_selection()
 
     def import_images(self):
-        files, _ = QFileDialog.getOpenFileNames(self, i18n.t("dlg_import_title"), "", i18n.t("dlg_filter_images"))
+        files, _ = QFileDialog.getOpenFileNames(self, i18n.t("dlg_import_title"), "",
+                                               image_formats.filter_string(i18n.t("dlg_filter_images")))
         if not files:
             return
         import_debug(f"[Import] Importing images: {len(files)} files selected")
@@ -1748,7 +1763,7 @@ class MainWindow(QMainWindow):
         import_debug(f"[Import] Adding files: count={len(files)}, index={index}")
             
         added_count = 0
-        valid_extensions = {'.png', '.jpg', '.jpeg', '.bmp'}
+        valid_extensions = image_formats.supported_extensions()
         
         # Prepare list of items to insert
         new_items = []
@@ -1990,7 +2005,7 @@ class MainWindow(QMainWindow):
                 self.reference_frame = None
                 self.canvas.set_reference_frame(None)
                 self.timeline.set_visual_reference_frame(None)
-                self.set_ref_action.setText(i18n.t("action_set_reference"))
+                self._update_ref_action_text()
 
         self.mark_dirty()
         self.timeline.refresh_current_items() # Update numbers after removal
@@ -3807,6 +3822,9 @@ class MainWindow(QMainWindow):
         self.close_action.setText(i18n.t("action_close"))
         self.reload_action.setText(i18n.t("action_reload"))
         self.copy_assets_action.setText(i18n.t("action_copy_assets"))
+        self.asset_manager_action.setText(i18n.t("action_asset_manager"))
+        self.delete_unused_action.setText(i18n.t("action_delete_unused"))
+        self.image_formats_action.setText(i18n.t("action_image_formats"))
         self.reload_images_action.setText(i18n.t("action_reload_images"))
         self.exit_action.setText(i18n.t("action_exit"))
         self.export_action.setText(i18n.t("action_export"))
@@ -3846,6 +3864,19 @@ class MainWindow(QMainWindow):
         self.set_ref_action.setToolTip(i18n.t("action_set_reference"))
         self.clear_ref_action.setText(i18n.t("action_cancel_reference"))
         self.ref_settings_action.setText(i18n.t("dlg_ref_settings"))
+
+    def _update_ref_action_text(self):
+        """根据当前参考帧状态统一更新 set_ref_action 的文本（带 hasattr 保护）。
+
+        参考帧存在时显示"取消参考帧"，否则显示"设置参考帧"。
+        用于参考帧清理/删除路径，与 _apply_snapshot_inner 的文本逻辑保持一致。
+        """
+        if not hasattr(self, 'set_ref_action'):
+            return
+        if self.reference_frame is not None:
+            self.set_ref_action.setText(i18n.t("action_cancel_reference"))
+        else:
+            self.set_ref_action.setText(i18n.t("action_set_reference"))
 
     def refresh_theme_playback_action_labels(self):
         self.theme_dark_action.setText(i18n.t("theme_dark"))
@@ -4000,7 +4031,8 @@ class MainWindow(QMainWindow):
                 action.setChecked(action_mode == mode)
 
     def import_sprite_sheet(self):
-        file, _ = QFileDialog.getOpenFileName(self, i18n.t("dlg_import_slice_title"), "", i18n.t("dlg_filter_images"))
+        file, _ = QFileDialog.getOpenFileName(self, i18n.t("dlg_import_slice_title"), "",
+                                             image_formats.filter_string(i18n.t("dlg_filter_images")))
         if not file:
             return
         
@@ -4250,6 +4282,8 @@ class MainWindow(QMainWindow):
             msg_box.exec()
             return
             
+        # 同步工程数据源（timeline 为唯一权威），确保对话框反映未保存的最新状态
+        self.project.frames = self.timeline.get_all_frames()
         from ui.copy_assets_dialog import CopyAssetsDialog
         dlg = CopyAssetsDialog(self.project, self.current_project_path, self)
         if dlg.exec():
@@ -4259,6 +4293,129 @@ class MainWindow(QMainWindow):
             self.timeline.refresh_current_items() # Filenames might have changed or just to be sure
             self.canvas.update()
             self.record_history(i18n.t("hist_copy_assets"), before=before)
+
+    def open_asset_manager(self):
+        """打开素材管理器。删除素材时仅移除帧引用。"""
+        if not self.project:
+            msg_box = QMessageBox(self)
+            msg_box.setWindowTitle(i18n.t("dlg_asset_manager_title"))
+            msg_box.setText(i18n.t("msg_save_project_first"))
+            msg_box.setIcon(QMessageBox.Icon.Warning)
+            msg_box.addButton(i18n.t("btn_ok"), QMessageBox.ButtonRole.AcceptRole)
+            msg_box.exec()
+            return
+
+        # 同步工程数据源（timeline 为唯一权威），确保素材统计反映未保存的最新状态
+        self.project.frames = self.timeline.get_all_frames()
+        from ui.asset_manager_dialog import AssetManagerDialog
+        dlg = AssetManagerDialog(self.project, self,
+                                 on_delete=self._remove_assets_refs,
+                                 on_replace=self._replace_asset)
+        dlg.exec()
+
+    def _remove_assets_refs(self, remove_paths):
+        """删除素材：仅移除帧引用（不删文件）。联动参考帧、历史与界面刷新。
+
+        remove_paths: 要移除引用的素材路径集合（规范化小写）。
+        """
+        if not remove_paths:
+            return
+        self._flush_pending_history()
+        before = self._capture_snapshot()
+
+        def _norm(p: str) -> str:
+            return os.path.normpath(os.path.abspath(p)).lower()
+
+        # 收集当前模型（timeline 为数据权威）中引用这些素材的帧索引
+        all_frames = self.timeline.get_all_frames()
+        indices = [i for i, f in enumerate(all_frames) if _norm(f.file_path) in remove_paths]
+
+        if indices:
+            self.timeline.remove_frames_at(indices)
+            # 同步工程数据源（timeline 为数据权威），确保素材管理器/scan_assets 立即生效
+            self.project.frames = self.timeline.get_all_frames()
+
+        # 参考帧联动清理
+        if self.reference_frame is not None:
+            ref_path = getattr(self.reference_frame, "file_path", None)
+            if ref_path and _norm(ref_path) in remove_paths:
+                self.reference_frame = None
+                self.canvas.set_reference_frame(None)
+                self.timeline.set_visual_reference_frame(None)
+                self._update_ref_action_text()
+
+        self.mark_dirty()
+        self.timeline.refresh_current_items()
+        self.canvas.set_selected_frames([])
+        self.property_panel.set_selection([])
+        self.statusBar().showMessage(
+            i18n.t("msg_assets_removed").format(count=len(indices)), 3000)
+        self.record_history(i18n.t("hist_remove_assets"), before=before)
+
+    def _replace_asset(self, old_path, new_path):
+        """替换素材：将所有引用旧素材的帧改指向新文件（不删除磁盘文件）。
+
+        联动参考帧、历史与界面刷新。old_path/new_path 为原始路径（未规范化）。
+        """
+        if not old_path or not new_path:
+            return
+        self._flush_pending_history()
+        before = self._capture_snapshot()
+
+        def _norm(p: str) -> str:
+            return os.path.normpath(os.path.abspath(p)).lower()
+
+        old_norm = _norm(old_path)
+        new_abs = os.path.normpath(os.path.abspath(new_path))
+
+        # 收集当前模型（timeline 为数据权威）中引用旧素材的帧索引
+        all_frames = self.timeline.get_all_frames()
+        indices = [i for i, f in enumerate(all_frames) if _norm(f.file_path) == old_norm]
+
+        if indices:
+            for i in indices:
+                self.timeline.get_frame_at(i).file_path = new_abs
+            # 同步工程数据源（timeline 为数据权威），确保素材管理器/scan_assets 立即生效
+            self.project.frames = self.timeline.get_all_frames()
+            self.timeline.refresh_current_items()
+            # 通知视图重绘受影响的帧（时间轴文件名会随路径更新）
+            self.timeline.model.data_changed.emit(indices[0], indices[-1])
+
+        # 参考帧联动更新
+        if self.reference_frame is not None:
+            ref_path = getattr(self.reference_frame, "file_path", None)
+            if ref_path and _norm(ref_path) == old_norm:
+                self.reference_frame.file_path = new_abs
+                self.canvas.set_reference_frame(self.reference_frame)
+
+        self.mark_dirty()
+        self.canvas.update()
+        self.statusBar().showMessage(
+            i18n.t("msg_asset_replaced").format(count=len(indices)), 3000)
+        self.record_history(i18n.t("hist_replace_asset"), before=before)
+
+    def delete_unused_assets(self):
+        """打开"删除工程目录中未使用的素材"对话框。"""
+        if not self.project or not self.current_project_path:
+            msg_box = QMessageBox(self)
+            msg_box.setWindowTitle(i18n.t("dlg_delete_unused_title"))
+            msg_box.setText(i18n.t("msg_save_project_first"))
+            msg_box.setIcon(QMessageBox.Icon.Warning)
+            msg_box.addButton(i18n.t("btn_ok"), QMessageBox.ButtonRole.AcceptRole)
+            msg_box.exec()
+            return
+
+        # 同步工程数据源（timeline 为唯一权威），避免把未保存新增的素材误判为未使用而物理删除
+        self.project.frames = self.timeline.get_all_frames()
+        from ui.unused_assets_dialog import UnusedAssetsDialog
+        dlg = UnusedAssetsDialog(self.project, self.current_project_path, self)
+        dlg.exec()
+
+    def open_image_formats(self):
+        """打开图像格式设置对话框。"""
+        from ui.image_formats_dialog import ImageFormatsDialog
+        dlg = ImageFormatsDialog(self)
+        dlg.exec()
 
     def add_recent_project(self, path):
         path = os.path.abspath(path)

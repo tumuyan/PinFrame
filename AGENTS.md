@@ -64,6 +64,7 @@ Singleton `I18nManager` (`i18n`) loaded from `en_US.json` / `zh_CN.json`. Call `
 
 ### Conventions & gotchas
 - Imports are `src`-relative (no `src.` prefix). Run anything with the repo root as CWD.
+- **`project.frames` is only synced from timeline at save/export and when explicitly requested — never assume it is current.** After any edit, `timeline` (via `TimelineModel.get_all_frames()`) is the single authority; `ProjectData.frames` is a stale snapshot. Any project-scoped feature that scans frames (e.g. asset manager, delete-unused-assets, copy-assets) MUST call `self.project.frames = self.timeline.get_all_frames()` at its entry point, *before* opening its dialog, so it reflects unsaved in-memory edits. Failing to sync can show stale data and — worse — let a "delete unused assets" scan misjudge an in-use (unsaved) asset as unused and physically delete it (data loss).
 - Image loading = `image_cache.get(...)`. Image rendering transform logic exists in **two places** (canvas + exporter); keep them consistent.
 - `src/core/version.py` is auto-generated — never commit hand edits.
 - No automated test suite; verify via `test_full_slice.py` and `dev/screenshot.sh`.
