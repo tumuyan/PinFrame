@@ -13,12 +13,16 @@ PinFrame is also a GIF processing tool: supporting frame decomposition, cropping
 *   **Onion Skinning**: Configurable multi-frame overlays for perfect animation continuity.
 *   **Reference Frame System**: Lock any frame as a foreground or background reference; includes smart mutual exclusion with onion skinning.
 *   **Flexible Interaction**: Supports wheel mode toggle (zoom view or scale image).
-*   **Flexible Preview**: Forward and reverse playback for global or selected frame ranges, custom playback speed. Multi-selected frames display as instant overlays for batch adjustments.
+*   **Flexible Preview**: Forward and reverse playback for global or selected frame ranges, custom playback speed. Multi-selected frames display as instant overlays for batch adjustments. Rasterization grid (projects keep high-resolution assets while the app previews at low resolution).
 *   **Sprite Sheet Processing**: Built-in slicing tool to extract sequences from sprite sheets, and direct sprite sheet export support.
 *   **Professional Export**: Supports custom frame ranges, custom background colors, and exporting as PNG sequences, compact sprite sheets, or GIFs.
 *   **Batch Operations**: Batch copy/paste properties, duplicate frames, remove frames, and reverse frame order.
 *   **Lossless Workflow**: Projects store data in JSON without duplicating resources or sacrificing asset precision due to import scaling.
 *   **Project Portability**: Quickly copy assets to the project directory with automatic relative path management; assets remain intact when moving projects.
+
+## Documentation
+
+For the full user guide, see [doc/](./doc/).
 
 ## Future Plans
 
