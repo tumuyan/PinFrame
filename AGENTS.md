@@ -41,8 +41,17 @@ Two independent render paths must stay in sync when you change transform logic:
 - **Interactive preview** (`CanvasWidget`): a `QWidget` that draws with `QPainter`, handling view pan/zoom (`view_offset`/`view_scale`), onion skins (`onion_skin_frames`), reference frame overlay, multi-selection drag, anchor handles (4 modes), rasterization grid, and wheel-mode toggle (zoom vs scale image). Emits `transform_changed`, `anchor_pos_changed`, `scale_change_requested`.
 - **Export** (`Exporter` in `src/utils/exporter.py`): pure PIL (`'RGBA'` canvas, `alpha_composite`) implementing `export_iter` (PNG sequence, generator with progress), `export_sprite_sheet`, `export_gif`. It re-implements scale→crop→mirror→rotate→center-composite logic in Python. **If you change transform semantics in `FrameData`, mirror it here or exports will diverge from preview.** `parse_range_string` converts `"1,3,5-7,10-"` into 0-based indices.
 
-### Timeline (`src/ui/timeline*.py`)
-`TimelineWidget` (a `QStackedWidget`) holds two views — `TimelineListView` (tree) and `TimelineGridWidget` (thumbnails) — backed by a `TimelineModel` (frames insert/remove/move/selection signals). It exposes many `pyqtSignal`s (`selection_changed`, `order_changed`, `files_dropped`, `duplicate_requested`, `reverse_order_requested`, `set_reference_requested`, etc.) that `MainWindow` connects to actions. Views share `BaseTimelineView` + `TimelineViewUtils` + a delegate.
+### Timeline — design (`src/ui/timeline*.py`)
+The timeline is a **model/view system**: `TimelineModel` owns the frame list and is the sole authority over frame state; `TimelineWidget` (a `QStackedWidget`) hosts two read-only views — `TimelineListView` (tree) and `TimelineGridWidget` (thumbnails) — that share `BaseTimelineView` + `TimelineViewUtils` + a delegate. Every mutation broadcasts a `pyqtSignal` (`selection_changed`, `order_changed`, `files_dropped`, `duplicate_requested`, `reverse_order_requested`, `set_reference_requested`, ...) that `MainWindow` connects to actions.
+
+**Design tenet — one fact, one truth, one write-path, read-only views.** Any per-frame state is *business data owned by the model*, never copied into a view's item roles. The model is the single write-path and broadcasts change via a signal; list & grid views are read-only consumers that render straight from the model and repaint on that signal. This keeps both views always consistent and makes any new batch/conditional operation just a loop over the model. Concretely, this philosophy shapes every sub-feature:
+
+- **Selection source of truth** — selected indices are read from the model via `get_selected_indices_from_model()`, never from the view (the old `get_selected_indices_from_current_view` name was misleading and renamed).
+- **Disabled state** — `FrameData.is_disabled` is the truth; the only write-path is `TimelineModel.set_frame_disabled(index, is_disabled)`, which broadcasts `frame_disabled_changed(index, bool)`; views repaint on that signal (`TimelineWidget._on_frame_disabled_changed` → per-row `viewport().update()`). Because rendering reads the truth, the list delegate fetches `frame_data` from column-0 `UserRole` (via `index.siblingAtColumn(0)`) and reads `.is_disabled` — no `CheckStateRole` copy is ever written.
+- **Internal drag-reorder** — the views take over reordering entirely (they never let Qt delete/move items, to avoid frame loss) and restore selection from the model afterwards. Invariants to preserve:
+  - **Insert before/after**: decided by `_calc_insert_before(drop_pos, item_center)` in `timeline_grid.py` (Grid is row-major — Y only picks the row via `itemAt`; X alone decides before/after). `dragMoveEvent` (preview) and `dropEvent` fallback (landing) must call the SAME method so the blue insert indicator matches the final drop. Never reintroduce separate `and`/`or` logic.
+  - **Item reuse**: both views `takeItem`/`takeTopLevelItem` then re-`insertItem` the *original* item objects (Grid copies from List's pattern). Do NOT rebuild `QListWidgetItem` (drops flags/sizeHint/custom roles and breaks external references).
+  - **State lifecycle**: `startDrag` sets `self._dragged_items`; `_clear_drag_state()` resets `_is_dragging`, `_drag_insert_position`, and `_dragged_items`. Selection is restored onto the re-inserted items after drop.
 
 ### Panels, dialogs, and settings (`src/ui/`)
 - `PropertyPanel`: per-frame transform controls (scale, position, rotation, anchor mode, repeat-move timer). Emits `frame_data_changed`/`relative_move_requested`/`custom_anchor_changed`.
@@ -52,13 +61,6 @@ Two independent render paths must stay in sync when you change transform logic:
 
 ### i18n (`src/i18n/`)
 Singleton `I18nManager` (`i18n`) loaded from `en_US.json` / `zh_CN.json`. Call `i18n.t("key")` for all user-visible strings; add new keys to both JSON files. Resource path resolution handles both dev and PyInstaller (`sys._MEIPASS`) bundles.
-
-### Timeline internal drag-reorder contract (non-obvious, respect when editing)
-`TimelineListView` and `TimelineGridWidget` fully take over internal reordering (they never let Qt delete/move items itself) to avoid frame loss. Invariants to preserve:
-- **Insert before/after**: decided by `_calc_insert_before(drop_pos, item_center)` in `timeline_grid.py` (Grid is row-major — Y only picks the row via `itemAt`; X alone decides before/after). `dragMoveEvent` (preview) and `dropEvent` fallback (landing) must call the SAME method so the blue insert indicator matches the final drop. Never reintroduce separate `and`/`or` logic.
-- **Item reuse**: both views `takeItem`/`takeTopLevelItem` then re-`insertItem` the *original* item objects (Grid copies from List's pattern). Do NOT rebuild `QListWidgetItem` (drops flags/sizeHint/custom roles and breaks external references).
-- **State lifecycle**: `startDrag` sets `self._dragged_items`; `_clear_drag_state()` resets `_is_dragging`, `_drag_insert_position`, and `_dragged_items`. Selection is restored onto the re-inserted items after drop.
-- **Selection source of truth**: read selected indices via `get_selected_indices_from_model()` (it reads the model, not the view) — the old `get_selected_indices_from_current_view` name was misleading and renamed.
 
 ### Conventions & gotchas
 - Imports are `src`-relative (no `src.` prefix). Run anything with the repo root as CWD.

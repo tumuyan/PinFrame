@@ -1,7 +1,7 @@
 
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
                              QDockWidget, QToolBar, QFileDialog, QSpinBox,
-                             QLabel, QPushButton, QInputDialog, QTreeWidgetItem, QMenu, QStyle,
+                             QLabel, QPushButton, QInputDialog, QMenu, QStyle,
                              QMessageBox, QDialog, QSplitter)
 from PyQt6.QtGui import QAction, QIcon, QKeySequence, QImage, QActionGroup, QImageReader, QDesktopServices, QColor
 from PyQt6.QtCore import Qt, QTimer, QSettings, QByteArray, QUrl, QDateTime, QLocale
@@ -2033,28 +2033,19 @@ class MainWindow(QMainWindow):
         self.record_history(i18n.t("hist_toggle_disable"), before=before, after=after)
 
     def toggle_enable_disable(self, enable):
-        selected = self.timeline.selectedItems()
-        if not selected:
+        selected_indices = self.timeline.get_selected_indices_from_model()
+        if not selected_indices:
             return
 
         is_disabled = not enable
         changed_frames = []
-        for item in selected:
-            # Use unified interface to extract frame data
-            frame_data = self.timeline.extract_frame_data_from_item(item)
+        # 通过 TimelineModel.set_frame_disabled 统一写入（单一数据源），
+        # 视图由模型信号驱动刷新，不再直接改 frame_data 或维护任何 UI 副本角色。
+        for idx in selected_indices:
+            frame_data = self.timeline.get_frame_at(idx)
             if frame_data and frame_data.is_disabled != is_disabled:
                 changed_frames.append((frame_data, frame_data.is_disabled))
-                frame_data.is_disabled = is_disabled
-
-                # List view uses QTreeWidgetItem with a custom disable column:
-                # store the state in CheckStateRole on column 1 so the column-1
-                # delegate can paint the 'x' overlay. The grid view reflects the
-                # disabled state purely via the grayscale effect in its delegate,
-                # so it must NOT carry CheckStateRole (doing so makes Qt draw an
-                # unwanted built-in checkbox indicator).
-                state = Qt.CheckState.Checked if is_disabled else Qt.CheckState.Unchecked
-                if isinstance(item, QTreeWidgetItem):
-                    item.setData(1, Qt.ItemDataRole.CheckStateRole, state)
+                self.timeline.model.set_frame_disabled(idx, is_disabled)
 
         # Refresh current view to show/hide disabled overlay
         self._flush_pending_history()
@@ -2084,7 +2075,7 @@ class MainWindow(QMainWindow):
         self.canvas.update()
         if self.is_playing:
             self.update_playlist()
-        self.statusBar().showMessage(i18n.t("msg_frames_enabled_disabled").format(action=i18n.t("action_enabled") if enable else i18n.t("action_disabled"), count=len(selected)), 3000)
+        self.statusBar().showMessage(i18n.t("msg_frames_enabled_disabled").format(action=i18n.t("action_enabled") if enable else i18n.t("action_disabled"), count=len(selected_indices)), 3000)
         self.record_history(i18n.t("hist_toggle_disable"), before=before, after=after)
 
     # --- Onion Skin & Reference Logic ---

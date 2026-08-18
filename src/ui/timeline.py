@@ -41,6 +41,7 @@ class TimelineWidget(QStackedWidget):
         self.model.frames_removed.connect(self._on_frames_removed)
         self.model.frames_moved.connect(self._on_frames_moved)
         self.model.data_changed.connect(self._on_data_changed)
+        self.model.frame_disabled_changed.connect(self._on_frame_disabled_changed)
         self.model.selection_changed.connect(self._on_model_selection_changed)
 
         # Create list view (tree widget)
@@ -236,6 +237,21 @@ class TimelineWidget(QStackedWidget):
 
         if selection_before != selection_after:
             print(f"WARNING: Selection changed during update! Before: {selection_before}, After: {selection_after}")
+
+    def _on_frame_disabled_changed(self, index: int, is_disabled: bool):
+        """Handle frame disabled state change from model.
+
+        The delegate reads frame_data.is_disabled directly, so we only need to
+        trigger a repaint of the affected row in the current view.
+        """
+        if self.current_view_mode == "list":
+            if 0 <= index < self.list_view.topLevelItemCount():
+                item = self.list_view.topLevelItem(index)
+                self.list_view.viewport().update(self.list_view.visualItemRect(item))
+        else:
+            if 0 <= index < self.grid_view.count():
+                item = self.grid_view.item(index)
+                self.grid_view.viewport().update(self.grid_view.visualItemRect(item))
 
     def _on_model_selection_changed(self):
         """Handle selection change from model"""

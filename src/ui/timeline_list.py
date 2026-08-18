@@ -37,7 +37,14 @@ class _DisableColumnDelegate(QStyledItemDelegate):
         painter.save()
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         rect = option.rect
-        is_disabled = (index.data(Qt.ItemDataRole.CheckStateRole) == Qt.CheckState.Checked)
+        # 读取模型真源：frame_data 存于 column 0 的 UserRole（list item 建立时写入），
+        # 不再依赖 CheckStateRole 这一 UI 副本，避免多源不一致。
+        # 注意：本 delegate 绘制的是 column 1，而 frame_data 只挂在 column 0 的
+        # UserRole 上，因此必须通过 siblingAtColumn(0) 取到 column 0 的 index 再读数据，
+        # 直接读 index（column 1）的 UserRole 会拿到空值导致禁用勾选永远不显示。
+        src_index = index.siblingAtColumn(0)
+        frame_data = src_index.data(Qt.ItemDataRole.UserRole) if src_index.isValid() else None
+        is_disabled = bool(getattr(frame_data, 'is_disabled', False)) if frame_data else False
         is_selected = bool(option.state & QStyle.StateFlag.State_Selected)
 
         # Erase any Qt-drawn remnants inside the cell (focus rectangles, default
@@ -160,14 +167,17 @@ class TimelineListView(QTreeWidget, BaseTimelineView):
         self.setMinimumHeight(120)
 
         # Disable-column rendering (column 1):
-        #   - state is stored as CheckStateRole data via setData() on column 1,
+        #   - state is read directly from frame_data.is_disabled (stored in
+        #     column 0's UserRole) — the model is the single source of truth,
+        #     no CheckStateRole copy is kept on the item,
         #   - items do NOT carry Qt.ItemFlag.ItemIsUserCheckable (Qt's built-in
         #     checkbox indicator would draw a 'v' tick we don't want),
         #   - column 1's visuals are owned by _DisableColumnDelegate, which
         #     paints a soft empty box for enabled rows and a red 'x' for
         #     disabled rows,
         #   - clicks on column 1 are intercepted in mousePressEvent() to toggle
-        #     the stored state and emit disabled_state_changed.
+        #     the state via TimelineModel.set_frame_disabled() and emit
+        #     disabled_state_changed (for undo history).
         self.setItemDelegateForColumn(1, _DisableColumnDelegate(self))
 
     # BaseTimelineView abstract methods implementation
@@ -558,8 +568,10 @@ class TimelineListView(QTreeWidget, BaseTimelineView):
 
         We don't use Qt's ItemIsUserCheckable because its built-in checkbox
         indicator draws an unwanted 'v' tick. Instead, the user clicks on
-        column 1 of any row, we flip the stored CheckStateRole value, update
-        the underlying FrameData, emit disabled_state_changed, and repaint.
+        column 1 of any row, and we toggle the frame's disabled state through
+        the TimelineModel (single source of truth). The model emits
+        frame_disabled_changed / data_changed which trigger a repaint; we only
+        re-emit disabled_state_changed so MainWindow can record undo history.
         """
         if event.button() == Qt.MouseButton.LeftButton:
             pos = event.position().toPoint()
@@ -569,18 +581,17 @@ class TimelineListView(QTreeWidget, BaseTimelineView):
                 w = self.columnWidth(1)
                 if x_start <= pos.x() < x_start + w:
                     rect = self.visualItemRect(item)
-                    new_state = Qt.CheckState.Unchecked
-                    if item.data(1, Qt.ItemDataRole.CheckStateRole) == Qt.CheckState.Unchecked:
-                        new_state = Qt.CheckState.Checked
-                    item.setData(1, Qt.ItemDataRole.CheckStateRole, new_state)
-                    self.viewport().update(rect)
                     frame_data = item.data(0, Qt.ItemDataRole.UserRole)
-                    is_disabled = (new_state == Qt.CheckState.Checked)
-                    if frame_data and frame_data.is_disabled != is_disabled:
-                        frame_data.is_disabled = is_disabled
-                        self.disabled_state_changed.emit(frame_data, is_disabled)
-                    event.accept()
-                    return
+                    if frame_data:
+                        idx = self.indexOfTopLevelItem(item)
+                        model = getattr(self.parent(), 'model', None)
+                        new_is_disabled = not frame_data.is_disabled
+                        if model is not None and model.set_frame_disabled(idx, new_is_disabled):
+                            # Model 已改真源并触发刷新；仅转发信号供 MainWindow 记录 undo。
+                            self.viewport().update(rect)
+                            self.disabled_state_changed.emit(frame_data, new_is_disabled)
+                        event.accept()
+                        return
         super().mousePressEvent(event)
 
     def add_frame(self, filename, frame_data, index=None):
@@ -602,13 +613,9 @@ class TimelineListView(QTreeWidget, BaseTimelineView):
         flags &= ~Qt.ItemFlag.ItemIsAutoTristate
         item.setFlags(flags)
 
-        # IMPORTANT: Set check state BEFORE setting text — this keeps the itemChanged
-#   signal from being interpreted as a user toggle during initial population.
-# We store the state as CheckStateRole data on column 1 (the column-1
-# _DisableColumnDelegate paints the cell from this role; mousePressEvent
-# handles clicks). See the disable-column note in __init__ above.
-        item.setData(1, Qt.ItemDataRole.CheckStateRole,
-                     Qt.CheckState.Checked if frame_data.is_disabled else Qt.CheckState.Unchecked)
+        # 禁用状态不再以 CheckStateRole 保存副本；_DisableColumnDelegate 直接读
+        # column 0 的 UserRole 中 frame_data.is_disabled（模型真源）。无需在插入时
+        # 同步任何 UI 角色，frame_data 引用始终与模型保持一致。
 
         # Now set the text
         item.setText(0, str(self.indexOfTopLevelItem(item) + 1))

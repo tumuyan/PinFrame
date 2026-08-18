@@ -8,6 +8,7 @@ class TimelineModel(QObject):
 
     # Signals
     data_changed = pyqtSignal(int, int)  # start_index, end_index
+    frame_disabled_changed = pyqtSignal(int, bool)  # index, is_disabled
     frames_inserted = pyqtSignal(int, int)  # index, count
     frames_removed = pyqtSignal(int, int)  # index, count
     frames_moved = pyqtSignal(int, int, int)  # from_index, to_index, count
@@ -303,16 +304,25 @@ class TimelineModel(QObject):
 
         return new_indices
 
-    def enable_frames(self, indices: List[int], enabled: bool):
-        """Enable or disable frames at specified indices"""
-        for idx in indices:
-            if self._is_valid_index(idx):
-                self._frames[idx].is_disabled = not enabled
+    def set_frame_disabled(self, index: int, is_disabled: bool):
+        """
+        设置单帧禁用状态（禁用状态的唯一写入入口）。
 
-        if indices:
-            min_idx = min(i for i in indices if self._is_valid_index(i))
-            max_idx = max(i for i in indices if self._is_valid_index(i))
-            self.data_changed.emit(min_idx, max_idx)
+        仅修改帧数据本身并通过 frame_disabled_changed 通知视图刷新，
+        视图不再持有任何 UI 副本角色（如 CheckStateRole），避免多源不一致。
+        返回是否真的发生了变更（状态未变时返回 False，不触发信号）。
+        """
+        if not self._is_valid_index(index):
+            return False
+        frame = self._frames[index]
+        if frame.is_disabled == is_disabled:
+            return False
+        frame.is_disabled = is_disabled
+        # 禁用列由 _DisableColumnDelegate 直接读 frame_data.is_disabled，
+        # 只需 frame_disabled_changed 触发受影响行重绘即可，无需再 emit data_changed
+        # （data_changed 会额外触发整行文本重刷，属冗余）。
+        self.frame_disabled_changed.emit(index, is_disabled)
+        return True
 
     def find_frame_index(self, frame_data: FrameData) -> Optional[int]:
         """Find index of a frame data object"""

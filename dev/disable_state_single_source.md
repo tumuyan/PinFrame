@@ -1,105 +1,95 @@
-# 禁用状态（is_disabled）单一数据源分析与方案
+# 禁用状态（is_disabled）的单一数据源设计
 
-> 关联改动：`src/ui/timeline_list.py` 的禁用列自定义渲染（`_DisableColumnDelegate` + `mousePressEvent`）。
-> 本文档聚焦 Code Review 发现 #6：**禁用状态存在多个存储位置，缺少单一数据源，存在不一致风险。**
-
----
-
-## 1. 现状：禁用状态的三个存储位置
-
-当前 `FrameData.is_disabled` 的“真值”被分散在三处维护：
-
-| 位置 | 存储形式 | 写入方 | 读取方 |
-| --- | --- | --- | --- |
-| ① `FrameData.is_disabled` | Python 属性（模型真源） | `mousePressEvent`、`toggle_enable_disable`、`TimelineModel.enable_frames`、`on_frame_disabled_state_changed` 等 | grid 渲染、导出、list 自定义 delegate（间接）、`main_window` 播放/导出逻辑 |
-| ② list item 的 `CheckStateRole` | `QTreeWidgetItem.setData(1, CheckStateRole, ...)` | `add_frame` 初始化、`mousePressEvent` 切换、`toggle_enable_disable` | `_DisableColumnDelegate.paint()`（读 `index.data(CheckStateRole)`） |
-| ③ grid 直接读 ① | `frame_data.is_disabled` | ——（只读） | `timeline_grid.py`、`timeline_grid_delegate.py`、`TimelineModel` 内部 |
-
-### 写入/读取路径梳理
-
-- **用户点击 list 禁用列**（`timeline_list.py:552` `mousePressEvent`）：
-  1. 改 ② `item.setData(1, CheckStateRole, new_state)`
-  2. 改 ① `frame_data.is_disabled = is_disabled`
-  3. 发射 `disabled_state_changed`
-- **右键菜单 / 快捷键 启用·禁用**（`main_window.py` `toggle_enable_disable` ≈1985）：
-  1. 改 ① `frame_data.is_disabled = is_disabled`
-  2. 改 ② `item.setData(1, CheckStateRole, state)`（list）/ grid item 也写了但 grid 不读
-  3. 调用 `_rebuild_timeline_before` 维护 undo
-- **grid 视图**：完全不经过 ②，直接 `frame_data.is_disabled`（③）。
-- **`TimelineModel`**：`enable_frames()`（306 行）直接改 ①，并通过 `data_changed` 通知视图刷新。
-
-### 关键风险
-
-1. **两处 UI 副本（②）与真源（①）可能失步**：
-   - `toggle_enable_disable` 对 list 项写 ②、对 grid 项也写 ② 但 grid 从不读 ②——grid item 上的 `setData(CheckStateRole)` 是一句**无效写入**（死代码）。
-   - 任何新增的“只改 ① 不刷新 ②”的代码路径都会让 list 禁用列显示与真实状态不一致。
-2. **`CheckStateRole` 是 list item 的冗余副本**：
-   - delegate 仅因“需要一个 Qt 角色来驱动绘制”才引入 ②；它与 ① 内容完全一致，却要双写、双维护。
-3. **`TimelineModel` 已是事实上的模型层**，但视图仍各自持有 `CheckStateRole` 副本，未真正以 Model 为单一数据源。
-
-### 本次改动是否恶化了问题
-
-否。本次仅把 list 的禁用列渲染从 `ItemIsUserCheckable` 的默认对勾改为自定义 delegate + `CheckStateRole` 副本，并未改变“三处存储”的架构。但仍建议借机收敛，避免后续维护踩坑。
+本文档说明 PinFrame 时间轴中**帧禁用状态**的设计思路与最终架构，回答两个问题：
+**为什么**把禁用状态收敛到单一数据源，以及**最终的设计是什么样的**。
 
 ---
 
-## 2. 三种可选方案
+## 1. 设计思路：为什么要单一数据源
 
-### 方案 0（最小改动，仅清无效写入）
-- 删除 `toggle_enable_disable` 中对 grid item 的 `setData(CheckStateRole, ...)`（grid 不读，属死代码）。
-- **不**改动 ② 的存在，不收敛数据源。
-- 收益：少一处迷惑性死代码；风险：极低。
-- 局限：① 与 ② 的双写耦合仍在。
+### 1.1 问题的本质
 
-### 方案 1（删除 list 的 CheckStateRole 副本）
-- 删除 ②：`add_frame` / `mousePressEvent` / `toggle_enable_disable` 不再写 `CheckStateRole`。
-- `_DisableColumnDelegate.paint()` 改为直接读 ①：从 `index.data(0, UserRole)` 取 `frame_data.is_disabled`。
-- 收益：list 与 grid 统一以 ① 为唯一渲染来源；delegate 不再依赖 Qt 角色。
-- 风险：中。需要保证 `index.data(0, UserRole)` 在 delegate 绘画时一定有效（当前 list item 已把 `frame_data` 存在 `UserRole`，成立）。
+一帧的“是否禁用”是一个**业务数据**，它归属 `FrameData`（模型层），被多处消费：
 
-### 方案 2（推荐）：以 `TimelineModel` 为禁用状态的唯一数据源 ⭐
-- **核心思想**：`TimelineModel` 已经是帧数据的模型层。`is_disabled` 作为 `FrameData` 的属性，本就归属于 Model。视图（list / grid）**只通过 Model 读写**，不再持有任何 UI 副本角色。
-- 具体落地：
-  1. **删除 ②**：list item 不再保存 `CheckStateRole`。
-  2. **delegate 读取 Model**：`_DisableColumnDelegate.paint()` 通过 `index.data(0, UserRole).is_disabled` 决定绘制（空框 / 红 x）。
-  3. **统一写入入口**：所有“切换/批量启用禁用”操作只改 `TimelineModel`：
-     - 新增 `TimelineModel.set_frame_disabled(index, is_disabled)` 与现有 `enable_frames(indices, enabled)`，内部改 ① 并 `emit data_changed` / 新增 `frame_disabled_changed(index, is_disabled)` 信号。
-     - `mousePressEvent`、`toggle_enable_disable`、`on_frame_disabled_state_changed` 均调用 Model 方法，而非直接改 `frame_data.is_disabled` 与 `item.setData`。
-  4. **视图订阅 Model 信号刷新**：list / grid 监听 `data_changed` / `frame_disabled_changed`，对受影响行调用 `viewport().update()`，不再依赖 item 角色变化触发重绘。
-  5. **grid 天然受益**：grid 已读 ①，无需改动即可与 list 同步。
-- 收益：
-  - 真正单一数据源（①），② 彻底消失，grid 无效写入（方案 0 的死代码）也一并消除。
-  - 未来新增“批量反转禁用”“按条件禁用”等功能，只需走 Model 入口，UI 自动一致。
-  - 与既有的 `data_changed` / `frames_*` 信号体系风格统一，降低认知负担。
-- 风险：中高。需要：
-  - 改造 `mousePressEvent` 与 `toggle_enable_disable` 的写入路径；
-  - 保证 delegate 在 `data_changed` 后正确重绘；
-  - 保证 undo/redo（`_rebuild_timeline_before`）仍基于 ① 正确工作（当前已基于 ①，无需大改）。
-- 回归检验点：点击禁用列不选中行（保留现有行为）、右键启用/禁用、grid 与 list 显示一致、撤销重做后仍一致。
+- **时间轴视图**：list 视图的禁用列、grid 视图的缩略图角标，都需要展示它；
+- **导出逻辑**：导出时跳过被禁用的帧；
+- **播放逻辑**：播放/序时是否包含被禁用帧。
+
+当同一个“事实”被分散存储在多处、并由多个入口写入时，**这些副本之间必然存在失步风险**：改了一处，另一处还留着旧值，界面显示与真实状态不一致。历史上，list item 的 `CheckStateRole` 就是这样一个冗余副本——它与 `FrameData.is_disabled` 内容完全一致，却要双写、双维护，任何新增的“只改真源不刷新副本”的路径都会悄悄埋下 bug。
+
+### 1.2 设计原则
+
+本项目遵循一条通用的架构原则：**一份数据、一个真源、一个写入口、多视图只读**。
+
+- **真源（source of truth）只有一个**：`FrameData.is_disabled`。
+- **写入只有一个入口**：`TimelineModel.set_frame_disabled()`。
+- **视图不持有状态副本**：list / grid 都从真源读取渲染，绝不把状态写进 UI item 的角色（role）里当副本。
+- **模型通过信号广播变化**：视图订阅模型信号来触发重绘，而不是自己感知。
+
+这条原则让“改了状态”与“界面更新”解耦：只要写入走统一入口，模型信号就会驱动所有视图自动一致，从架构上杜绝“改真源忘了刷 UI”这类回归。
 
 ---
 
-## 3. 结论与拟定执行方案
+## 2. 设计：单一数据源如何落地
 
-**拟定采用方案 2**：以 `TimelineModel` 为禁用状态的唯一数据源。
+### 2.1 角色划分
 
-理由：
-- ① 本就属于 Model（`FrameData` 是 Model 持有的数据对象）；
-- ② 是历史遗留的 UI 副本，既冗余又需双写；
-- 方案 2 一次性消除 ② 与 grid 无效写入，并从架构上杜绝“改了真源却忘了刷新 UI 副本”的回归风险；
-- 改动面集中在 `timeline_list.py` 与 `timeline_model.py`，`main_window.py` 仅需把写入改调 Model 方法，影响可控。
+| 角色 | 承担者 | 职责 |
+| --- | --- | --- |
+| 状态真源 | `FrameData.is_disabled` | 唯一保存“是否禁用”的地方 |
+| 写入口 | `TimelineModel.set_frame_disabled(index, is_disabled)` | 唯一允许修改真源的代码路径；写完后广播 `frame_disabled_changed` |
+| 状态广播 | `TimelineModel.frame_disabled_changed(index, bool)` | 通知所有视图“某行的禁用状态变了” |
+| 视图订阅 | `TimelineWidget._on_frame_disabled_changed` | 收到广播后对受影响行 `viewport().update()`，触发重绘 |
+| list 渲染 | `_DisableColumnDelegate.paint()` | 从 column-0 的 `UserRole` 取回 `frame_data`，读 `is_disabled` 画空框或红 x |
+| grid 渲染 | grid delegate | 同样直接读真源，天然与 list 一致 |
 
-### 实施步骤（待执行）
+### 2.2 数据流
 
-1. `timeline_model.py`：新增 `set_frame_disabled(index, is_disabled)` 与 `frame_disabled_changed(index, bool)` 信号；现有 `enable_frames` 改为经此信号通知。
-2. `timeline_list.py`：
-   - 删除 `add_frame` 中的 `CheckStateRole` 写入；
-   - `_DisableColumnDelegate.paint()` 改为读 `frame_data.is_disabled`；
-   - `mousePressEvent` 改为调用 `model.set_frame_disabled(...)` 并订阅 `frame_disabled_changed` 触发 `viewport().update()`；
-   - 移除 `CheckStateRole` 相关注释。
-3. `main_window.py`：
-   - `toggle_enable_disable` 改为调用 Model 方法，删除对 list/grid item 的 `setData(CheckStateRole)`；
-   - `on_frame_disabled_state_changed` 中如仍有 item 回写，一并删除。
-4. 验证：用 `dev/screenshot.sh` 截图核对 list/grid 禁用列；运行 `test_full_slice.py`；手动验证点击不变更选中行、右键启用禁用、撤销重做。
+```
+用户操作（点击禁用列 / 右键 / 快捷键）
+        │
+        ▼
+TimelineModel.set_frame_disabled(index, is_disabled)   ← 唯一写入口
+        │  修改 FrameData.is_disabled（真源）
+        │  emit frame_disabled_changed(index, is_disabled)
+        ▼
+TimelineWidget._on_frame_disabled_changed(index)
+        │  viewport().update()
+        ▼
+list  delegate / grid  delegate 重新读取真源 → 界面一致更新
+```
 
-> 注：方案 0 / 1 可作为方案 2 的增量子集——方案 2 完成后，方案 0 的死代码与方案 1 的“删除 ②”均自然达成。
+### 2.3 关键设计决策与理由
+
+1. **list 禁用列用自定义 delegate 而非 Qt 的 `CheckStateRole` 勾选框**
+   - 目的：禁用列要画成“空框 / 红 x”而不是系统对勾，交互上“点击切换禁用但不选中行”。
+   - 关键点：**渲染来源仍是真源**。delegate 通过 `index.siblingAtColumn(0)` 定位到 column 0，从那里的 `UserRole` 取出 `frame_data`，再读 `.is_disabled`。这样 list 与 grid 渲染同一份数据，永远一致。
+
+2. **写入统一走 `set_frame_disabled`，视图不改真源**
+   - 视图（`mousePressEvent`、`toggle_enable_disable`）都不直接写 `frame_data.is_disabled`，而是调用模型方法。模型是数据的所有者，写入口收拢到一处后，未来“批量禁用”“条件禁用”等新功能只需循环调用这一入口，UI 自动同步。
+
+3. **`set_frame_disabled` 只 emit `frame_disabled_changed`，不 emit 通用 `data_changed`**
+   - 禁用列由 delegate **直接读真源**渲染，并不依赖 `data_changed` 带来的整行文本重刷。单独广播 `frame_disabled_changed` 只重绘受影响行，避免无谓刷新。
+   - 这体现了“**信号按需、最小重绘**”的更新哲学：什么变了就通知什么，能局部刷新就不整行刷新。
+
+4. **不设 `enable_frames` 这类“伪批量”接口**
+   - 批量场景本质就是对多帧重复执行同一状态变更，循环调用 `set_frame_disabled` 即可表达，无需引入语义含混（`not enabled`）且无人调用的专用方法，避免接口冗余。
+
+### 2.4 设计带来的收益
+
+- **一致性是结构保证的**，不是靠“记得同步”维持的：只要写入口唯一，多视图必然一致。
+- **易扩展**：新增“批量反转”“按条件禁用”等，只扩展模型方法，不动视图。
+- **易理解**：新维护者只需记住“写走模型、读走真源、订阅信号”，无需在多个 UI 角色里排查状态藏在哪。
+
+---
+
+## 3. 维护时如何保持这个设计
+
+在时间轴相关功能中：
+
+- **要读**禁用状态 → 从 `frame_data.is_disabled`（真源）读，或在 delegate 里经 column-0 `UserRole` 取出 `frame_data` 再读。
+- **要改**禁用状态 → 调 `TimelineModel.set_frame_disabled(...)`，并依赖 `frame_disabled_changed` 驱动刷新。
+- **不要**在 list / grid 的 item 上写 `CheckStateRole` 或任何“状态副本”角色——那会重新引入第二数据源。
+- **不要**在视图层直接改 `frame_data.is_disabled` 绕过模型——会绕过信号广播，导致视图不刷新。
+
+只要遵循“写走模型、读走真源、订阅信号”，单一数据源就不会被破坏。
