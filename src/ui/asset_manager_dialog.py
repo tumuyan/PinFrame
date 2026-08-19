@@ -26,17 +26,19 @@ from i18n.manager import i18n
 
 
 class AssetManagerDialog(QDialog):
-    def __init__(self, project, parent=None, on_delete=None, on_replace=None):
+    def __init__(self, project, parent=None, on_delete=None, on_replace=None, on_edit=None):
         """on_delete: 回调，接收要移除的素材路径集合，由 MainWindow 实际执行删除。
         on_replace: 回调，接收 (old_path, new_path)，由 MainWindow 实际执行替换。
+        on_edit: 回调，接收单个素材路径，由 MainWindow 调用外部图像编辑器处理。
 
         删除 / 替换都必须由 MainWindow 经 TimelineModel 唯一写路径执行（刷新时间轴/画布、
-        记录历史、同步工程数据源），因此两个回调均为必需；对话框自身不提供绕过模型的回退。
+        记录历史、同步工程数据源），因此回调均为必需；对话框自身不提供绕过模型的回退。
         """
         super().__init__(parent)
         self.project = project
         self._on_delete = on_delete
         self._on_replace = on_replace
+        self._on_edit = on_edit
         self._current_asset = None
         # 显式声明标准顶层窗口标志：带标题栏、可移动、可调整大小、可最大化/最小化
         # （QDialog 默认缺少 MinMax 标志，且部分环境下标题栏/拖拽行为异常）
@@ -124,6 +126,11 @@ class AssetManagerDialog(QDialog):
         self.replace_btn.setEnabled(False)
         self.replace_btn.clicked.connect(self._replace_asset)
         bottom_layout.addWidget(self.replace_btn)
+        # 用外部图像编辑器打开预览的图片
+        self.edit_btn = QPushButton(i18n.t("btn_edit_asset"))
+        self.edit_btn.setEnabled(False)
+        self.edit_btn.clicked.connect(self._edit_asset)
+        bottom_layout.addWidget(self.edit_btn)
         # 操作勾选素材 / 对话框
         self.delete_btn = QPushButton(i18n.t("btn_delete_assets"))
         self.delete_btn.clicked.connect(self.delete_selected)
@@ -256,6 +263,7 @@ class AssetManagerDialog(QDialog):
         if not rows:
             self._current_asset = None
             self.replace_btn.setEnabled(False)
+            self.edit_btn.setEnabled(False)
             return
         row = rows[0].row()
         # 找到对应 asset（通过路径列）
@@ -263,16 +271,19 @@ class AssetManagerDialog(QDialog):
         if not path_item:
             self._current_asset = None
             self.replace_btn.setEnabled(False)
+            self.edit_btn.setEnabled(False)
             return
         path = path_item.text()
         for asset in self.assets:
             if os.path.normpath(asset["path"]) == os.path.normpath(path):
                 self._current_asset = asset
                 self.replace_btn.setEnabled(True)
+                self.edit_btn.setEnabled(not asset["missing"])
                 self._show_preview(asset)
                 return
         self._current_asset = None
         self.replace_btn.setEnabled(False)
+        self.edit_btn.setEnabled(False)
 
     def _show_preview(self, asset):
         img = None
@@ -320,10 +331,21 @@ class AssetManagerDialog(QDialog):
         if not self._current_asset:
             return
         menu = QMenu(self)
+        if self._on_edit and not self._current_asset["missing"]:
+            edit_action = QAction(i18n.t("btn_edit_asset"), self)
+            edit_action.triggered.connect(self._edit_asset)
+            menu.addAction(edit_action)
         replace_action = QAction(i18n.t("btn_replace_asset"), self)
         replace_action.triggered.connect(self._replace_asset)
         menu.addAction(replace_action)
         menu.exec(self.preview.mapToGlobal(pos))
+
+    def _edit_asset(self):
+        """用外部图像编辑器处理当前预览的图片。"""
+        if not self._current_asset or self._current_asset["missing"]:
+            return
+        if self._on_edit:
+            self._on_edit(self._current_asset["path"])
 
     def _replace_asset(self):
         """替换当前选中素材：选择新图片，将所有引用该素材的帧改指向新文件。"""

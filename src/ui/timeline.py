@@ -28,6 +28,8 @@ class TimelineWidget(QStackedWidget):
     smooth_params_requested = pyqtSignal()
     set_reference_requested = pyqtSignal()
     clear_reference_requested = pyqtSignal()
+    edit_default_editor_requested = pyqtSignal()
+    edit_in_editor_requested = pyqtSignal(object)  # 编辑器 dict（{name, path, default}）
     thumbnail_size_changed = pyqtSignal(int, int)  # width, height
 
     def __init__(self, parent=None):
@@ -90,10 +92,17 @@ class TimelineWidget(QStackedWidget):
         view.smooth_params_requested.connect(self.smooth_params_requested)
         view.set_reference_requested.connect(self.set_reference_requested)
         view.clear_reference_requested.connect(self.clear_reference_requested)
+        view.edit_default_editor_requested.connect(self.edit_default_editor_requested)
+        view.edit_in_editor_requested.connect(self.edit_in_editor_requested)
 
         # Grid-specific signal
         if is_grid:
             view.thumbnail_size_changed.connect(self._on_grid_thumbnail_changed)
+
+    def set_editors(self, editors):
+        """把外部图像编辑器列表推送给两个视图，用于构建右键子菜单。"""
+        self.list_view.set_editors(editors)
+        self.grid_view.set_editors(editors)
 
     def set_view_mode(self, mode):
         """Switch between list and grid view"""

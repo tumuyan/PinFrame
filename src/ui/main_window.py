@@ -4,7 +4,7 @@ from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QH
                              QLabel, QPushButton, QInputDialog, QMenu, QStyle,
                              QMessageBox, QDialog, QSplitter)
 from PyQt6.QtGui import QAction, QIcon, QKeySequence, QImage, QActionGroup, QImageReader, QDesktopServices, QColor
-from PyQt6.QtCore import Qt, QTimer, QSettings, QByteArray, QUrl, QDateTime, QLocale
+from PyQt6.QtCore import Qt, QTimer, QSettings, QByteArray, QUrl, QDateTime, QLocale, QProcess
 import subprocess
 import sys
 import os
@@ -16,6 +16,7 @@ from ui.canvas import CanvasWidget
 from ui.timeline import TimelineWidget
 from ui.property_panel import PropertyPanel
 from ui.settings_dialog import SettingsDialog
+from ui.editor_settings_dialog import EditorSettingsDialog
 from ui.export_dialog import ExportOptionsDialog
 from ui.onion_settings import OnionSettingsDialog
 from ui.reference_settings import ReferenceSettingsDialog
@@ -48,6 +49,12 @@ class MainWindow(QMainWindow):
         self.current_lang = self.settings.value("language", "zh_CN")
         i18n.load_language(self.current_lang)
         self.recent_projects = self.settings.value("recent_projects", [], type=list)
+        # 外部图像编辑器配置
+        self.image_editors = self._load_image_editors()
+        # 外部编辑器进程（持有引用以接收 finished 信号）
+        self._editor_procs = {}
+        self._pending_edited_paths = {}
+        self._editor_token_seq = 0
         
         # Set Window Icon
         import sys
@@ -96,6 +103,9 @@ class MainWindow(QMainWindow):
         self.timeline.set_reference_requested.connect(self.set_reference_frame_from_selection)
         self.timeline.clear_reference_requested.connect(self.clear_reference_frame)
         self.timeline.thumbnail_size_changed.connect(self.on_grid_thumbnail_size_changed)
+        self.timeline.edit_default_editor_requested.connect(self._edit_selected_with_default_editor)
+        self.timeline.edit_in_editor_requested.connect(self._edit_selected_with_editor)
+        self._push_editors_to_timeline()
         self.timeline_dock.setWidget(self.timeline)
         self.addDockWidget(Qt.DockWidgetArea.BottomDockWidgetArea, self.timeline_dock)
         
@@ -1002,6 +1012,16 @@ class MainWindow(QMainWindow):
         self.image_formats_action = QAction(i18n.t("action_image_formats"), self)
         self.image_formats_action.triggered.connect(self.open_image_formats)
 
+        # 外部图像编辑器：默认编辑器 + 其他编辑器子菜单
+        self.edit_default_editor_action = QAction(i18n.t("action_edit_default_editor"), self)
+        self.edit_default_editor_action.triggered.connect(self._edit_selected_with_default_editor)
+        self.edit_editor_menu = QMenu(i18n.t("menu_edit_external_editor"), self)
+        self.edit_editor_menu.setEnabled(False)
+
+        # 外部图像编辑器：全局设置入口（非工程设置）
+        self.editor_settings_action = QAction(i18n.t("action_editor_settings"), self)
+        self.editor_settings_action.triggered.connect(self.open_editor_settings)
+
         self.reload_images_action = QAction(i18n.t("action_reload_images"), self)
         self.reload_images_action.triggered.connect(self.reload_image_resources)
 
@@ -1398,7 +1418,13 @@ class MainWindow(QMainWindow):
         image_menu.addAction(self.import_gif_action)
         image_menu.addSeparator()
         image_menu.addAction(self.image_formats_action)
-        
+        image_menu.addSeparator()
+        image_menu.addAction(self.edit_default_editor_action)
+        image_menu.addMenu(self.edit_editor_menu)
+        image_menu.addSeparator()
+        image_menu.addAction(self.editor_settings_action)
+        self._rebuild_editor_submenu()
+
         # Onion & Reference Submenu
         # View Menu
 
@@ -1694,6 +1720,19 @@ class MainWindow(QMainWindow):
         
         toolbar.addSeparator()
         toolbar.addAction(self.rev_play_action)
+
+    def open_editor_settings(self):
+        """打开外部图像编辑器设置（全局设置，非工程设置）。"""
+        from ui.editor_settings_dialog import EditorSettingsDialog
+        dlg = EditorSettingsDialog(self)
+        if dlg.exec():
+            self.image_editors = dlg.get_editors()
+            from ui.editor_settings_dialog import save_image_editors
+            save_image_editors(self.image_editors)
+            # 推送时间轴右键菜单 + 重建图像菜单子菜单
+            self._push_editors_to_timeline()
+            self._rebuild_editor_submenu()
+            self.update_menu_state()
 
     def open_settings(self):
         dlg = SettingsDialog(self, self.project.width, self.project.height)
@@ -3455,6 +3494,10 @@ class MainWindow(QMainWindow):
         self.copy_assets_action.setEnabled(has_project)
         self.save_action.setEnabled(has_project)
         self.reload_action.setEnabled(has_project)
+        # 外部图像编辑器：未配置编辑器时禁用
+        has_editors = bool(self.image_editors)
+        self.edit_default_editor_action.setEnabled(has_editors)
+        self.edit_editor_menu.setEnabled(has_editors)
         # self.action_export.setEnabled(has_project) # Maybe?
 
     
@@ -3488,6 +3531,151 @@ class MainWindow(QMainWindow):
         """Force reload of all image resources in the canvas."""
         self.canvas.refresh_resources()
         self.statusBar().showMessage(i18n.t("action_reload_images"), 3000) # Reusing label for status for now or simple msg
+
+    # ------------------------------------------------------------------
+    # 外部图像编辑器
+    # ------------------------------------------------------------------
+    def _load_image_editors(self):
+        """从 QSettings 加载外部图像编辑器配置。"""
+        from ui.editor_settings_dialog import load_image_editors
+        return load_image_editors()
+
+    def _push_editors_to_timeline(self):
+        """把当前编辑器列表推送给 timeline 视图，用于右键菜单构建子菜单。"""
+        if hasattr(self, 'timeline'):
+            self.timeline.set_editors(self.image_editors)
+
+    def _rebuild_editor_submenu(self):
+        """重建图像菜单中的“其他编辑器”子菜单。"""
+        self.edit_editor_menu.clear()
+        editors = self.image_editors or []
+        enabled = [e for e in editors]
+        if not enabled:
+            self.edit_editor_menu.setEnabled(False)
+            return
+        self.edit_editor_menu.setEnabled(True)
+        for ed in enabled:
+            name = ed.get("name") or os.path.basename(ed.get("path") or "")
+            action = self.edit_editor_menu.addAction(name)
+            action.triggered.connect(
+                lambda checked=False, ed=ed: self._edit_selected_with_editor(ed))
+        # 若只有一个编辑器，同时启用默认项即可；仍保留子菜单方便统一入口
+
+    def _get_selected_source_paths(self):
+        """返回当前选中帧按源文件去重后的唯一绝对路径集合。"""
+        frames = self.timeline.get_selected_frames()
+        paths = set()
+        for fd in frames:
+            p = getattr(fd, "file_path", None)
+            if p:
+                paths.add(os.path.abspath(p))
+        return sorted(paths)
+
+    def _edit_selected_with_default_editor(self):
+        """用用户指定的默认编辑器打开选中帧的源图。"""
+        default = None
+        for ed in (self.image_editors or []):
+            if ed.get("default"):
+                default = ed
+                break
+        if default is None and self.image_editors:
+            default = self.image_editors[0]
+        if default is None:
+            self.statusBar().showMessage(i18n.t("msg_no_editor_configured"), 4000)
+            return
+        self._edit_selected_with_editor(default)
+
+    def _edit_asset_with_default_editor(self, path):
+        """素材管理器回调：用默认编辑器打开单个素材路径。"""
+        default = None
+        for ed in (self.image_editors or []):
+            if ed.get("default"):
+                default = ed
+                break
+        if default is None and self.image_editors:
+            default = self.image_editors[0]
+        if default is None:
+            self.statusBar().showMessage(i18n.t("msg_no_editor_configured"), 4000)
+            return
+        self.edit_in_external_editor([os.path.abspath(path)], default)
+
+    def _edit_selected_with_editor(self, editor):
+        """用指定编辑器打开选中帧的源图。
+
+        editor: 编辑器 dict（{name, path, default}），由各入口（图像菜单 / 时间轴子菜单）
+        直接传出编辑器对象，避免依赖名称反查造成名称不唯一时误开编辑器。
+        """
+        if isinstance(editor, str):
+            # 兼容旧调用：若收到字符串则视为名称反查（正常入口已传 dict）
+            editor = self._find_editor_by_name(editor)
+        if not editor:
+            self.statusBar().showMessage(i18n.t("msg_no_editor_configured"), 4000)
+            return
+        paths = self._get_selected_source_paths()
+        if not paths:
+            self.statusBar().showMessage(i18n.t("msg_no_frame_selected"), 3000)
+            return
+        self.edit_in_external_editor(paths, editor)
+
+    def _find_editor_by_name(self, name):
+        for ed in (self.image_editors or []):
+            if ed.get("name") == name:
+                return ed
+        return None
+
+    def edit_in_external_editor(self, paths, editor):
+        """启动外部图像编辑器处理给定路径集合。
+
+        编辑进程退出后自动重载这些源图对应的缓存与界面。
+        paths: 要传给编辑器的绝对路径列表。
+        editor: 编辑器 dict（{name, path}）。
+        """
+        prog = editor.get("path", "")
+        if not prog or not os.path.exists(prog):
+            QMessageBox.warning(self, i18n.t("dlg_editor_error_title"),
+                                i18n.t("msg_editor_not_found").format(name=editor.get("name", "")))
+            return
+        # 记录本次编辑涉及的路径，供退出后定向失效（用自增序号保证每次启动唯一）
+        self._editor_token_seq += 1
+        token = self._editor_token_seq
+        self._pending_edited_paths[token] = list(paths)
+
+        proc = QProcess(self)
+        proc.finished.connect(lambda code, status, t=token: self._on_editor_finished(t, code))
+        self._editor_procs[token] = proc
+        try:
+            proc.start(prog, paths)
+        except Exception as e:  # noqa: BLE001
+            self.statusBar().showMessage(i18n.t("msg_editor_launch_failed").format(err=str(e)), 4000)
+            self._editor_procs.pop(token, None)
+            self._pending_edited_paths.pop(token, None)
+            return
+        self.statusBar().showMessage(
+            i18n.t("msg_editor_launched").format(name=editor.get("name", ""), count=len(paths)), 4000)
+
+    def _on_editor_finished(self, token, exit_code):
+        """编辑器进程退出后：清理进程引用并定向重载修改过的图片。"""
+        proc = self._editor_procs.pop(token, None)
+        if proc is not None:
+            proc.deleteLater()
+        edited_paths = self._pending_edited_paths.pop(token, [])
+        if edited_paths:
+            self._reload_edited_images(edited_paths)
+
+    def _reload_edited_images(self, paths):
+        """定向失效并重载指定的源图路径（图片缓存、缩略图缓存、画布）。"""
+        from core.image_cache import image_cache
+        abs_paths = [os.path.abspath(p) for p in paths]
+        for p in abs_paths:
+            image_cache.remove(p)
+        # 仅定向失效编辑路径的缩略图缓存并刷新时间轴（避免全量重建造成的磁盘 I/O）
+        self.timeline.grid_view.invalidate_thumbnail_cache_for_paths(abs_paths)
+        self.timeline.list_view.refresh_current_items()
+        self.timeline.grid_view.refresh_all_items()
+        # 刷新画布（仅重新预加载活动帧并重绘）
+        self.canvas.refresh_resources()
+        self.statusBar().showMessage(
+            i18n.t("msg_images_reloaded").format(count=len(abs_paths)), 4000)
         
     def _dump_layout_state(self, tag):
         """Emit a debug snapshot of the current layout geometry for diagnosis."""
@@ -3825,6 +4013,9 @@ class MainWindow(QMainWindow):
         self.asset_manager_action.setText(i18n.t("action_asset_manager"))
         self.delete_unused_action.setText(i18n.t("action_delete_unused"))
         self.image_formats_action.setText(i18n.t("action_image_formats"))
+        self.edit_default_editor_action.setText(i18n.t("action_edit_default_editor"))
+        self.edit_editor_menu.setTitle(i18n.t("menu_edit_external_editor"))
+        self.editor_settings_action.setText(i18n.t("action_editor_settings"))
         self.reload_images_action.setText(i18n.t("action_reload_images"))
         self.exit_action.setText(i18n.t("action_exit"))
         self.export_action.setText(i18n.t("action_export"))
@@ -4310,7 +4501,8 @@ class MainWindow(QMainWindow):
         from ui.asset_manager_dialog import AssetManagerDialog
         dlg = AssetManagerDialog(self.project, self,
                                  on_delete=self._remove_assets_refs,
-                                 on_replace=self._replace_asset)
+                                 on_replace=self._replace_asset,
+                                 on_edit=self._edit_asset_with_default_editor)
         dlg.exec()
 
     def _remove_assets_refs(self, remove_paths):

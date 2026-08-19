@@ -26,6 +26,8 @@ class TimelineGridWidget(QListWidget, BaseTimelineView):
     smooth_params_requested = pyqtSignal()
     set_reference_requested = pyqtSignal()
     clear_reference_requested = pyqtSignal()
+    edit_default_editor_requested = pyqtSignal()
+    edit_in_editor_requested = pyqtSignal(object)  # 编辑器 dict（{name, path, default}）
     thumbnail_size_changed = pyqtSignal(int, int)  # width, height
 
     def __init__(self, parent=None):
@@ -37,6 +39,7 @@ class TimelineGridWidget(QListWidget, BaseTimelineView):
         self.show_multiline = False
         self.multiline_label_height = 36  # Custom height for multiline text area (default 36px)
         self.background_mode = "checkerboard"  # black, white, gray, checkerboard, green
+        self._editors = []
 
         # Widget settings
         self.setViewMode(QListWidget.ViewMode.IconMode)
@@ -122,6 +125,18 @@ class TimelineGridWidget(QListWidget, BaseTimelineView):
     def _clear_thumbnail_cache(self):
         """Clear thumbnail cache"""
         self._thumbnail_cache.clear()
+
+    def invalidate_thumbnail_cache_for_paths(self, paths):
+        """仅失效指定源图路径对应的缩略图缓存，避免全量重建导致的磁盘 I/O。
+
+        paths: 绝对路径列表。匹配缓存 key 中的源图路径（image_path）进行定向清除。
+        """
+        if not paths:
+            return
+        path_set = set(os.path.abspath(p) for p in paths)
+        stale = [k for k in self._thumbnail_cache if k[0] in path_set]
+        for k in stale:
+            self._thumbnail_cache.pop(k, None)
 
     def update_item_size(self):
         """Update grid item size based on thumbnail dimensions"""
@@ -644,6 +659,10 @@ class TimelineGridWidget(QListWidget, BaseTimelineView):
         else:
             super().wheelEvent(event)
     
+    def set_editors(self, editors):
+        """外部图像编辑器列表，用于右键子菜单。"""
+        self._editors = editors or []
+
     def show_context_menu(self, position):
         menu = QMenu()
 
@@ -714,6 +733,22 @@ class TimelineGridWidget(QListWidget, BaseTimelineView):
         menu.addAction(dup_action)
         menu.addAction(dup_dialog_action)
         menu.addAction(rem_action)
+
+        # ---- 外部图像编辑器 ----
+        if has_selection:
+            menu.addSeparator()
+            default_action = QAction(i18n.t("action_edit_default_editor"), self)
+            default_action.triggered.connect(self.edit_default_editor_requested.emit)
+            menu.addAction(default_action)
+            if self._editors:
+                editor_menu = menu.addMenu(i18n.t("menu_edit_external_editor"))
+                for ed in self._editors:
+                    name = ed.get("name") or os.path.basename(ed.get("path") or "")
+                    act = editor_menu.addAction(name)
+                    act.triggered.connect(
+                        lambda checked=False, ed=ed: self.edit_in_editor_requested.emit(ed))
+            else:
+                default_action.setEnabled(False)
 
         menu.exec(self.viewport().mapToGlobal(position))
     
