@@ -1,8 +1,8 @@
 import os
 from typing import List, Tuple, Optional
 from PIL import Image
-from core.transform import (base_size, resolve_frame_geometry,
-                            scaled_size_floor)
+from core.transform import (base_size, composite_origin,
+                            resolve_frame_geometry, scaled_size_floor)
 from model.project_data import ProjectData
 from utils.debug_config import export_debug
 
@@ -12,9 +12,10 @@ class Exporter:
         """把一帧按其变换合成到 canvas 上（导出路径的唯一变换实现）。
 
         几何语义来自 core.transform（与 canvas 预览共用同一来源）；此处只负责
-        PIL 侧的像素化：int() 截断尺寸、transpose 翻转、rotate(expand=True) 旋转，
-        再按中心定位 alpha_composite。这些量化行为是刻意保持的现状，详见
-        core.transform 的模块说明。
+        PIL 侧的像素化：`scaled_size_floor` 的整数尺寸、transpose 翻转、
+        rotate(expand=True) 旋转，最后按 `composite_origin` 给出的整数左上角
+        alpha_composite。这些量化行为是刻意保持的现状，详见 core.transform 的
+        模块说明与 dev/export_pipeline_precision.md。
 
         返回 True 表示已合成；源文件缺失或缩放后尺寸退化为 0 时返回 False。
         """
@@ -47,10 +48,9 @@ class Exporter:
                                      resample=Image.Resampling.BICUBIC,
                                      expand=True)
 
-        cx, cy = canvas_w / 2, canvas_h / 2
-        dest_x = int((cx + geo.offset_x) - src_img.width / 2)
-        dest_y = int((cy + geo.offset_y) - src_img.height / 2)
-        canvas.alpha_composite(src_img, (dest_x, dest_y))
+        dest = composite_origin(geo, canvas_w, canvas_h,
+                                src_img.width, src_img.height)
+        canvas.alpha_composite(src_img, dest)
         return True
 
     @staticmethod

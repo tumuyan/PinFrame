@@ -279,17 +279,8 @@ class TimelineModel(QObject):
         duplicates = []
         for idx in sorted_indices:
             original = self._frames[idx]
-            duplicate = FrameData(
-                file_path=original.file_path,
-                scale=original.scale,
-                position=original.position,
-                rotation=original.rotation,
-                aspect_ratio=original.aspect_ratio,
-                is_disabled=original.is_disabled,
-                crop_rect=original.crop_rect if original.crop_rect else None,
-                slice_pos=original.slice_pos if original.slice_pos else None
-            )
-            duplicates.append(duplicate)
+            # 克隆逻辑统一在 FrameData.clone()（此前这里漏了 target_resolution）
+            duplicates.append(original.clone())
 
         # Insert all duplicates at once and emit a single signal
         if duplicates:

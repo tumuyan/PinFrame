@@ -14,7 +14,7 @@ QPainter 连续浮点变换，exporter 走 PIL 整数量化 (int() 截断 + expa
 QTransform，使几何逻辑能在无 Qt、无 QApplication 的环境下被单元测试覆盖。
 """
 from dataclasses import dataclass
-from typing import List, Optional, Tuple
+from typing import Optional, Tuple
 import math
 
 
@@ -137,30 +137,28 @@ def scaled_size_floor(geo: FrameGeometry, base_w: int, base_h: int) -> Tuple[int
     return (int(base_w * geo.abs_scale_x), int(base_h * geo.abs_scale_y))
 
 
-def centered_rect(base_w: float, base_h: float) -> Tuple[float, float, float, float]:
-    """以原点为中心的绘制矩形 (left, top, w, h)。
+def composite_origin(geo: FrameGeometry, canvas_w: int, canvas_h: int,
+                     bitmap_w: int, bitmap_h: int) -> Tuple[int, int]:
+    """变换后位图贴到画布时的左上角整数坐标。
 
-    返回纯数值而不是 QRectF，以保持本模块不依赖 Qt；调用方自行构造 QRectF。
+    公式 `画布中心 - 位图宽/2 + 偏移` 本身是**精确正确**的：位图内容质心位于
+    `(w-1)/2`，代入后质心恰好落在画布的像素索引中心 `(W-1)/2`。唯一的误差来自
+    把结果取整为整数坐标——奇数宽度的位图理想落点必然是 X.5，用整数贴图无论如何
+    取整都有 ±0.5px 偏差。**这是架构性限制，不是取整函数选得不对**：要真正消除
+    它，必须改成用仿射矩阵直接把源图重采样到画布坐标系（见
+    dev/export_pipeline_precision.md）。
+
+    取整用 `math.floor` 而不是：
+    - `int()`（原实现）：对负数向零取整、对正数向下取整，方向会在 0 处翻转。
+      帧移出画布左/上边缘时（dest < 0）平移动画会出现 1px 顿跳。floor 对
+      `dest >= 0` 与 `int()` 完全等价，所以这个修正不改变绝大多数导出结果。
+    - `round()`（banker's rounding）：进位方向取决于相邻整数的奇偶，而位图宽度
+      在缩放渐变中本身就在奇偶交替，两者干涉会把质心抖动从 0.5px 放大到 1.0px。
+      实测确认，故不可用。
     """
-    return (-base_w / 2.0, -base_h / 2.0, base_w, base_h)
-
-
-def frame_corners(geo: FrameGeometry, base_w: float, base_h: float
-                  ) -> List[Tuple[float, float]]:
-    """变换后四角在世界坐标中的位置（含 position 偏移）。
-
-    与 apply_to_painter 用同一套次序：先按 scale 拉伸、再旋转、最后平移。
-    """
-    hw = base_w / 2.0 * geo.scale_x
-    hh = base_h / 2.0 * geo.scale_y
-    rad = math.radians(geo.rotation)
-    cos_t, sin_t = math.cos(rad), math.sin(rad)
-    pts = []
-    for sx, sy in ((-hw, -hh), (hw, -hh), (-hw, hh), (hw, hh)):
-        rx = sx * cos_t - sy * sin_t
-        ry = sx * sin_t + sy * cos_t
-        pts.append((rx + geo.offset_x, ry + geo.offset_y))
-    return pts
+    origin_x = math.floor((canvas_w / 2 + geo.offset_x) - bitmap_w / 2)
+    origin_y = math.floor((canvas_h / 2 + geo.offset_y) - bitmap_h / 2)
+    return origin_x, origin_y
 
 
 def frame_aabb(base_w: float, base_h: float, scale: float, aspect_ratio: float,

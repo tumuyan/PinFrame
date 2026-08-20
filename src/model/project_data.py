@@ -105,6 +105,31 @@ class FrameData:
             slice_pos=slice_pos
         )
 
+    def clone(self) -> "FrameData":
+        """深拷贝这一帧（唯一的克隆实现）。
+
+        可变字段 (position / crop_rect / slice_pos / target_resolution) 都转成新
+        tuple，避免副本与原帧共享同一对象。
+
+        历史缺陷：曾有 4 份各自手写的克隆代码，其中 main_window 的三处
+        (duplicate_frame 与重复帧对话框的 ABAB / AABB 两种模式) **漏拷了
+        aspect_ratio**，导致"重复"一个镜像帧时副本丢失镜像状态——垂直镜像直接
+        消失，水平镜像因 scale 仍为负而变成 180 度旋转。timeline_model 的那份
+        则漏了 target_resolution。任何新增的复制路径都必须调用本方法，不要再
+        手写字段列表。
+        """
+        return FrameData(
+            file_path=self.file_path,
+            scale=self.scale,
+            position=tuple(self.position),
+            rotation=self.rotation,
+            aspect_ratio=self.aspect_ratio,
+            target_resolution=tuple(self.target_resolution) if self.target_resolution else None,
+            is_disabled=self.is_disabled,
+            crop_rect=tuple(self.crop_rect) if self.crop_rect else None,
+            slice_pos=tuple(self.slice_pos) if self.slice_pos else None,
+        )
+
     def effective_target_size(self) -> Tuple[int, int]:
         """统一计算该帧的"目标分辨率" = 基准尺寸 × scale ÷ aspect_ratio。
 

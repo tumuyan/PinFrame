@@ -8,7 +8,8 @@ from PyQt6.QtCore import Qt, pyqtSignal, QRect, QRectF, QTimer, QPointF
 from PyQt6.QtGui import QImage, QPixmap, QPainter, QColor
 from i18n.manager import i18n
 from core.image_cache import image_cache
-from core.transform import apply_to_painter, frame_aabb, resolve_frame_geometry
+from core.transform import (apply_to_painter, frame_aabb,
+                            normalize_aspect_ratio, resolve_frame_geometry)
 from utils.debug_config import property_debug
 
 class PropertyPanel(QWidget):
@@ -892,7 +893,12 @@ class PropertyPanel(QWidget):
                     f.scale = (w / orig_w) * s_sign
             else:
                 # 不锁定
-                current_h = int(orig_h * (f.scale / f.aspect_ratio))
+                # 注意：这里刻意【不取绝对值】，与 FrameData.effective_target_size()
+                # 不同——current_h 的符号被下面的 `> 0` 当作判据使用：垂直镜像帧
+                # (scale>0, aspect<0) 会得到负值从而跳过 aspect_ratio 重算，避免把
+                # 镜像状态改写掉。若图省事改用 effective_target_size()（它带 abs），
+                # 垂直镜像会在改目标宽度时被静默清除。
+                current_h = int(orig_h * (f.scale / normalize_aspect_ratio(f.aspect_ratio)))
                 f.scale = (w / orig_w) * s_sign
                 if current_h > 0:
                     f.aspect_ratio = (orig_h * f.scale) / current_h
@@ -969,8 +975,11 @@ class PropertyPanel(QWidget):
             old_orig_h = f.crop_rect[3] if f.crop_rect else ih
             # 若锁定目标分辨率，保持目标不变、反推 scale
             if self.t_res_lock.isChecked() and old_orig_w > 0 and old_orig_h > 0:
+                # 用【旧】裁切尺寸反算目标分辨率，故不能调用
+                # FrameData.effective_target_size()（它读的是当前 crop_rect，
+                # 而 crop_rect 正要被下面改写）
                 tw = abs(old_orig_w * f.scale)
-                th = abs(old_orig_h * (f.scale / f.aspect_ratio))
+                th = abs(old_orig_h * (f.scale / normalize_aspect_ratio(f.aspect_ratio)))
                 s_sign = 1 if f.scale >= 0 else -1
                 f.scale = (tw / nw) * s_sign
                 if abs(f.aspect_ratio - 1.0) > 0.001:

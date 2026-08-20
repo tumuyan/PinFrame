@@ -35,6 +35,7 @@ PinFrame is a single-window PyQt6 app. `main.py` bootstraps `QApplication` + `Ma
 Two dataclasses form the entire project state:
 - `FrameData`: one sprite frame — `file_path`, `scale`, `position`, `rotation`, `aspect_ratio` (X/Y distortion, negative = mirror), `crop_rect`, `is_disabled`, and an ephemeral `target_resolution`. Supports `to_dict`/`from_dict` with project-relative path normalization (so projects stay portable when moved).
 - `ProjectData`: the document — `fps`, `width`, `height`, `background_color`, `frames: List[FrameData]`, plus persisted export settings. `to_json`/`from_json` (file path drives relative-path resolution) are the save/load contract. **All persistence goes through these methods.**
+- **`FrameData.clone()` 是唯一的帧复制实现。** 不要再手写字段列表复制帧——曾经有 4 份手写克隆，其中 3 份（`duplicate_frame` 与重复帧对话框的 ABAB / AABB 模式）漏拷 `aspect_ratio`，导致重复一个镜像帧时副本丢失镜像状态；第 4 份漏了 `target_resolution`。
 
 ### Core services (`src/core/`)
 - `transform.py`: 帧变换几何的唯一来源（见上）。Qt-free，有单测覆盖。
@@ -47,10 +48,11 @@ Two dataclasses form the entire project state:
 
 - `resolve_frame_geometry(frame, apply_position=True)` → `FrameGeometry`（裁切、带符号的 `scale_x`/`scale_y`、`flip_h`/`flip_v`、旋转、中心偏移）。`apply_position=False` 供属性面板单帧预览使用——它把帧居中、刻意忽略画布位置。
 - `apply_to_painter(target, geo)` 固定 **平移 → 旋转 → 缩放** 的次序。Qt 右乘复合，故图像实际经历 缩放(含镜像) → 旋转 → 平移，与 exporter 的 `resize → transpose → rotate → 定位` 一致。
-- `frame_aabb` / `frame_corners` —— 包围盒（属性面板 fit 适配、canvas 栅格化缓冲区）。
+- `frame_aabb` —— 缩放+旋转后的轴对齐包围盒（属性面板 fit 适配）。
 - `scaled_size_floor` —— exporter 的 `int()` 截断，**刻意**与 `FrameData.effective_target_size()` 保持一致，使 UI 显示的"目标分辨率"等于导出实际像素尺寸。
+- `composite_origin` —— 变换后位图贴到画布的整数左上角。用 `math.floor`，**不用** `int()`（它在 0 处翻转取整方向，帧移出左/上边缘时平移动画会顿跳 1px），**也不用** `round()`（banker's rounding 与位图宽度的奇偶交替相互干涉，实测把缩放渐变的质心抖动从 0.5px 放大到 1.0px）。
 
-**几何共用，像素化不共用。** `CanvasWidget` 用连续浮点 `QPainter` 变换；`Exporter.compose_frame` 用 PIL 量化（`int()` 尺寸、`rotate(expand=True)`、LANCZOS/BICUBIC）。因此预览与导出之间仍存在设计内的亚像素差异；要消除它必须同时改 `int()`→`round()` **和** `effective_target_size()`，否则 UI 数字与导出产物不符——这属于独立的、用户可见的变更。
+**几何共用，像素化不共用。** `CanvasWidget` 用连续浮点 `QPainter` 变换；`Exporter.compose_frame` 用 PIL 量化（`int()` 尺寸、`rotate(expand=True)`、LANCZOS/BICUBIC）。预览与导出**不可能**逐像素一致——重采样滤波器不同、导出两遍重采样而预览一遍、预览还叠了 `view_scale`。`dev/export_pipeline_precision.md` 记录了实测数据、为什么"让两者一致"是错的目标，以及真正值得修的部分（分数位置的阶梯抖动、缩放渐变的 ±0.5px 交替）该如何用单次仿射变换解决。
 
 `Exporter` 只有一份变换实现（`compose_frame`），三种导出模式共用：`export_iter`（PNG 序列，带进度的 generator）、`export_sprite_sheet`、`export_gif`。`parse_range_string` 把 `"1,3,5-7,10-"` 转成 0 基下标。
 

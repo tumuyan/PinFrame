@@ -367,18 +367,75 @@ H 镜像那行最危险：不是失效，而是**静默变成 180° 旋转**，�
 注意：外部编辑器改图后画布**仍能刷新**，因为 `canvas.refresh_resources()` 对实例 B
 做的是 `clear()` 全量清空，碰巧掩盖了这个问题。已统一为无前缀写法。
 
+### 收尾清理（第二轮）
+
+首轮收敛完成后复查，又发现三项残留，均已处理：
+
+**1. 我在首轮引入的死 API。** `core/transform.py` 里的 `centered_rect` 与
+`frame_corners` 生产代码零调用——正是本文 P1-4 批评的"有成本无收益的抽象层"，而且
+`CLAUDE.md` / `AGENTS.md` 里还错误地声称 `frame_corners` 供 canvas 栅格化缓冲区使用。
+已删除函数、对应的 3 个测试，并修正两份文档。教训：**收敛时只创建有真实调用点的
+函数**，"以后可能有用"就是 P1-4 的成因。
+
+**2. `FrameData` 克隆有 4 份手写实现，其中 3 份漏字段（真 bug）。**
+
+| 位置 | 缺失字段 | 用户可见后果 |
+|---|---|---|
+| `main_window.duplicate_frame` | `aspect_ratio` | 重复镜像帧 → 副本丢失镜像 |
+| 重复帧对话框 ABAB 模式 | `aspect_ratio` | 同上 |
+| 重复帧对话框 AABB 模式 | `aspect_ratio` | 同上 |
+| `timeline_model.duplicate_frames` | `target_resolution` | 影响较小（该字段是 ephemeral） |
+
+漏 `aspect_ratio` 的后果与"把负值归一"同类：垂直镜像帧的副本**镜像直接消失**；水平
+镜像帧的副本因 `scale` 仍为负而 `scale_y` 由 +1 翻成 −1，**变成 180° 旋转**。
+
+已新增 `FrameData.clone()` 作为唯一克隆实现，5 处调用点全部改为调用它
+（`main_window._clone_frame` 退化为薄封装以保留既有调用点）。新增 3 个测试，其中
+`test_clone_copies_every_field` 用 `dataclasses.fields()` 遍历，将来给 `FrameData`
+加字段而忘记更新 clone 时会直接失败。
+
+**3. `property_panel.py` 的两处 `scale / aspect_ratio` 除法——已加除零保护，但
+刻意不做收敛。**
+
+一度想把它们并入 `effective_target_size()`，核查后发现**不能**：
+
+- `on_t_w_changed` 那处**刻意不取绝对值**，`current_h` 的符号被 `> 0` 当作判据——
+  垂直镜像帧 (scale>0, aspect<0) 会得到负值从而跳过 `aspect_ratio` 重算，避免改写掉
+  镜像状态。若换用带 `abs()` 的 `effective_target_size()`，**垂直镜像会在用户改目标
+  宽度时被静默清除**。
+- `on_crop_changed` 那处用的是**旧**裁切尺寸反算（`crop_rect` 正要被改写），而
+  `effective_target_size()` 读的是当前 `crop_rect`，语义上无法替代。
+
+所以只加了 `normalize_aspect_ratio()` 防除零（对所有合法输入行为不变），并把"为什么
+不能收敛"写进代码注释。**这是"记录下来的重复"，不是"消除了的重复"**——如实标注。
+
+### 导出取整：从"方案 B"到实测收窄
+
+原本计划把 `dest` 的 `int()` 换成 `round()`。实测数据推翻了这个方案：
+`round()`（banker's rounding）的进位方向取决于相邻整数的奇偶，而位图宽度在缩放渐变
+中本身就在奇偶交替，两者干涉把质心抖动**从 0.5px 放大到 1.0px**。
+
+同时确认：居中公式 `画布中心 − 位图宽/2 + 偏移` **本身是精确正确的**，奇数宽度位图的
+±0.5px 偏差是"整数贴图无法表达半像素落点"的架构限制，任何取整函数都修不掉。
+
+最终只做了唯一站得住的部分：`int()` → `math.floor()`，收进
+`core.transform.composite_origin()`。对 `dest >= 0` 输出完全不变，只修 `int()` 在 0 处
+翻转取整方向导致的顿跳（帧移出画布左/上边缘时）。配 4 个测试，其中
+`test_composite_origin_is_translation_consistent` 遍历 position −60..+60 断言落点步长
+恒为 1。
+
+完整的实测数据、为什么"消除预览/导出亚像素差异"是错的目标、以及真正的解法（单次
+仿射变换）见 **`dev/export_pipeline_precision.md`**。
+
 ### 有意未做的部分
 
-- **`int()` 截断与 `expand=True` 定位保持原样**（原 P0-1 的"阶段 2"）。改动它会改变
-  导出产物，且必须同步调整 `effective_target_size()`，否则属性面板显示的"目标分辨率"
-  会与实际导出尺寸不符。`dev/test_transform.py::test_scaled_size_matches_effective_target_size`
-  把这个不变量钉住了——将来若单方面改取整，该测试会先失败。
+- **尺寸的 `int()` 截断与 `expand=True` 旋转保持原样**。改动会改变导出产物，且必须
+  同步调整 `effective_target_size()`，否则属性面板显示的"目标分辨率"会与实际导出
+  尺寸不符。`test_scaled_size_matches_effective_target_size` 把这个不变量钉住了——
+  将来若单方面改取整，该测试会先失败。这属于 `export_pipeline_precision.md` 的范围。
 - **时间轴缩略图未纳入统一**。`create_thumbnail` 只做裁切 + `KeepAspectRatio` 缩放，
   故意不含旋转/镜像/偏移（缩略图展示素材本身，而非合成后的帧）。若接进共享函数，
   缩略图会开始跟着旋转——属功能退化。
-- `property_panel.py:895 / 973` 仍有两处无保护的 `scale / aspect_ratio` 除法。它们在
-  "按目标分辨率反算"的编辑逻辑里，`from_dict` 归一后已不可达（UI 也无法产生 0），
-  故未改动，此处备忘。
 
 ### 留下的验证资产
 

@@ -638,18 +638,11 @@ class MainWindow(QMainWindow):
 
     @staticmethod
     def _clone_frame(f) -> FrameData:
-        """深拷贝单帧数据（用于快照与还原，避免共享可变对象污染历史）。"""
-        return FrameData(
-            file_path=f.file_path,
-            scale=f.scale,
-            position=tuple(f.position),
-            rotation=f.rotation,
-            aspect_ratio=f.aspect_ratio,
-            target_resolution=tuple(f.target_resolution) if f.target_resolution else None,
-            is_disabled=f.is_disabled,
-            crop_rect=tuple(f.crop_rect) if f.crop_rect else None,
-            slice_pos=tuple(f.slice_pos) if f.slice_pos else None,
-        )
+        """深拷贝单帧数据（用于快照与还原，避免共享可变对象污染历史）。
+
+        实现已收敛到 FrameData.clone()，此处仅保留薄封装以维持既有调用点。
+        """
+        return f.clone()
 
     def _capture_snapshot(self):
         """抓取当前项目状态的深拷贝快照（帧数据与画布设置）。"""
@@ -1906,17 +1899,9 @@ class MainWindow(QMainWindow):
             # Get original data from timeline model
             orig_data = self.timeline.get_frame_at(idx)
 
-            # Clone data
-            new_data = FrameData(
-                file_path=orig_data.file_path,
-                scale=orig_data.scale,
-                position=orig_data.position,
-                rotation=orig_data.rotation,
-                target_resolution=orig_data.target_resolution,
-                is_disabled=orig_data.is_disabled,
-                crop_rect=orig_data.crop_rect,
-                slice_pos=orig_data.slice_pos if orig_data.slice_pos else None
-            )
+            # Clone data（走 FrameData.clone()，此前手写字段列表漏了 aspect_ratio，
+            # 导致重复一个镜像帧时副本丢失镜像状态）
+            new_data = orig_data.clone()
 
             duplicates.append(new_data)
 
@@ -1973,17 +1958,8 @@ class MainWindow(QMainWindow):
                     # Get original data from timeline model
                     orig_data = self.timeline.get_frame_at(idx)
 
-                    # Clone data
-                    new_data = FrameData(
-                        file_path=orig_data.file_path,
-                        scale=orig_data.scale,
-                        position=orig_data.position,
-                        rotation=orig_data.rotation,
-                        target_resolution=orig_data.target_resolution,
-                        is_disabled=orig_data.is_disabled,
-                        crop_rect=orig_data.crop_rect,
-                        slice_pos=orig_data.slice_pos if orig_data.slice_pos else None
-                    )
+                    # Clone data（同 duplicate_frame：走 FrameData.clone() 以免漏字段）
+                    new_data = orig_data.clone()
 
                     frames_to_insert.append(new_data)
         else:  # AABB mode
@@ -1995,16 +1971,7 @@ class MainWindow(QMainWindow):
 
                 # Repeat this frame 'count' times
                 for repeat in range(count):
-                    new_data = FrameData(
-                        file_path=orig_data.file_path,
-                        scale=orig_data.scale,
-                        position=orig_data.position,
-                        rotation=orig_data.rotation,
-                        target_resolution=orig_data.target_resolution,
-                        is_disabled=orig_data.is_disabled,
-                        crop_rect=orig_data.crop_rect,
-                        slice_pos=orig_data.slice_pos if orig_data.slice_pos else None
-                    )
+                    new_data = orig_data.clone()
 
                     frames_to_insert.append(new_data)
 

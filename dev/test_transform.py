@@ -19,8 +19,8 @@ import sys
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(REPO_ROOT, "src"))
 
-from core.transform import (apply_to_painter, base_size, centered_rect,  # noqa: E402
-                            frame_aabb, frame_corners,
+from core.transform import (apply_to_painter, base_size,  # noqa: E402
+                            composite_origin, frame_aabb,
                             normalize_aspect_ratio, resolve_frame_geometry,
                             scaled_size_floor)
 
@@ -208,10 +208,6 @@ def test_scaled_size_matches_effective_target_size():
 # ---------------------------------------------------------------------------
 # 几何辅助
 # ---------------------------------------------------------------------------
-def test_centered_rect():
-    assert centered_rect(64, 40) == (-32.0, -20.0, 64, 40)
-
-
 def test_aabb_no_rotation():
     assert frame_aabb(64, 40, 1.0, 1.0, 0.0) == (64.0, 40.0)
 
@@ -242,26 +238,107 @@ def test_aabb_zero_aspect_treated_as_unity():
     assert frame_aabb(64, 40, 1.0, 0.0, 0.0) == frame_aabb(64, 40, 1.0, 1.0, 0.0)
 
 
-def test_frame_corners_include_position():
-    geo = resolve_frame_geometry(FakeFrame(position=(100, 50)))
-    pts = frame_corners(geo, 10, 10)
-    assert len(pts) == 4
-    cx = sum(p[0] for p in pts) / 4
-    cy = sum(p[1] for p in pts) / 4
-    assert math.isclose(cx, 100.0, abs_tol=1e-9)
-    assert math.isclose(cy, 50.0, abs_tol=1e-9)
+# ---------------------------------------------------------------------------
+# composite_origin —— 贴图落点的取整约定
+# ---------------------------------------------------------------------------
+def test_composite_origin_centers_content():
+    """居中公式精确：内容质心应落在画布的像素索引中心 (W-1)/2。
+
+    位图内容质心位于 (w-1)/2，故 origin + (w-1)/2 == (W-1)/2 当 origin 无需取整时。
+    """
+    geo = resolve_frame_geometry(FakeFrame())
+    # 偶数宽度：理想落点是整数，取整无损
+    ox, _ = composite_origin(geo, 200, 150, 64, 64)
+    assert ox == 68
+    assert ox + (64 - 1) / 2 == (200 - 1) / 2      # 99.5，精确命中
 
 
-def test_frame_corners_consistent_with_aabb():
-    """四角求出的包围盒应与 frame_aabb 一致（两者是同一变换的两种算法）。"""
-    f = FakeFrame(scale=1.4, aspect_ratio=1.7, rotation=23.0)
-    geo = resolve_frame_geometry(f, apply_position=False)
-    pts = frame_corners(geo, 64, 40)
-    width = max(p[0] for p in pts) - min(p[0] for p in pts)
-    height = max(p[1] for p in pts) - min(p[1] for p in pts)
-    aabb_w, aabb_h = frame_aabb(64, 40, f.scale, f.aspect_ratio, f.rotation)
-    assert math.isclose(width, aabb_w, rel_tol=1e-9)
-    assert math.isclose(height, aabb_h, rel_tol=1e-9)
+def test_composite_origin_odd_width_is_half_pixel_limited():
+    """奇数宽度位图的理想落点是 X.5，整数贴图必然有 0.5px 偏差——架构性限制。"""
+    geo = resolve_frame_geometry(FakeFrame())
+    ox, _ = composite_origin(geo, 200, 150, 63, 63)
+    assert ox == 68                                # floor(68.5)
+    assert ox + (63 - 1) / 2 == 99.0               # 理想 99.5，差 -0.5px
+
+
+def test_composite_origin_uses_floor_not_truncation():
+    """负坐标必须向下取整，不能向零取整。
+
+    回归：原实现用 `int()`，对负数向零取整而对正数向下取整，方向在 0 处翻转。
+    帧移出画布左/上边缘时（origin < 0）平移动画会出现 1px 顿跳。
+    """
+    # 位图比画布宽，且往左偏移 -> origin 为负的 X.5
+    geo = resolve_frame_geometry(FakeFrame(position=(-10, 0)))
+    ox, _ = composite_origin(geo, 100, 100, 163, 10)
+    ideal = (100 / 2 - 10) - 163 / 2               # = -41.5
+    assert ideal == -41.5
+    assert ox == -42, "必须是 floor(-41.5) = -42，而非 int(-41.5) = -41"
+
+
+def test_composite_origin_is_translation_consistent():
+    """整体平移整数像素时，落点必须整数同步移动（无方向翻转导致的顿跳）。"""
+    prev = None
+    for pos in range(-60, 61, 1):
+        geo = resolve_frame_geometry(FakeFrame(position=(pos, 0)))
+        ox, _ = composite_origin(geo, 100, 100, 63, 63)
+        if prev is not None:
+            assert ox - prev == 1, f"position={pos} 处步长为 {ox - prev}，应恒为 1"
+        prev = ox
+
+
+def test_composite_origin_applies_offset():
+    geo = resolve_frame_geometry(FakeFrame(position=(10, -6)))
+    ox, oy = composite_origin(geo, 200, 150, 64, 40)
+    assert (ox, oy) == (78, 49)
+
+
+# ---------------------------------------------------------------------------
+# FrameData.clone() —— 克隆必须带上全部字段
+# ---------------------------------------------------------------------------
+def test_clone_copies_every_field():
+    """回归：main_window 的三处手写克隆曾漏 aspect_ratio，timeline_model 漏
+    target_resolution。任何字段漏拷都会被这个测试抓到。"""
+    from dataclasses import fields
+
+    from model.project_data import FrameData
+
+    src = FrameData("a.png", scale=-1.3, position=(37, -23), rotation=-25.0,
+                    aspect_ratio=-1.0, target_resolution=(120, 80),
+                    is_disabled=True, crop_rect=(1, 2, 63, 41),
+                    slice_pos=(2, 3))
+    dup = src.clone()
+    for f in fields(FrameData):
+        assert getattr(dup, f.name) == getattr(src, f.name), f.name
+
+
+def test_clone_preserves_mirror_state():
+    """重复一个镜像帧后，副本的镜像状态必须一致。
+
+    漏拷 aspect_ratio 时：垂直镜像直接消失；水平镜像因 scale 仍为负而变成
+    180 度旋转（scale_y 由 +1 翻成 -1）。
+    """
+    from model.project_data import FrameData
+
+    for scale, aspect in ((-1.0, -1.0), (1.0, -1.0), (-1.0, 1.0)):
+        src = FrameData("a.png", scale=scale, aspect_ratio=aspect)
+        a = resolve_frame_geometry(src)
+        b = resolve_frame_geometry(src.clone())
+        assert (a.flip_h, a.flip_v) == (b.flip_h, b.flip_v), f"{scale}/{aspect}"
+
+
+def test_clone_does_not_share_mutable_fields():
+    """副本的字段改写不得影响原帧。"""
+    from model.project_data import FrameData
+
+    src = FrameData("a.png", position=(1, 2), crop_rect=(0, 0, 8, 8),
+                    slice_pos=(1, 1), target_resolution=(4, 4))
+    dup = src.clone()
+    dup.position = (9, 9)
+    dup.crop_rect = (1, 1, 2, 2)
+    dup.scale = 5.0
+    assert src.position == (1, 2)
+    assert src.crop_rect == (0, 0, 8, 8)
+    assert src.scale == 1.0
 
 
 # ---------------------------------------------------------------------------
