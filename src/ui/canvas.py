@@ -1,7 +1,8 @@
 from PyQt6.QtWidgets import QWidget
 from PyQt6.QtCore import Qt, pyqtSignal, QPointF, QRectF
 from PyQt6.QtGui import QPainter, QColor, QPen, QBrush, QImage, QTransform
-from src.core.image_cache import image_cache
+from core.image_cache import image_cache
+from core.transform import apply_to_painter, resolve_frame_geometry
 from utils.debug_config import canvas_debug
 import math
 
@@ -286,12 +287,9 @@ class CanvasWidget(QWidget):
                 img = image_cache.get(frame_data.file_path)
                 if img:
                     painter.save()
-                    x, y = frame_data.position
-                    scale = frame_data.scale
-                    painter.translate(x, y)
-                    painter.rotate(frame_data.rotation)
-                    painter.scale(scale, scale / frame_data.aspect_ratio)
-                    
+                    # 变换语义统一来自 core.transform（与 exporter 共用）
+                    apply_to_painter(painter, resolve_frame_geometry(frame_data))
+
                     if opacity < 1.0:
                         painter.setOpacity(opacity)
                     
@@ -415,10 +413,10 @@ class CanvasWidget(QWidget):
             w, h = (f.crop_rect[2], f.crop_rect[3]) if f.crop_rect else (img.width(), img.height())
             
             # Transform for this frame
+            # 仍用 QTransform.map 求角点（保持与 Qt 完全一致的浮点行为），
+            # 变换本身由 core.transform 统一构造
             t = QTransform()
-            t.translate(f.position[0], f.position[1])
-            t.rotate(f.rotation)
-            t.scale(f.scale, f.scale / f.aspect_ratio)
+            apply_to_painter(t, resolve_frame_geometry(f))
             
             # Get corners in world space
             all_points.append(t.map(QPointF(-w/2, -h/2)))
@@ -452,12 +450,7 @@ class CanvasWidget(QWidget):
             if img:
                 painter.save()
 
-                x, y = frame_data.position
-                scale = frame_data.scale
-
-                painter.translate(x, y)
-                painter.rotate(frame_data.rotation)
-                painter.scale(scale, scale / frame_data.aspect_ratio)
+                apply_to_painter(painter, resolve_frame_geometry(frame_data))
 
                 w = img.width()
                 h = img.height()
@@ -636,12 +629,7 @@ class CanvasWidget(QWidget):
             if img:
                 painter.save()
 
-                x, y = frame_data.position
-                scale = frame_data.scale
-
-                painter.translate(x, y)
-                painter.rotate(frame_data.rotation)
-                painter.scale(scale, scale / frame_data.aspect_ratio)
+                apply_to_painter(painter, resolve_frame_geometry(frame_data))
 
                 w = img.width()
                 h = img.height()

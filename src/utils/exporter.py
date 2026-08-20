@@ -1,10 +1,58 @@
 import os
 from typing import List, Tuple, Optional
 from PIL import Image
+from core.transform import (base_size, resolve_frame_geometry,
+                            scaled_size_floor)
 from model.project_data import ProjectData
 from utils.debug_config import export_debug
 
 class Exporter:
+    @staticmethod
+    def compose_frame(canvas: Image.Image, frame, canvas_w: int, canvas_h: int) -> bool:
+        """把一帧按其变换合成到 canvas 上（导出路径的唯一变换实现）。
+
+        几何语义来自 core.transform（与 canvas 预览共用同一来源）；此处只负责
+        PIL 侧的像素化：int() 截断尺寸、transpose 翻转、rotate(expand=True) 旋转，
+        再按中心定位 alpha_composite。这些量化行为是刻意保持的现状，详见
+        core.transform 的模块说明。
+
+        返回 True 表示已合成；源文件缺失或缩放后尺寸退化为 0 时返回 False。
+        """
+        if not os.path.exists(frame.file_path):
+            return False
+
+        geo = resolve_frame_geometry(frame)
+        src_img = Image.open(frame.file_path).convert("RGBA")
+
+        if geo.crop_rect:
+            x, y, w, h = geo.crop_rect
+            src_img = src_img.crop((x, y, x + w, y + h))
+
+        base_w, base_h = base_size(geo, src_img.width, src_img.height)
+        new_w, new_h = scaled_size_floor(geo, base_w, base_h)
+        if new_w <= 0 or new_h <= 0:
+            return False
+
+        src_img = src_img.resize((new_w, new_h), Image.Resampling.LANCZOS)
+
+        # 镜像：几何解析把 scale/aspect_ratio 的负号拆成了 flip 标志
+        if geo.flip_h:
+            src_img = src_img.transpose(Image.Transpose.FLIP_LEFT_RIGHT)
+        if geo.flip_v:
+            src_img = src_img.transpose(Image.Transpose.FLIP_TOP_BOTTOM)
+
+        # PIL 的 rotate 正向为逆时针，与 QPainter.rotate 相反，故取负
+        if geo.rotation != 0:
+            src_img = src_img.rotate(-geo.rotation,
+                                     resample=Image.Resampling.BICUBIC,
+                                     expand=True)
+
+        cx, cy = canvas_w / 2, canvas_h / 2
+        dest_x = int((cx + geo.offset_x) - src_img.width / 2)
+        dest_y = int((cy + geo.offset_y) - src_img.height / 2)
+        canvas.alpha_composite(src_img, (dest_x, dest_y))
+        return True
+
     @staticmethod
     def parse_range_string(range_str: str, total_count: int) -> List[int]:
         """
@@ -83,39 +131,8 @@ class Exporter:
             canvas = Image.new('RGBA', (project.width, project.height), bg_color)
             
             try:
-                if os.path.exists(frame.file_path):
-                    src_img = Image.open(frame.file_path).convert("RGBA")
-                    
-                    if frame.crop_rect:
-                        x, y, w, h = frame.crop_rect
-                        src_img = src_img.crop((x, y, x + w, y + h))
-                    
-                    # Handle scale and aspect_ratio (negative values indicate mirroring)
-                    scale_x = frame.scale
-                    scale_y = frame.scale / frame.aspect_ratio
-                    
-                    new_w = int(src_img.width * abs(scale_x))
-                    new_h = int(src_img.height * abs(scale_y))
-                    
-                    if new_w > 0 and new_h > 0:
-                        src_img = src_img.resize((new_w, new_h), Image.Resampling.LANCZOS)
-                        
-                        # Apply mirroring if scales are negative
-                        if scale_x < 0:
-                            src_img = src_img.transpose(Image.Transpose.FLIP_LEFT_RIGHT)
-                        if scale_y < 0:
-                            src_img = src_img.transpose(Image.Transpose.FLIP_TOP_BOTTOM)
-                        
-                        # Apply rotation
-                        if frame.rotation != 0:
-                            src_img = src_img.rotate(-frame.rotation, resample=Image.Resampling.BICUBIC, expand=True)
-                    
-                        cx, cy = project.width / 2, project.height / 2
-                        dest_x = int((cx + frame.position[0]) - src_img.width / 2)
-                        dest_y = int((cy + frame.position[1]) - src_img.height / 2)
-                        
-                        canvas.alpha_composite(src_img, (dest_x, dest_y))
-                
+                Exporter.compose_frame(canvas, frame, project.width, project.height)
+
                 # Save
                 if use_original_filenames:
                     base_name = os.path.basename(frame.file_path)
@@ -178,36 +195,8 @@ class Exporter:
             canvas = Image.new('RGBA', (fw, fh), bg_color)
             
             try:
-                if os.path.exists(frame.file_path):
-                    src_img = Image.open(frame.file_path).convert("RGBA")
-                    
-                    if frame.crop_rect:
-                        x, y, w, h = frame.crop_rect
-                        src_img = src_img.crop((x, y, x + w, y + h))
-                    
-                    # Handle scale and aspect_ratio (negative values indicate mirroring)
-                    scale_x = frame.scale
-                    scale_y = frame.scale / frame.aspect_ratio
-                    
-                    new_w = int(src_img.width * abs(scale_x))
-                    new_h = int(src_img.height * abs(scale_y))
-                    
-                    if new_w > 0 and new_h > 0:
-                        src_img = src_img.resize((new_w, new_h), Image.Resampling.LANCZOS)
-                        
-                        if scale_x < 0:
-                            src_img = src_img.transpose(Image.Transpose.FLIP_LEFT_RIGHT)
-                        if scale_y < 0:
-                            src_img = src_img.transpose(Image.Transpose.FLIP_TOP_BOTTOM)
-                        
-                        if frame.rotation != 0:
-                            src_img = src_img.rotate(-frame.rotation, resample=Image.Resampling.BICUBIC, expand=True)
-                        
-                        cx, cy = fw / 2, fh / 2
-                        dest_x = int((cx + frame.position[0]) - src_img.width / 2)
-                        dest_y = int((cy + frame.position[1]) - src_img.height / 2)
-                        canvas.alpha_composite(src_img, (dest_x, dest_y))
-                
+                Exporter.compose_frame(canvas, frame, fw, fh)
+
                 row_idx = i // cols
                 col_idx = i % cols
                 
@@ -243,37 +232,9 @@ class Exporter:
             canvas = Image.new('RGBA', (project.width, project.height), bg_color)
             
             try:
-                if os.path.exists(frame.file_path):
-                    src_img = Image.open(frame.file_path).convert("RGBA")
-                    
-                    if frame.crop_rect:
-                        x, y, w, h = frame.crop_rect
-                        src_img = src_img.crop((x, y, x + w, y + h))
-                    
-                    # Handle scale and aspect_ratio (negative values indicate mirroring)
-                    scale_x = frame.scale
-                    scale_y = frame.scale / frame.aspect_ratio
-                    
-                    new_w = int(src_img.width * abs(scale_x))
-                    new_h = int(src_img.height * abs(scale_y))
-                    
-                    if new_w > 0 and new_h > 0:
-                        src_img = src_img.resize((new_w, new_h), Image.Resampling.LANCZOS)
-                        
-                        if scale_x < 0:
-                            src_img = src_img.transpose(Image.Transpose.FLIP_LEFT_RIGHT)
-                        if scale_y < 0:
-                            src_img = src_img.transpose(Image.Transpose.FLIP_TOP_BOTTOM)
-                        
-                        if frame.rotation != 0:
-                            src_img = src_img.rotate(-frame.rotation, resample=Image.Resampling.BICUBIC, expand=True)
-                        
-                        cx, cy = project.width / 2, project.height / 2
-                        dest_x = int((cx + frame.position[0]) - src_img.width / 2)
-                        dest_y = int((cy + frame.position[1]) - src_img.height / 2)
-                        canvas.alpha_composite(src_img, (dest_x, dest_y))
-                
-                # Convert to RGB or keep RGBA? 
+                Exporter.compose_frame(canvas, frame, project.width, project.height)
+
+                # Convert to RGB or keep RGBA?
                 # GIF doesn't support full alpha, but PIL can handle it with trans index.
                 # To be safe and simple, let's keep it in RGBA and let PIL handle it, 
                 # or convert if necessary.

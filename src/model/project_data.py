@@ -5,6 +5,8 @@ from typing import List, Tuple, Optional
 
 from PyQt6.QtGui import QImageReader
 
+from core.transform import normalize_aspect_ratio
+
 
 def source_image_size(file_path: str) -> Tuple[int, int]:
     """零解码读取源图尺寸 (w, h)，失败返回 (0, 0)。供分辨率计算共享使用。"""
@@ -94,7 +96,10 @@ class FrameData:
             scale=data.get("scale", 1.0),
             position=tuple(data.get("position", (0, 0))),
             rotation=data.get("rotation", 0.0),
-            aspect_ratio=data.get("aspect_ratio", 1.0),
+            # 归一无效值：工程 JSON 是用户可手改的文本，aspect_ratio 为 0 会让
+            # canvas 的 paintEvent 抛 ZeroDivisionError 并被 PyQt6 升级为进程
+            # abort（打开即崩）。负值必须保留——它是镜像状态的编码。
+            aspect_ratio=normalize_aspect_ratio(data.get("aspect_ratio", 1.0)),
             is_disabled=data.get("is_disabled", data.get("is_active", False)),
             crop_rect=crop_rect,
             slice_pos=slice_pos
@@ -117,7 +122,7 @@ class FrameData:
         if base_w <= 0 or base_h <= 0:
             return 0, 0
         w = int(abs(base_w * self.scale))
-        h = int(abs(base_h * (self.scale / self.aspect_ratio)))
+        h = int(abs(base_h * (self.scale / normalize_aspect_ratio(self.aspect_ratio))))
         return w, h
 
     def base_size(self) -> Tuple[int, int]:

@@ -1,4 +1,6 @@
-# CODEBUDDY.md This file provides guidance to CodeBuddy when working with code in this repository.
+# AGENTS.md
+
+This file provides guidance to CodeBuddy and other AI coding tools when working with code in this repository.
 
 ## Overview
 
@@ -19,7 +21,9 @@ PinFrame (定帧) is a PyQt6 desktop application for previewing, fine-tuning, an
   `bash dev/screenshot.sh` launches the app under Xvfb and captures `dev/tmp_screenshot.png`.
 
 - **Run a single test script:**
-  `python test_full_slice.py` (standalone, no test framework). Tests live as top-level scripts (e.g. `test_full_slice.py`); run them directly with the project root as CWD.
+  `python dev/test_transform.py`（25 个 `core.transform` 单测，纯 assert，无需 pytest）；
+  `python dev/transform_baseline.py [--compare]`（所有渲染路径的像素哈希回归）。
+  除此之外没有测试框架，其余功能靠手动验证。
 
 - **Linting:** No linter/CI configured. Use `python -m py_compile <file>` to sanity-check syntax.
 
@@ -33,13 +37,36 @@ Two dataclasses form the entire project state:
 - `ProjectData`: the document — `fps`, `width`, `height`, `background_color`, `frames: List[FrameData]`, plus persisted export settings. `to_json`/`from_json` (file path drives relative-path resolution) are the save/load contract. **All persistence goes through these methods.**
 
 ### Core services (`src/core/`)
-- `image_cache.py`: a global singleton `ImageCache` (`image_cache`) shared across all widgets, keyed by absolute file path (not crop rect), FIFO-capped at 500. Always read images from `image_cache.get(path)` rather than `QImage(path)` directly to avoid reloading.
+- `transform.py`: 帧变换几何的唯一来源（见上）。Qt-free，有单测覆盖。
+- `image_cache.py`: a global singleton `ImageCache` (`image_cache`) shared across all widgets, keyed by absolute file path (the `crop_rect` argument is accepted but ignored — dead parameter), FIFO-capped at 500 *images* (not bytes). Always read images from `image_cache.get(path)` rather than `QImage(path)` directly to avoid reloading. **必须写成 `from core.image_cache import image_cache`**，不可写 `from src.core.image_cache import ...`：两种写法都能解析（仓库根在 `sys.path` 上），但会产生两个不同的模块对象、进而两个独立的单例——`canvas.py` 与 `property_panel.py` 曾经就是这样，导致内存翻倍且缓存失效被割裂。
 - `version.py`: build-time generated; holds `VERSION`, `REPO_URL`, `BUILD_DATE`. Do not edit by hand.
 
-### Rendering (`src/ui/canvas.py`, `src/utils/exporter.py`)
-Two independent render paths must stay in sync when you change transform logic:
-- **Interactive preview** (`CanvasWidget`): a `QWidget` that draws with `QPainter`, handling view pan/zoom (`view_offset`/`view_scale`), onion skins (`onion_skin_frames`), reference frame overlay, multi-selection drag, anchor handles (4 modes), rasterization grid, and wheel-mode toggle (zoom vs scale image). Emits `transform_changed`, `anchor_pos_changed`, `scale_change_requested`.
-- **Export** (`Exporter` in `src/utils/exporter.py`): pure PIL (`'RGBA'` canvas, `alpha_composite`) implementing `export_iter` (PNG sequence, generator with progress), `export_sprite_sheet`, `export_gif`. It re-implements scale→crop→mirror→rotate→center-composite logic in Python. **If you change transform semantics in `FrameData`, mirror it here or exports will diverge from preview.** `parse_range_string` converts `"1,3,5-7,10-"` into 0-based indices.
+### Rendering (`src/core/transform.py`, `src/ui/canvas.py`, `src/utils/exporter.py`)
+
+`src/core/transform.py` 是**帧变换几何的唯一来源**，预览与导出共用。它刻意不 import PyQt6（`apply_to_painter` 用鸭子类型接受 `QPainter` / `QTransform`），因此几何逻辑无需 `QApplication` 即可单测。
+
+- `resolve_frame_geometry(frame, apply_position=True)` → `FrameGeometry`（裁切、带符号的 `scale_x`/`scale_y`、`flip_h`/`flip_v`、旋转、中心偏移）。`apply_position=False` 供属性面板单帧预览使用——它把帧居中、刻意忽略画布位置。
+- `apply_to_painter(target, geo)` 固定 **平移 → 旋转 → 缩放** 的次序。Qt 右乘复合，故图像实际经历 缩放(含镜像) → 旋转 → 平移，与 exporter 的 `resize → transpose → rotate → 定位` 一致。
+- `frame_aabb` / `frame_corners` —— 包围盒（属性面板 fit 适配、canvas 栅格化缓冲区）。
+- `scaled_size_floor` —— exporter 的 `int()` 截断，**刻意**与 `FrameData.effective_target_size()` 保持一致，使 UI 显示的"目标分辨率"等于导出实际像素尺寸。
+
+**几何共用，像素化不共用。** `CanvasWidget` 用连续浮点 `QPainter` 变换；`Exporter.compose_frame` 用 PIL 量化（`int()` 尺寸、`rotate(expand=True)`、LANCZOS/BICUBIC）。因此预览与导出之间仍存在设计内的亚像素差异；要消除它必须同时改 `int()`→`round()` **和** `effective_target_size()`，否则 UI 数字与导出产物不符——这属于独立的、用户可见的变更。
+
+`Exporter` 只有一份变换实现（`compose_frame`），三种导出模式共用：`export_iter`（PNG 序列，带进度的 generator）、`export_sprite_sheet`、`export_gif`。`parse_range_string` 把 `"1,3,5-7,10-"` 转成 0 基下标。
+
+**`aspect_ratio` 的符号是有语义的。** 它是 X/Y 失真系数，**负值编码镜像状态**——`property_panel._mirror_axis` 对水平镜像同时翻转 `scale` 与 `aspect_ratio` 的符号，垂直镜像只翻转 `aspect_ratio`，而 `reset_mirror` 靠符号**组合**反推镜像轴。只有 `0` 是无效值（除零且无语义）；`normalize_aspect_ratio()` 把它归一为 `1.0`，已应用于 `resolve_frame_geometry`、`frame_aabb`、`effective_target_size()`、`FrameData.from_dict`。**绝不可归一负值**——那会让水平镜像静默变成 180° 旋转、垂直镜像直接失效。
+
+### 渲染改动的验证方式
+
+任何触及变换语义的改动都必须过这两个工具（无需 pytest，只依赖 PyQt6 + Pillow）：
+
+```powershell
+python dev/test_transform.py                  # 25 个单测，快，解释"为什么"
+python dev/transform_baseline.py              # 记录所有渲染路径的像素哈希
+python dev/transform_baseline.py --compare    # 改动后：MAIN_DIGEST 必须不变
+```
+
+`transform_baseline.py` 用一个夹具工程（旋转、镜像、裁切、失真、奇偶源图尺寸）跑 PNG 序列/精灵表/GIF 导出、canvas 普通与栅格化两条路径、属性面板单选与多选预览，再对输出取哈希。其 `EDGE` 组把 `aspect_ratio == 0` **隔离到子进程**——归一之前该用例会 abort 整个进程（PyQt6 把 `paintEvent` 内未捕获异常升级为 `abort()`，实测退出码 `0xC0000409`）。
 
 ### Timeline — design (`src/ui/timeline*.py`)
 The timeline is a **model/view system**: `TimelineModel` owns the frame list and is the sole authority over frame state; `TimelineWidget` (a `QStackedWidget`) hosts two read-only views — `TimelineListView` (tree) and `TimelineGridWidget` (thumbnails) — that share `BaseTimelineView` + `TimelineViewUtils` + a delegate. Every mutation broadcasts a `pyqtSignal` (`selection_changed`, `order_changed`, `files_dropped`, `duplicate_requested`, `reverse_order_requested`, `set_reference_requested`, ...) that `MainWindow` connects to actions.
@@ -64,6 +91,7 @@ Singleton `I18nManager` (`i18n`) loaded from `en_US.json` / `zh_CN.json`. Call `
 
 ### Conventions & gotchas
 - Imports are `src`-relative (no `src.` prefix). Run anything with the repo root as CWD.
+- **时间轴缩略图刻意不套用帧变换**：`TimelineGridWidget.create_thumbnail` 只做 `crop_rect` 裁切 + `KeepAspectRatio` 缩放，不含旋转/镜像/缩放/偏移。这是有意设计（缩略图展示素材本身的样子，而非合成后的帧），**不要**把它接到 `core/transform.py`。
 - **`project.frames` is only synced from timeline at save/export and when explicitly requested — never assume it is current.** After any edit, `timeline` (via `TimelineModel.get_all_frames()`) is the single authority; `ProjectData.frames` is a stale snapshot. Any project-scoped feature that scans frames (e.g. asset manager, delete-unused-assets, copy-assets) MUST call `self.project.frames = self.timeline.get_all_frames()` at its entry point, *before* opening its dialog, so it reflects unsaved in-memory edits. Failing to sync can show stale data and — worse — let a "delete unused assets" scan misjudge an in-use (unsaved) asset as unused and physically delete it (data loss).
 - Image loading = `image_cache.get(...)`. Image rendering transform logic exists in **two places** (canvas + exporter); keep them consistent.
 - `src/core/version.py` is auto-generated — never commit hand edits.

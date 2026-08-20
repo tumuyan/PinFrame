@@ -5,9 +5,10 @@ from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel,
                              QGridLayout, QCheckBox, QRadioButton, QButtonGroup,
                              QScrollArea)
 from PyQt6.QtCore import Qt, pyqtSignal, QRect, QRectF, QTimer, QPointF
-from PyQt6.QtGui import QImage, QPixmap, QPainter, QColor, QTransform
+from PyQt6.QtGui import QImage, QPixmap, QPainter, QColor
 from i18n.manager import i18n
-from src.core.image_cache import image_cache
+from core.image_cache import image_cache
+from core.transform import apply_to_painter, frame_aabb, resolve_frame_geometry
 from utils.debug_config import property_debug
 
 class PropertyPanel(QWidget):
@@ -1135,30 +1136,6 @@ class PropertyPanel(QWidget):
             self.update_image_anchor_offset()
         self.frame_data_changed.emit(self.frame_data)
 
-    @staticmethod
-    def _rotated_bbox(bw, bh, scale, aspect, rotation):
-        """Bounding box of a (bw x bh) rect after CanvasWidget's transform
-        (scale(scale, scale/aspect_ratio), then rotate).
-
-        aspect_ratio is X/Y distortion (negative = vertical mirror). The X factor
-        is ``scale`` and the Y factor is ``scale / aspect``; magnitudes are used
-        for extents because mirror just flips the rect.
-        Returns (width, height) of the axis-aligned bounding box, centered at origin.
-        """
-        x_factor = abs(scale)
-        y_factor = abs(scale / aspect) if aspect != 0 else 0.0
-        hw = bw / 2.0 * x_factor
-        hh = bh / 2.0 * y_factor
-        rad = math.radians(rotation)
-        cos_t, sin_t = math.cos(rad), math.sin(rad)
-        max_x = max_y = 0.0
-        for sx, sy in ((hw, hh), (hw, -hh), (-hw, hh), (-hw, -hh)):
-            rx = sx * cos_t - sy * sin_t
-            ry = sx * sin_t + sy * cos_t
-            max_x = max(max_x, abs(rx))
-            max_y = max(max_y, abs(ry))
-        return 2 * max_x, 2 * max_y
-
     def update_preview(self):
         if not self.selected_frames:
             self.preview_label.setPixmap(QPixmap())
@@ -1190,7 +1167,7 @@ class PropertyPanel(QWidget):
                     base_w, base_h = f.crop_rect[2], f.crop_rect[3]
                 else:
                     base_w, base_h = img.width(), img.height()
-                bw, bh = self._rotated_bbox(
+                bw, bh = frame_aabb(
                     base_w, base_h, f.scale, f.aspect_ratio, f.rotation)
                 cx, cy = f.position
 
@@ -1231,15 +1208,16 @@ class PropertyPanel(QWidget):
                     cx, cy, cw, ch = 0, 0, img.width(), img.height()
                     base_w, base_h = img.width(), img.height()
                 
-                aspect = f.aspect_ratio
-                box_w, box_h = self._rotated_bbox(
-                    base_w, base_h, f.scale, aspect, f.rotation)
+                box_w, box_h = frame_aabb(
+                    base_w, base_h, f.scale, f.aspect_ratio, f.rotation)
                 fit = min(target_area / box_w, target_area / box_h) if box_w > 0 and box_h > 0 else 1
-                
+
                 painter.translate(w / 2, h / 2)        # center preview
                 painter.scale(fit, fit)                 # fit-to-preview scale
-                painter.rotate(f.rotation)              # rotation
-                painter.scale(f.scale, f.scale / aspect if aspect != 0 else 0.0)  # matches canvas
+                # 单帧预览刻意忽略 position（把帧居中显示），故 apply_position=False；
+                # 旋转/缩放/镜像与画布共用 core.transform 的同一语义。
+                apply_to_painter(painter,
+                                 resolve_frame_geometry(f, apply_position=False))
                 if f.crop_rect:
                     painter.drawImage(QRect(int(-cw / 2), int(-ch / 2), int(cw), int(ch)),
                                       img, QRect(cx, cy, cw, ch))
@@ -1262,9 +1240,8 @@ class PropertyPanel(QWidget):
                     for img, f in valid_frames:
                         painter.save()
                         painter.setOpacity(0.5)
-                        painter.translate(f.position[0], f.position[1])
-                        painter.rotate(f.rotation)
-                        painter.scale(f.scale, f.scale / f.aspect_ratio if f.aspect_ratio != 0 else 0.0)
+                        # 多选预览需要 position：否则看不到各帧之间的重叠关系
+                        apply_to_painter(painter, resolve_frame_geometry(f))
 
                         if f.crop_rect:
                             cx, cy, cw, ch = f.crop_rect
