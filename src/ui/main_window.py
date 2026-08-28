@@ -87,6 +87,10 @@ class MainWindow(QMainWindow):
         self.timeline_dock = QDockWidget(i18n.t("dock_timeline"), self)
         self.timeline_dock.setObjectName("TimelineDock")
         self.timeline = TimelineWidget()
+        # 把工程的 frames 读取绑定到 timeline 模型（唯一权威数据源）。
+        # 绑定后 project.frames 恒为实时值，保存/导出/素材类功能都不再需要
+        # （也不允许）手工 `project.frames = timeline.get_all_frames()`。
+        self.project.bind_frames_provider(self.timeline.get_all_frames)
         self.timeline.selection_changed.connect(self.on_selection_changed)
         self.timeline.order_changed.connect(self.on_order_changed)
         self.timeline.files_dropped.connect(self.add_files)
@@ -3291,9 +3295,7 @@ class MainWindow(QMainWindow):
 
     def _save_to_path(self, path):
         try:
-            # Sync frames from timeline model to project before saving
-            self.project.frames = self.timeline.get_all_frames()
-
+            # project.frames 已绑定 timeline 模型，to_json 直接拿到实时帧，无需同步
             with open(path, 'w') as f:
                 f.write(self.project.to_json(path))
             self.current_project_path = path
@@ -3323,6 +3325,11 @@ class MainWindow(QMainWindow):
                 json_str = f.read()
                 
             self.project = ProjectData.from_json(json_str, path)
+            # 取出载入的静态帧列表，供下面的填充循环使用。
+            # 绑定活跃数据源要等到 timeline.clear() 之后才做（见下方）：绑定后
+            # project.frames 就是 timeline 的实时内容，而 clear 之前那还是【上一个
+            # 工程】的帧——让新工程对象报告旧工程的帧是错的语义。
+            loaded_frames = self.project.frames
             self.current_project_path = path
             self.add_recent_project(path)
             
@@ -3334,7 +3341,11 @@ class MainWindow(QMainWindow):
             # Rasterization settings are now global, don't load from project
 
             self.timeline.clear()
-            for frame in self.project.frames:
+            # timeline 已清空，此刻才绑定：从这里起 project.frames 就是新工程的实时
+            # 内容，不存在"新工程对象报告旧工程帧"的窗口。填充循环必须用
+            # loaded_frames——绑定后拿 project.frames 驱动循环会边遍历边追加。
+            self.project.bind_frames_provider(self.timeline.get_all_frames)
+            for frame in loaded_frames:
                 w, h = 0, 0
                 if frame.crop_rect:
                     w, h = frame.crop_rect[2], frame.crop_rect[3]
@@ -3421,6 +3432,8 @@ class MainWindow(QMainWindow):
         """Reset the current project to an empty state without any prompts."""
         # Reset project to empty state
         self.project = ProjectData()
+        # 新建的 ProjectData 需要重新绑定活跃数据源（见 __init__ 中的同名调用）
+        self.project.bind_frames_provider(self.timeline.get_all_frames)
         self.fps_spin.setValue(self.project.fps)
         self.canvas.set_project_settings(self.project.width, self.project.height)
         self.property_panel.set_project_info(self.project.width, self.project.height)
@@ -4329,10 +4342,6 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(i18n.t("msg_no_frames_to_export", "No frames to export"), 3000)
             return
 
-        # Sync frames from timeline model to project so export works even when the
-        # project has not been saved yet.
-        self.project.frames = self.timeline.get_all_frames()
-
         from utils.exporter import Exporter
         try:
             Exporter.export_sprite_sheet(self.project, file, frame_indices=indices, bg_color=self.project.export_bg_color)
@@ -4372,11 +4381,7 @@ class MainWindow(QMainWindow):
              self.statusBar().showMessage(i18n.t("msg_no_frames_to_export"), 3000)
              return
 
-        # Sync frames from timeline model to project so export works even when the
-        # project has not been saved yet.
-        self.project.frames = self.timeline.get_all_frames()
-
-        from utils.exporter import Exporter 
+        from utils.exporter import Exporter
         from PyQt6.QtWidgets import QApplication
 
         if export_type == "sequence":
@@ -4440,8 +4445,6 @@ class MainWindow(QMainWindow):
             msg_box.exec()
             return
             
-        # 同步工程数据源（timeline 为唯一权威），确保对话框反映未保存的最新状态
-        self.project.frames = self.timeline.get_all_frames()
         from ui.copy_assets_dialog import CopyAssetsDialog
         dlg = CopyAssetsDialog(self.project, self.current_project_path, self)
         if dlg.exec():
@@ -4463,8 +4466,6 @@ class MainWindow(QMainWindow):
             msg_box.exec()
             return
 
-        # 同步工程数据源（timeline 为唯一权威），确保素材统计反映未保存的最新状态
-        self.project.frames = self.timeline.get_all_frames()
         from ui.asset_manager_dialog import AssetManagerDialog
         dlg = AssetManagerDialog(self.project, self,
                                  on_delete=self._remove_assets_refs,
@@ -4491,8 +4492,6 @@ class MainWindow(QMainWindow):
 
         if indices:
             self.timeline.remove_frames_at(indices)
-            # 同步工程数据源（timeline 为数据权威），确保素材管理器/scan_assets 立即生效
-            self.project.frames = self.timeline.get_all_frames()
 
         # 参考帧联动清理
         if self.reference_frame is not None:
@@ -4534,8 +4533,6 @@ class MainWindow(QMainWindow):
         if indices:
             for i in indices:
                 self.timeline.get_frame_at(i).file_path = new_abs
-            # 同步工程数据源（timeline 为数据权威），确保素材管理器/scan_assets 立即生效
-            self.project.frames = self.timeline.get_all_frames()
             self.timeline.refresh_current_items()
             # 通知视图重绘受影响的帧（时间轴文件名会随路径更新）
             self.timeline.model.data_changed.emit(indices[0], indices[-1])
@@ -4564,8 +4561,6 @@ class MainWindow(QMainWindow):
             msg_box.exec()
             return
 
-        # 同步工程数据源（timeline 为唯一权威），避免把未保存新增的素材误判为未使用而物理删除
-        self.project.frames = self.timeline.get_all_frames()
         from ui.unused_assets_dialog import UnusedAssetsDialog
         dlg = UnusedAssetsDialog(self.project, self.current_project_path, self)
         dlg.exec()

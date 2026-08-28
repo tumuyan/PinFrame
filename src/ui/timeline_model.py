@@ -12,6 +12,7 @@ class TimelineModel(QObject):
     frames_inserted = pyqtSignal(int, int)  # index, count
     frames_removed = pyqtSignal(int, int)  # index, count
     frames_moved = pyqtSignal(int, int, int)  # from_index, to_index, count
+    frames_reordered = pyqtSignal()  # 顺序整体变化（反转 / 拖拽排序），无参数
     selection_changed = pyqtSignal()
     reference_changed = pyqtSignal(object)  # frame_data or None
 
@@ -240,10 +241,6 @@ class TimelineModel(QObject):
 
             for idx, frame_data in zip(valid_indices, frames_to_reverse):
                 self._frames[idx] = frame_data
-
-            min_idx = min(valid_indices)
-            max_idx = max(valid_indices)
-            self.data_changed.emit(min_idx, max_idx)
         else:
             # Reverse all
             self._frames.reverse()
@@ -255,7 +252,11 @@ class TimelineModel(QObject):
                 self._selected_indices = sorted(new_selection)
                 self.selection_changed.emit()
 
-            self.data_changed.emit(0, len(self._frames) - 1)
+        # 顺序整体变了 → 索引到 item 的映射不再成立，发 frames_reordered 让视图按
+        # 模型重建。**不能用 data_changed**：它的语义是"内容变了、位置没变"，视图
+        # 收到后只按索引原地刷新文本，不会重排 item，于是顺序变更在 UI 上完全不生效
+        # （模型是对的、保存导出也是对的，只有界面显示旧顺序）。
+        self.frames_reordered.emit()
 
     def duplicate_frames(self, indices: List[int], insert_position: Optional[int] = None) -> List[int]:
         """
@@ -333,5 +334,7 @@ class TimelineModel(QObject):
         if frames == self._frames:
             return False
         self._frames = list(frames)
-        self.data_changed.emit(0, max(0, len(self._frames) - 1))
+        # 同 reverse_frames：整体换序后索引映射失效，必须让视图按模型重建，
+        # 发 data_changed 只会原地刷新文本、不会重排 item。
+        self.frames_reordered.emit()
         return True

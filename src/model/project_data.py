@@ -1,7 +1,7 @@
 import json
 import os
 from dataclasses import dataclass, field
-from typing import List, Tuple, Optional
+from typing import Callable, List, Tuple, Optional
 
 from PyQt6.QtGui import QImageReader
 
@@ -158,12 +158,28 @@ class FrameData:
 
 @dataclass
 class ProjectData:
+    """工程文档。
+
+    **关于 frames：本类不再持有可写的第二份帧列表。** `frames` 是一个属性，
+    绑定了活跃数据源 (`bind_frames_provider`) 之后，读它总是返回 TimelineModel
+    里的实时帧；未绑定时（刚 from_json 出来、或在无 UI 的脚本/导出场景里）返回
+    `_static_frames`。
+
+    历史缺陷：`frames` 曾是一个普通字段，只在保存/导出时才由 MainWindow 手工
+    `project.frames = timeline.get_all_frames()` 同步一次。于是任何遍历帧的功能
+    都必须记得在入口补这句，忘了就读到过期快照——最严重的一次是"删除未使用素材"
+    把未保存新增的在用素材判为未使用并**物理删除**（数据丢失）。用属性委托把这条
+    纪律变成了结构保证：忘记同步已不再可能，因为没有第二份状态可供落后。
+    """
+
     fps: int = 6
     width: int = 512
     height: int = 512
-    frames: List[FrameData] = field(default_factory=list)
+    # frames 的后备存储。绑定 provider 后不再被读取，仅用于 from_json 载入阶段
+    # 与无 UI 场景。**不要直接访问它**，一律走 frames 属性。
+    _static_frames: List[FrameData] = field(default_factory=list, repr=False)
     background_color: str = "#000000"
-    
+
     # Persistent Settings
     last_export_path: str = ""
     last_gif_export_path: str = ""
@@ -174,7 +190,48 @@ class ProjectData:
     export_range_mode: str = "all" # "all", "selected", "custom"
     export_custom_range: str = ""
 
+    def __post_init__(self):
+        # 活跃帧列表的提供者（由 MainWindow 注入 TimelineModel 的读取函数）。
+        # 放在 __post_init__ 而非 dataclass 字段，避免污染 __init__ 签名。
+        self._frames_provider: Optional[Callable[[], List[FrameData]]] = None
+
+    # ---- frames：唯一真相 ------------------------------------------------
+    def bind_frames_provider(self, provider: Callable[[], List[FrameData]]) -> None:
+        """把 frames 的读取委托给活跃数据源（TimelineModel.get_all_frames）。
+
+        绑定后 `project.frames` 恒为实时值，`to_json` / 导出器 / 素材类对话框
+        无需（也不应）再手工同步。依赖注入的方式让 model 层不必反向依赖 ui 层。
+        """
+        self._frames_provider = provider
+
+    @property
+    def frames(self) -> List[FrameData]:
+        # 两个分支都返回【新列表】，保证语义对称：调用方永远不该去改这个返回值。
+        # 若未绑定时直接返回 _static_frames 本身，`project.frames.append(x)` 会在
+        # 未绑定模式（脚本/测试）下生效、而在绑定模式（应用内）下静默失效——那种
+        # 不对称会让"在测试里能过、在应用里失效"的代码溜过去。
+        if self._frames_provider is not None:
+            return self._frames_provider()
+        return list(self._static_frames)
+
+    @frames.setter
+    def frames(self, value: List[FrameData]) -> None:
+        if self._frames_provider is not None:
+            # 绑定后再赋值一定是设计错误：写进去的东西永远不会被读到，
+            # 正是旧"手工同步"模式留下的肌肉记忆。直接报错而不是静默失败。
+            raise RuntimeError(
+                "ProjectData.frames 已绑定活跃数据源，不能再赋值。"
+                "帧的增删改一律通过 TimelineModel，读取直接用 project.frames。")
+        self._static_frames = list(value)
+
     def to_json(self, project_file_path: Optional[str] = None):
+        """序列化为工程 JSON。
+
+        注意：绑定了活跃数据源后，本方法**不再是该对象的纯函数**——`self.frames`
+        读的是 TimelineModel 的实时内容，两次调用之间 timeline 变了结果就不同。
+        这正是"保存当前状态"想要的语义（因此存盘前不需要任何同步动作），但也意味着
+        它只能在持有该模型的线程（UI 线程）上调用。
+        """
         base_dir = os.path.abspath(os.path.dirname(project_file_path)) if project_file_path else None
         return json.dumps({
             "fps": self.fps,

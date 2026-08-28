@@ -92,6 +92,12 @@ def resolve_frame_geometry(frame: FrameData, canvas_w: int, canvas_h: int) -> Fr
 
 ## P0-2｜文档状态有两个源：`ProjectData.frames` vs `TimelineModel._frames`
 
+> **状态：已完成（2026-08-21）。** `ProjectData.frames` 改为绑定活跃数据源的属性，
+> 8 处手工同步全部删除，绑定后赋值直接抛 `RuntimeError`。设计与使用须知见
+> `dev/project_frames_sync.md`（该文档已按新设计改写），回归测试见
+> `dev/test_transform.py` 的 5 项 `test_frames_*` / `test_to_json_*`。
+> 以下保留原始分析。
+
 该问题已记录在 `AGENTS.md` 与 `dev/project_frames_sync.md`，包括「可能让删除未使用素材误判在用素材并物理删除（数据丢失）」。
 
 **本评审要补充的是：现有缓解手段处在错误的层次。**
@@ -104,6 +110,24 @@ def resolve_frame_geometry(frame: FrameData, canvas_w: int, canvas_h: int) -> Fr
 2. **更彻底**：`ProjectData` 降级为纯序列化 DTO（只管 JSON 编解码），帧列表由 `TimelineModel` 独占持有，`to_json(frames=...)` 显式传入。
 
 目标是让「忘记同步」**在类型层面不可能发生**，而不是在文档层面被警告。
+
+### 实施结果（2026-08-21）
+
+走了方案 1，但用**依赖注入**而非直接引用解决了层次问题：`ProjectData`（`model/` 层）
+不能依赖 `TimelineModel`（`ui/` 层），否则造成 model → ui 反向依赖；改为由 MainWindow
+注入一个 `get_all_frames` 回调（`bind_frames_provider`），方向就正了，同时
+`to_json` / `from_json` 的持久化契约完全不变。
+
+删掉的 8 处同步仪式：`_save_to_path`、精灵表导出、GIF 导出、`copy_assets_to_local`、
+`open_asset_manager`、`_remove_assets_refs`、`_replace_asset`、`delete_unused_assets`。
+
+顺带修好一个当时未被发现的同类缺陷：改画布尺寸时重算所有帧位置的循环
+（`main_window.py` 约 1770 行）也读 `project.frames`，此前**上次同步之后新增的帧不会
+被重算**；现在自动正确。
+
+一个需要注意的附带影响：`project.frames` 每次读取都返回新列表（`get_all_frames()` 是
+拷贝），因此在推导式里反复读会退化成 O(n²)。`Exporter` 的三个导出方法已改为先取一次
+快照到局部变量。
 
 ---
 

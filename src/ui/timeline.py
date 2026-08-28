@@ -42,6 +42,7 @@ class TimelineWidget(QStackedWidget):
         self.model.frames_inserted.connect(self._on_frames_inserted)
         self.model.frames_removed.connect(self._on_frames_removed)
         self.model.frames_moved.connect(self._on_frames_moved)
+        self.model.frames_reordered.connect(self._on_frames_reordered)
         self.model.data_changed.connect(self._on_data_changed)
         self.model.frame_disabled_changed.connect(self._on_frame_disabled_changed)
         self.model.selection_changed.connect(self._on_model_selection_changed)
@@ -104,14 +105,47 @@ class TimelineWidget(QStackedWidget):
         self.list_view.set_editors(editors)
         self.grid_view.set_editors(editors)
 
+    def _view_in_sync_with_model(self, mode) -> bool:
+        """目标视图的 item 是否与模型逐位一致（同一批 frame_data 对象、同一顺序）。
+
+        为什么需要它：`_on_data_changed` 出于性能只更新**当前活动**视图（另一个视图
+        不可见，重建缩略图是白花的磁盘 I/O），而 `refresh_current_items()` 只重画
+        **外观**、不刷新**数据**（它用的是 item 里 UserRole 挂着的旧 frame_data）。
+        于是非活动视图会停留在上一次同步时的状态：在当前视图反转顺序、拖拽排序或
+        改帧属性之后，另一个视图仍是旧顺序 / 旧值。切过去时若只调 refresh，就是把
+        陈旧数据重新画一遍，看起来"数据不一致"。
+
+        视图是只读消费者、模型才是真源，因此切换前必须校验，不一致就按模型重建。
+        """
+        total = self.model.get_frame_count()
+        if mode == "list":
+            if self.list_view.topLevelItemCount() != total:
+                return False
+            for i in range(total):
+                item = self.list_view.topLevelItem(i)
+                if item.data(0, Qt.ItemDataRole.UserRole) is not self.model.get_frame_at(i):
+                    return False
+            return True
+
+        if self.grid_view.count() != total:
+            return False
+        for i in range(total):
+            item = self.grid_view.item(i)
+            if item.data(Qt.ItemDataRole.UserRole) is not self.model.get_frame_at(i):
+                return False
+        return True
+
     def set_view_mode(self, mode):
         """Switch between list and grid view"""
         timeline_debug(f"[Timeline] Switching view mode to: {mode}")
         if mode == "list":
             self.setCurrentWidget(self.list_view)
             self.current_view_mode = "list"
-            # Refresh list view with current data (in-place)
-            self.list_view.refresh_current_items()
+            # 非活动视图可能已陈旧，先按模型校正；一致时才走廉价的就地重绘
+            if self._view_in_sync_with_model("list"):
+                self.list_view.refresh_current_items()
+            else:
+                self._rebuild_list_view()
             # Sync selection from model to list view
             selected_indices = self.model.get_selected_indices()
             # Block ALL Qt signals first
@@ -122,8 +156,11 @@ class TimelineWidget(QStackedWidget):
         elif mode == "grid":
             self.setCurrentWidget(self.grid_view)
             self.current_view_mode = "grid"
-            # Refresh grid view with current data (in-place)
-            self.grid_view.refresh_current_items()
+            # 同上：陈旧则重建，否则就地重绘
+            if self._view_in_sync_with_model("grid"):
+                self.grid_view.refresh_current_items()
+            else:
+                self._rebuild_grid_view()
             # Sync selection from model to grid view
             selected_indices = self.model.get_selected_indices()
             # Block ALL Qt signals first
@@ -210,11 +247,43 @@ class TimelineWidget(QStackedWidget):
         self._apply_selection_to_view(selected_indices)
         self._unblock_all_signals()
 
+    def _on_frames_reordered(self):
+        """Handle wholesale reordering (reverse / drag-drop sort).
+
+        The frame objects themselves are unchanged — what changed is the index→item
+        mapping, so this cannot be handled by refreshing item text in place. Both views
+        must be re-checked against the model; only the out-of-sync ones get rebuilt.
+        (On drag-reorder the initiating view is already correct; rebuilding it would
+        throw away the item state it just arranged.)
+        """
+        timeline_debug("[Timeline] Frames reordered")
+        self._block_all_signals()
+        if not self._view_in_sync_with_model("list"):
+            self._rebuild_list_view()
+        if not self._view_in_sync_with_model("grid"):
+            self._rebuild_grid_view()
+        self._unblock_all_signals()
+
     def _on_data_changed(self, start_index: int, end_index: int):
-        """Handle frame data change from model"""
+        """Handle frame data change from model
+
+        性能约定：**只更新当前活动视图**。另一个视图不可见，为它重建缩略图是白花的
+        磁盘 I/O，而属性面板拖滑块时本信号会以每帧一次的频率触发。
+
+        代价是非活动视图会停留在上一次同步时的状态（顺序变了、帧属性变了它都不知道），
+        因此 `set_view_mode` 切换过去之前必须用 `_view_in_sync_with_model` 校验并按
+        需要重建。**不要**为了让本方法"看起来更正确"而改成同时更新两个视图。
+        """
         timeline_debug(f"[Timeline] Data changed from index {start_index} to {end_index}")
         # Get selection before update
         selection_before = self.model.get_selected_indices()
+
+        # 防御：本信号的语义是"内容变了、位置没变"，下面的原地刷新不会重排 item。
+        # 若有人误用它承载顺序变更，视图会静默停留在旧顺序——宁可退化成一次重建
+        # 也不要显示错数据。O(n) 的引用比较，相对缩略图重建可以忽略。
+        if not self._view_in_sync_with_model(self.current_view_mode):
+            self.rebuild_current_view()
+            return
 
         # Only update the currently active view
         self._block_all_signals()
@@ -433,7 +502,7 @@ class TimelineWidget(QStackedWidget):
         # Restore selection after rebuild (block signals to avoid triggering model update)
         if selected_indices:
             self.list_view.blockSignals(True)
-            self._apply_selection_to_view(selected_indices)
+            self._apply_selection_to_view(selected_indices, "list")
             self.list_view.blockSignals(False)
 
     def _rebuild_grid_view(self):
@@ -454,7 +523,7 @@ class TimelineWidget(QStackedWidget):
         if selected_indices:
             self.grid_view.blockSignals(True)
             self.grid_view.block_selection_signals_internal(True)
-            self._apply_selection_to_view(selected_indices)
+            self._apply_selection_to_view(selected_indices, "grid")
             self.grid_view.blockSignals(False)
             self.grid_view.block_selection_signals_internal(False)
 
@@ -476,11 +545,18 @@ class TimelineWidget(QStackedWidget):
         self.list_view.block_selection_signals_internal(False)
         self.grid_view.block_selection_signals_internal(False)
 
-    def _apply_selection_to_view(self, selected_indices):
-        """Apply selection indices to the current view and sync currentIndex/anchor"""
-        selected_set = selected_indices if isinstance(selected_indices, set) else set(selected_indices)
+    def _apply_selection_to_view(self, selected_indices, mode=None):
+        """Apply selection indices to a view and sync currentIndex/anchor
 
-        if self.current_view_mode == "list":
+        mode: 目标视图。**必须显式指定**——本方法也被 `_rebuild_list_view` /
+        `_rebuild_grid_view` 调用，而它们重建的是**非当前**视图。若这里默许读
+        `current_view_mode`，重建 list 时就会把 selection 写进 grid（反之亦然），
+        于是"重建一个视图"顺手覆盖了另一个视图刚排好的选中状态。
+        """
+        selected_set = selected_indices if isinstance(selected_indices, set) else set(selected_indices)
+        mode = mode or self.current_view_mode
+
+        if mode == "list":
             # Apply selection to list items
             self.list_view._apply_selection_from_set(selected_set)
 

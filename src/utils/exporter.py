@@ -110,12 +110,15 @@ class Exporter:
         # original sprite sheet itself.
         slice_counters = {}
         
+        # project.frames 是属性（每次读取都会向 TimelineModel 取一份实时快照），
+        # 故取一次存到局部变量，避免在推导式里反复取用
+        all_frames = project.frames
         # If no indices provided, export all active frames
         if frame_indices is None:
             # We must map indices from the original project.frames
-            frames_to_export = [(i, f) for i, f in enumerate(project.frames) if not f.is_disabled]
+            frames_to_export = [(i, f) for i, f in enumerate(all_frames) if not f.is_disabled]
         else:
-            frames_to_export = [(i, project.frames[i]) for i in frame_indices if i < len(project.frames)]
+            frames_to_export = [(i, all_frames[i]) for i in frame_indices if i < len(all_frames)]
             
         total_frames = len(frames_to_export)
         if total_frames == 0:
@@ -169,10 +172,11 @@ class Exporter:
         
         export_debug(f"[Export] Starting sprite sheet export: output_path={output_path}")
 
+        all_frames = project.frames      # 属性读取会取实时快照，只取一次
         if frame_indices is None:
-            frames_to_export = [f for f in project.frames if not f.is_disabled]
+            frames_to_export = [f for f in all_frames if not f.is_disabled]
         else:
-            frames_to_export = [project.frames[i] for i in frame_indices if i < len(project.frames)]
+            frames_to_export = [all_frames[i] for i in frame_indices if i < len(all_frames)]
             
         if not frames_to_export:
             return
@@ -217,10 +221,11 @@ class Exporter:
         
         export_debug(f"[Export] Starting GIF export: output_path={output_path}")
 
+        all_frames = project.frames      # 属性读取会取实时快照，只取一次
         if frame_indices is None:
-            frames_to_export = [f for f in project.frames if not f.is_disabled]
+            frames_to_export = [f for f in all_frames if not f.is_disabled]
         else:
-            frames_to_export = [project.frames[i] for i in frame_indices if i < len(project.frames)]
+            frames_to_export = [all_frames[i] for i in frame_indices if i < len(all_frames)]
             
         if not frames_to_export:
             return

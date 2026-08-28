@@ -21,9 +21,9 @@ PinFrame (定帧) is a PyQt6 desktop application for previewing, fine-tuning, an
   `bash dev/screenshot.sh` launches the app under Xvfb and captures `dev/tmp_screenshot.png`.
 
 - **Run a single test script:**
-  `python dev/test_transform.py`（25 个 `core.transform` 单测，纯 assert，无需 pytest）；
+  `python dev/test_transform.py`（37 个 `core.transform` + 时间轴模型信号契约单测，纯 assert，无需 pytest）；
   `python dev/transform_baseline.py [--compare]`（所有渲染路径的像素哈希回归）。
-  除此之外没有测试框架，其余功能靠手动验证。
+  这是唯一的自动化测试；其余功能靠手动验证。
 
 - **Linting:** No linter/CI configured. Use `python -m py_compile <file>` to sanity-check syntax.
 
@@ -34,7 +34,9 @@ PinFrame is a single-window PyQt6 app. `main.py` bootstraps `QApplication` + `Ma
 ### Data model (`src/model/project_data.py`)
 Two dataclasses form the entire project state:
 - `FrameData`: one sprite frame — `file_path`, `scale`, `position`, `rotation`, `aspect_ratio` (X/Y distortion, negative = mirror), `crop_rect`, `is_disabled`, and an ephemeral `target_resolution`. Supports `to_dict`/`from_dict` with project-relative path normalization (so projects stay portable when moved).
-- `ProjectData`: the document — `fps`, `width`, `height`, `background_color`, `frames: List[FrameData]`, plus persisted export settings. `to_json`/`from_json` (file path drives relative-path resolution) are the save/load contract. **All persistence goes through these methods.**
+- `ProjectData`: the document — `fps`, `width`, `height`, `background_color`, `frames`, plus persisted export settings. `to_json`/`from_json` (file path drives relative-path resolution) are the save/load contract. **All persistence goes through these methods.**
+- **`ProjectData.frames` 是绑定活跃数据源的属性，不是第二份副本。** `MainWindow` 调用 `project.bind_frames_provider(self.timeline.get_all_frames)`（在 `__init__`、`_reset_project_to_empty`，以及 `_load_from_path` 里 `from_json` 之后、先 `timeline.clear()`、再于填充循环之前绑定），之后读 `project.frames` 恒为 `TimelineModel` 的实时列表。**绑定后赋值会抛 `RuntimeError`**——旧的 `project.frames = self.timeline.get_all_frames()` 同步仪式已全部删除，不要再写回来。未绑定时（刚 `from_json`、或无 UI 脚本）回退到 `_static_frames`，载入流程正是靠这条路径填充帧。
+  - 附带影响：`project.frames` 每次读取都返回**新列表**（`get_all_frames()` 是拷贝）。循环前先存到局部变量（`Exporter` 已这么做），且不要去改这个返回的列表；改它里面的 `FrameData` 对象**是有效的**，会作用到模型上。
 - **`FrameData.clone()` 是唯一的帧复制实现。** 不要再手写字段列表复制帧——曾经有 4 份手写克隆，其中 3 份（`duplicate_frame` 与重复帧对话框的 ABAB / AABB 模式）漏拷 `aspect_ratio`，导致重复一个镜像帧时副本丢失镜像状态；第 4 份漏了 `target_resolution`。
 
 ### Core services (`src/core/`)
@@ -63,7 +65,7 @@ Two dataclasses form the entire project state:
 任何触及变换语义的改动都必须过这两个工具（无需 pytest，只依赖 PyQt6 + Pillow）：
 
 ```powershell
-python dev/test_transform.py                  # 25 个单测，快，解释"为什么"
+python dev/test_transform.py                  # 37 个单测，快，解释"为什么"
 python dev/transform_baseline.py              # 记录所有渲染路径的像素哈希
 python dev/transform_baseline.py --compare    # 改动后：MAIN_DIGEST 必须不变
 ```
@@ -77,10 +79,15 @@ The timeline is a **model/view system**: `TimelineModel` owns the frame list and
 
 - **Selection source of truth** — selected indices are read from the model via `get_selected_indices_from_model()`, never from the view (the old `get_selected_indices_from_current_view` name was misleading and renamed).
 - **Disabled state** — `FrameData.is_disabled` is the truth; the only write-path is `TimelineModel.set_frame_disabled(index, is_disabled)`, which broadcasts `frame_disabled_changed(index, bool)`; views repaint on that signal (`TimelineWidget._on_frame_disabled_changed` → per-row `viewport().update()`). Because rendering reads the truth, the list delegate fetches `frame_data` from column-0 `UserRole` (via `index.siblingAtColumn(0)`) and reads `.is_disabled` — no `CheckStateRole` copy is ever written.
+- **Signal semantics — the model broadcasts frame-change signals with distinct meanings; views pick "repaint in place" vs "rebuild" accordingly. Never conflate them:**
+  - `frames_inserted` / `frames_removed` / `frames_moved` — set add/remove, or a single-item move.
+  - `data_changed(start, end)` — **content changed only; the index→item mapping is unchanged.** Views refresh text/thumbnail in place (and, for performance, only the *active* view — the inactive one is re-synced on `set_view_mode` switch). **Never use it to carry a reorder**: the view refreshes text by index and does not re-sort items, so after a reorder the UI keeps showing the *old* order while the model (save/export) is already correct. (`TimelineModel.reverse_frames` / `set_frames_order` must emit `frames_reordered`, not `data_changed`.)
+  - `frames_reordered` — **a wholesale reorder** (reverse / drag-sort / `set_frames_order`): the index→item mapping is invalidated, so views must rebuild from the model. `_on_frames_reordered` rebuilds only the view that is actually out of sync (so the drag-origin view, already correct, isn't needlessly rebuilt — rebuilding it would also discard the item state it just arranged).
 - **Internal drag-reorder** — the views take over reordering entirely (they never let Qt delete/move items, to avoid frame loss) and restore selection from the model afterwards. Invariants to preserve:
   - **Insert before/after**: decided by `_calc_insert_before(drop_pos, item_center)` in `timeline_grid.py` (Grid is row-major — Y only picks the row via `itemAt`; X alone decides before/after). `dragMoveEvent` (preview) and `dropEvent` fallback (landing) must call the SAME method so the blue insert indicator matches the final drop. Never reintroduce separate `and`/`or` logic.
   - **Item reuse**: both views `takeItem`/`takeTopLevelItem` then re-`insertItem` the *original* item objects (Grid copies from List's pattern). Do NOT rebuild `QListWidgetItem` (drops flags/sizeHint/custom roles and breaks external references).
   - **State lifecycle**: `startDrag` sets `self._dragged_items`; `_clear_drag_state()` resets `_is_dragging`, `_drag_insert_position`, and `_dragged_items`. Selection is restored onto the re-inserted items after drop.
+  - **Rebuild restores selection on the correct view** — `_rebuild_list_view` / `_rebuild_grid_view` rebuild the *inactive* view; when restoring selection they must call `_apply_selection_to_view(indices, mode)` with an explicit `mode` (`"list"` / `"grid"`). Never rely on `current_view_mode` there — a rebuild of the list while in grid mode would write the selection into the grid, clobbering the just-dragged selection. (This was the root cause of "after a multi-select drag, the selected frames are no longer the dragged ones".)
 
 ### Panels, dialogs, and settings (`src/ui/`)
 - `PropertyPanel`: per-frame transform controls (scale, position, rotation, anchor mode, repeat-move timer). Emits `frame_data_changed`/`relative_move_requested`/`custom_anchor_changed`.
@@ -94,10 +101,10 @@ Singleton `I18nManager` (`i18n`) loaded from `en_US.json` / `zh_CN.json`. Call `
 ### Conventions & gotchas
 - Imports are `src`-relative (no `src.` prefix). Run anything with the repo root as CWD.
 - **时间轴缩略图刻意不套用帧变换**：`TimelineGridWidget.create_thumbnail` 只做 `crop_rect` 裁切 + `KeepAspectRatio` 缩放，不含旋转/镜像/缩放/偏移。这是有意设计（缩略图展示素材本身的样子，而非合成后的帧），**不要**把它接到 `core/transform.py`。
-- **`project.frames` is only synced from timeline at save/export and when explicitly requested — never assume it is current.** After any edit, `timeline` (via `TimelineModel.get_all_frames()`) is the single authority; `ProjectData.frames` is a stale snapshot. Any project-scoped feature that scans frames (e.g. asset manager, delete-unused-assets, copy-assets) MUST call `self.project.frames = self.timeline.get_all_frames()` at its entry point, *before* opening its dialog, so it reflects unsaved in-memory edits. Failing to sync can show stale data and — worse — let a "delete unused assets" scan misjudge an in-use (unsaved) asset as unused and physically delete it (data loss).
-- Image loading = `image_cache.get(...)`. Image rendering transform logic exists in **two places** (canvas + exporter); keep them consistent.
+- **`project.frames` 已是绑定活跃数据源的属性，恒为实时值**（见上方 Data model）。不要再写 `self.project.frames = self.timeline.get_all_frames()`——绑定后赋值会抛 `RuntimeError`。
+- Image loading = `image_cache.get(...)`（注意用 `from core.image_cache import ...`，不要带 `src.` 前缀）。帧变换语义统一在 `core/transform.py`，canvas 与 exporter 共用；两者只在像素化方式上不同。
 - `src/core/version.py` is auto-generated — never commit hand edits.
-- No automated test suite; verify via `test_full_slice.py` and `dev/screenshot.sh`.
+- `dev/test_transform.py` is the only automated test suite (37 pure-assert unit tests for `core.transform` + the timeline-model signal contract); everything else is verified via `dev/transform_baseline.py` (pixel regression), `dev/verify_timeline_view_sync.py` (offscreen Qt — timeline list/grid view sync + drag-selection; catches the "order/selection desync after switching views" regressions), and `dev/screenshot.sh` (manual visual check).
 - `dev/` holds environment/screenshot/novnc helper scripts, not app code.
 
 ### Debug logging framework (use this instead of print)

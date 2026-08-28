@@ -19,40 +19,10 @@
                 0,
                 256,
                 275
-            ]
-        },
-        {
-            "file_path": "sample_test_long_file_name.jpg",
-            "scale": 1.0,
-            "position": [
+            ],
+            "slice_pos": [
                 0,
                 0
-            ],
-            "rotation": 0.0,
-            "aspect_ratio": 1.0,
-            "is_disabled": false,
-            "crop_rect": [
-                256,
-                0,
-                256,
-                275
-            ]
-        },
-        {
-            "file_path": "sample_test_long_file_name.jpg",
-            "scale": 1.0,
-            "position": [
-                0,
-                0
-            ],
-            "rotation": 0.0,
-            "aspect_ratio": 1.0,
-            "is_disabled": false,
-            "crop_rect": [
-                512,
-                0,
-                256,
-                275
             ]
         },
         {
@@ -70,6 +40,52 @@
                 275,
                 256,
                 275
+            ],
+            "slice_pos": [
+                0,
+                1
+            ]
+        },
+        {
+            "file_path": "sample_test_long_file_name.jpg",
+            "scale": 1.0,
+            "position": [
+                0,
+                0
+            ],
+            "rotation": 0.0,
+            "aspect_ratio": 1.0,
+            "is_disabled": false,
+            "crop_rect": [
+                0,
+                550,
+                256,
+                275
+            ],
+            "slice_pos": [
+                0,
+                2
+            ]
+        },
+        {
+            "file_path": "sample_test_long_file_name.jpg",
+            "scale": 1.0,
+            "position": [
+                0,
+                0
+            ],
+            "rotation": 0.0,
+            "aspect_ratio": 1.0,
+            "is_disabled": false,
+            "crop_rect": [
+                256,
+                0,
+                256,
+                275
+            ],
+            "slice_pos": [
+                1,
+                0
             ]
         },
         {
@@ -87,6 +103,10 @@
                 275,
                 256,
                 275
+            ],
+            "slice_pos": [
+                1,
+                1
             ]
         },
         {
@@ -99,45 +119,57 @@
             "rotation": 0.0,
             "aspect_ratio": 1.0,
             "is_disabled": false,
+            "crop_rect": [
+                256,
+                550,
+                256,
+                275
+            ],
+            "slice_pos": [
+                1,
+                2
+            ]
+        },
+        {
+            "file_path": "sample_test_long_file_name.jpg",
+            "scale": 1.0,
+            "position": [
+                0,
+                0
+            ],
+            "rotation": 0.0,
+            "aspect_ratio": 1.0,
+            "is_disabled": true,
+            "crop_rect": [
+                512,
+                0,
+                256,
+                275
+            ],
+            "slice_pos": [
+                2,
+                0
+            ]
+        },
+        {
+            "file_path": "sample_test_long_file_name.jpg",
+            "scale": 1.0,
+            "position": [
+                0,
+                0
+            ],
+            "rotation": 0.0,
+            "aspect_ratio": 1.0,
+            "is_disabled": true,
             "crop_rect": [
                 512,
                 275,
                 256,
                 275
-            ]
-        },
-        {
-            "file_path": "sample_test_long_file_name.jpg",
-            "scale": 1.0,
-            "position": [
-                0,
-                0
             ],
-            "rotation": 0.0,
-            "aspect_ratio": 1.0,
-            "is_disabled": false,
-            "crop_rect": [
-                0,
-                550,
-                256,
-                275
-            ]
-        },
-        {
-            "file_path": "sample_test_long_file_name.jpg",
-            "scale": 1.0,
-            "position": [
-                0,
-                0
-            ],
-            "rotation": 0.0,
-            "aspect_ratio": 1.0,
-            "is_disabled": false,
-            "crop_rect": [
-                256,
-                550,
-                256,
-                275
+            "slice_pos": [
+                2,
+                1
             ]
         },
         {
@@ -155,6 +187,10 @@
                 550,
                 256,
                 275
+            ],
+            "slice_pos": [
+                2,
+                2
             ]
         },
         {
@@ -172,6 +208,10 @@
                 825,
                 256,
                 275
+            ],
+            "slice_pos": [
+                0,
+                3
             ]
         },
         {
@@ -189,6 +229,10 @@
                 825,
                 256,
                 275
+            ],
+            "slice_pos": [
+                1,
+                3
             ]
         },
         {
@@ -206,6 +250,10 @@
                 825,
                 256,
                 275
+            ],
+            "slice_pos": [
+                2,
+                3
             ]
         },
         {
@@ -223,6 +271,10 @@
                 1100,
                 256,
                 275
+            ],
+            "slice_pos": [
+                0,
+                4
             ]
         },
         {
@@ -240,6 +292,10 @@
                 1100,
                 256,
                 275
+            ],
+            "slice_pos": [
+                1,
+                4
             ]
         },
         {
@@ -257,6 +313,10 @@
                 1100,
                 256,
                 275
+            ],
+            "slice_pos": [
+                2,
+                4
             ]
         }
     ],

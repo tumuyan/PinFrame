@@ -1,16 +1,21 @@
 #!/usr/bin/env python3
-"""core.transform 的单元测试（本仓库第一批单测）。
+"""核心不变量单元测试（本仓库唯一的自动化测试）。
 
-为什么能有单测：core.transform 刻意不 import PyQt6，几何逻辑是纯函数，
-不需要 QApplication、不需要显示环境。
+覆盖范围（已超出文件名的字面含义，暂未拆分）：
+  - `core.transform`：变换几何、镜像编码、取整约定
+  - `FrameData.clone()`：帧复制不得漏字段
+  - `ProjectData.frames`：单一真相（P0-2），绑定后恒为实时值
+
+为什么能有单测：`core.transform` 刻意不 import PyQt6，几何逻辑是纯函数；
+`project_data` 只需 PyQt6 已安装，不需要 QApplication 或显示环境。
 
 运行方式（两种都可以）：
     python dev/test_transform.py      # 无需任何额外依赖
     pytest dev/test_transform.py      # 若已安装 pytest
 
 与 dev/transform_baseline.py 的分工：
-    本文件锁定【几何语义】（顺序、符号、镜像编码、取整约定）；
-    baseline 锁定【最终像素】。前者跑得快、说明"为什么"，后者证明"没变"。
+    本文件锁定【语义与不变量】；baseline 锁定【最终像素】。
+    前者跑得快、说明"为什么"，后者证明"没变"。
 """
 import math
 import os
@@ -339,6 +344,160 @@ def test_clone_does_not_share_mutable_fields():
     assert src.position == (1, 2)
     assert src.crop_rect == (0, 0, 8, 8)
     assert src.scale == 1.0
+
+
+# ---------------------------------------------------------------------------
+# ProjectData.frames —— 单一真相（P0-2）
+# ---------------------------------------------------------------------------
+def test_frames_unbound_uses_static_list():
+    """未绑定 provider 时（from_json 载入阶段、无 UI 脚本）走后备列表。"""
+    from model.project_data import FrameData, ProjectData
+
+    p = ProjectData()
+    assert p.frames == []
+    p.frames = [FrameData("a.png"), FrameData("b.png")]
+    assert [f.file_path for f in p.frames] == ["a.png", "b.png"]
+
+
+def test_frames_bound_reads_live_source():
+    """绑定后读 frames 恒为活跃数据源的实时内容——无需任何手工同步。
+
+    回归 P0-2：`frames` 曾是普通字段，只在保存/导出时手工同步一次，于是
+    "删除未使用素材"可能把未保存新增的在用素材判为未使用并物理删除。
+    """
+    from model.project_data import FrameData, ProjectData
+
+    live = [FrameData("a.png")]
+    p = ProjectData()
+    p.bind_frames_provider(lambda: list(live))
+
+    assert [f.file_path for f in p.frames] == ["a.png"]
+    live.append(FrameData("new.png"))          # 模拟用户新增一帧、尚未保存
+    assert [f.file_path for f in p.frames] == ["a.png", "new.png"], \
+        "绑定后必须看到实时新增的帧，否则 P0-2 的数据丢失风险回归"
+
+
+def test_frames_getter_never_exposes_internal_list():
+    """两种模式都必须返回新列表，语义对称。
+
+    若未绑定时返回内部列表本身，`project.frames.append(x)` 会在未绑定模式
+    （脚本/测试）下生效、在绑定模式（应用内）下静默失效——那种不对称会让
+    "在测试里能过、在应用里失效"的代码溜过去。
+    """
+    from model.project_data import FrameData, ProjectData
+
+    unbound = ProjectData()
+    unbound.frames = [FrameData("a.png")]
+    unbound.frames.append(FrameData("ghost.png"))       # 应当无效
+    assert [f.file_path for f in unbound.frames] == ["a.png"]
+
+    bound = ProjectData()
+    bound.bind_frames_provider(lambda: [FrameData("a.png")])
+    bound.frames.append(FrameData("ghost.png"))         # 同样无效
+    assert [f.file_path for f in bound.frames] == ["a.png"]
+
+
+def test_frames_assignment_after_binding_is_rejected():
+    """绑定后再赋值是设计错误，必须报错而不是静默失败。"""
+    from model.project_data import FrameData, ProjectData
+
+    p = ProjectData()
+    p.bind_frames_provider(lambda: [FrameData("live.png")])
+    try:
+        p.frames = [FrameData("stale.png")]
+    except RuntimeError:
+        pass
+    else:
+        raise AssertionError("绑定后赋值 frames 应抛 RuntimeError")
+    assert [f.file_path for f in p.frames] == ["live.png"]
+
+
+def test_to_json_serializes_live_frames():
+    """保存路径不再需要"存盘前先同步"——to_json 直接读到实时帧。"""
+    import json
+
+    from model.project_data import FrameData, ProjectData
+
+    live = [FrameData("a.png")]
+    p = ProjectData()
+    p.bind_frames_provider(lambda: list(live))
+    live.append(FrameData("b.png"))            # 同步仪式已删除，这里刻意不做任何同步
+
+    data = json.loads(p.to_json())
+    assert [f["file_path"] for f in data["frames"]] == ["a.png", "b.png"]
+
+
+def test_from_json_roundtrip_still_works():
+    """载入阶段 provider 未绑定，from_json 必须能正常写入帧。"""
+    import json
+
+    from model.project_data import FrameData, ProjectData
+
+    src = ProjectData(fps=12, width=200, height=150)
+    src.frames = [FrameData("a.png", scale=1.5, aspect_ratio=-1.0),
+                  FrameData("b.png", crop_rect=(0, 0, 8, 8))]
+    restored = ProjectData.from_json(src.to_json())
+    assert len(restored.frames) == 2
+    assert restored.frames[0].aspect_ratio == -1.0      # 镜像状态往返保持
+    assert restored.frames[1].crop_rect == (0, 0, 8, 8)
+
+
+# ---------------------------------------------------------------------------
+# TimelineModel —— 顺序变更必须发 frames_reordered
+# ---------------------------------------------------------------------------
+def test_reorder_emits_frames_reordered_not_data_changed():
+    """顺序整体变化必须走 frames_reordered，不能用 data_changed。
+
+    data_changed 的契约是"内容变了、位置没变"，视图收到后按索引原地刷新文本，
+    **不会重排 item**。用它承载顺序变更的结果是：模型顺序是对的（保存/导出也
+    是对的），但界面仍显示旧顺序——而且因为 `_on_data_changed` 只更新当前活动
+    视图，两个视图还会各显示各的。
+    """
+    from model.project_data import FrameData
+    from ui.timeline_model import TimelineModel
+
+    def _record(model, action):
+        """返回 (reordered 次数, data_changed 次数)。"""
+        seen = {"reordered": 0, "data_changed": 0}
+        model.frames_reordered.connect(lambda: seen.__setitem__("reordered", seen["reordered"] + 1))
+        model.data_changed.connect(lambda *_: seen.__setitem__("data_changed", seen["data_changed"] + 1))
+        action()
+        return seen["reordered"], seen["data_changed"]
+
+    def _filled(n=4):
+        m = TimelineModel()
+        for i in range(n):
+            m.add_frame(FrameData(f"f{i}.png"))
+        return m
+
+    # 全量反转
+    m = _filled()
+    reordered, data_changed = _record(m, lambda: m.reverse_frames(None))
+    assert (reordered, data_changed) == (1, 0), f"全量反转: {(reordered, data_changed)}"
+    assert [f.file_path for f in m.get_all_frames()] == ["f3.png", "f2.png", "f1.png", "f0.png"]
+
+    # 子集反转
+    m = _filled()
+    reordered, data_changed = _record(m, lambda: m.reverse_frames([1, 2]))
+    assert (reordered, data_changed) == (1, 0), f"子集反转: {(reordered, data_changed)}"
+    assert [f.file_path for f in m.get_all_frames()] == ["f0.png", "f2.png", "f1.png", "f3.png"]
+
+    # 拖拽排序后的整体换序
+    m = _filled()
+    order = m.get_all_frames()
+    order[0], order[3] = order[3], order[0]
+    reordered, data_changed = _record(m, lambda: m.set_frames_order(order))
+    assert (reordered, data_changed) == (1, 0), f"整体换序: {(reordered, data_changed)}"
+
+    # 顺序没变时不该发信号（否则每次拖拽都会无谓重建两个视图）
+    m = _filled()
+    reordered, data_changed = _record(m, lambda: m.set_frames_order(m.get_all_frames()))
+    assert (reordered, data_changed) == (0, 0), f"顺序未变: {(reordered, data_changed)}"
+
+    # 反向确认：改帧内容仍然只发 data_changed
+    m = _filled()
+    reordered, data_changed = _record(m, lambda: m.update_frame_data(2))
+    assert (reordered, data_changed) == (0, 1), f"内容变更: {(reordered, data_changed)}"
 
 
 # ---------------------------------------------------------------------------
