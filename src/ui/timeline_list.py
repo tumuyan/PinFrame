@@ -145,7 +145,6 @@ class TimelineListView(QTreeView):
 
         self._selection_blocked = False
 
-        self.reference_frame_data = None
         self.is_dark_theme = True
         self.setMinimumHeight(120)
 
@@ -311,14 +310,21 @@ class TimelineListView(QTreeView):
         self._item_model.set_theme_mode(is_dark)
 
     def set_visual_reference_frame(self, frame_data: Optional[FrameData]):
-        """Set visual reference frame for highlighting"""
-        self.reference_frame_data = frame_data
+        """设置/清除参考帧高亮。
+
+        参考帧状态**只存在一份**（在业务模型里，经共享的适配层 model 读写）：本方法
+        把它写进去并触发刷新，delegate 再经 `ReferenceRole` 读回。本视图刻意不保留
+        `reference_frame_data` 之类的镜像 —— 那会让"取消参考帧"时漏掉一处，高亮残留。
+        """
         self._item_model.set_reference_frame(frame_data)
 
     def refresh_visuals(self):
-        """Refresh visual elements (reference highlighting, etc.)"""
-        if self.reference_frame_data:
-            self.set_visual_reference_frame(self.reference_frame_data)
+        """Refresh visual elements (reference highlighting, etc.)
+
+        高亮状态在 model 里，重建视图不会丢，因此这里只需按当前值重设一次。
+        """
+        self._item_model.set_reference_frame(
+            self._item_model._business_reference_frame())
 
     def on_selection_changed(self):
         """Handle selection change"""

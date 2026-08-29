@@ -90,7 +90,6 @@ class TimelineGridWidget(QListView):
 
         self._selection_blocked = False
 
-        self.reference_frame_data = None
         self.is_dark_theme = True
 
         # Drag position tracking
@@ -176,12 +175,22 @@ class TimelineGridWidget(QListView):
         self.refresh_all_items()
     
     def set_visual_reference_frame(self, frame_data):
-        self.reference_frame_data = frame_data
-        self.refresh_all_items()
+        """设置/清除参考帧高亮。
+
+        参考帧状态**只存在一份**（在业务模型里，经共享的适配层 model 读写）：本方法
+        把它写进去并触发刷新，delegate 再经 `ReferenceRole` 读回。本视图刻意不保留
+        `reference_frame_data` 之类的镜像 —— 那会让"取消参考帧"时漏掉一处，高亮残留。
+        """
+        item_model = getattr(self, '_item_model', None)
+        if item_model is not None:
+            item_model.set_reference_frame(frame_data)
+        else:
+            self.refresh_all_items()  # 未绑定共享 model 时退化为自刷
     
     def refresh_visuals(self):
-        if self.reference_frame_data:
-            self.set_visual_reference_frame(self.reference_frame_data)
+        item_model = getattr(self, '_item_model', None)
+        if item_model is not None:
+            item_model.set_reference_frame(item_model._business_reference_frame())
     
     def block_selection_signals(self, block: bool):
         """Block or unblock selection change signals (auto-emit on unblock)"""

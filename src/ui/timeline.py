@@ -357,6 +357,16 @@ class TimelineWidget(QStackedWidget):
         self.grid_view.set_theme_mode(is_dark)
 
     def set_visual_reference_frame(self, frame_data):
+        """设置/清除参考帧（写业务模型 + 刷新两个视图）。
+
+        名字虽带 "visual"，但它**会写业务模型** —— 参考帧是本项目的特色功能，
+        状态必须落在唯一的真源上。曾经它只改视图各自的镜像，于是
+        `MainWindow` 在换主题、撤销恢复等场景下调它时，业务模型其实没变，
+        显示与数据各走各的。
+
+        注意本方法**不**改 `MainWindow.reference_frame` —— 那份目前仍独立存在
+        （它同时喂给 canvas），收敛它是后续事项。
+        """
         self.list_view.set_visual_reference_frame(frame_data)
         self.grid_view.set_visual_reference_frame(frame_data)
 

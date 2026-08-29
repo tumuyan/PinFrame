@@ -33,7 +33,8 @@ REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(REPO_ROOT, "src"))
 
 from model.project_data import FrameData  # noqa: E402
-from ui.timeline_item_model import FrameDataRole, ThumbnailRole  # noqa: E402
+from ui.timeline_item_model import (  # noqa: E402
+    FrameDataRole, ReferenceRole, ThumbnailRole)
 from ui.timeline import TimelineWidget  # noqa: E402
 
 _TMPDIR = tempfile.mkdtemp(prefix="pinframe_grid_")
@@ -82,15 +83,17 @@ def _fill(tw, n=5):
 def _font_bold(view, row):
     """第 row 行最终会被画出来的字体是否加粗 —— 走 delegate 的实际取数路径。
 
-    delegate 的做法：以 model 的 FontRole 为基准，再用
-    `frame_data is view.reference_frame_data` 覆写 bold。这里复刻同一套逻辑，
-    因此断言的是渲染结果而非中间状态。
+    delegate 的做法：以 model 的 FontRole 为基准，再用 `ReferenceRole` 覆写 bold。
+    这里复刻同一套逻辑，因此断言的是渲染结果而非中间状态。
+
+    注意不要退化回 `frame is view.reference_frame_data`：那是视图的镜像，已经被
+    删除了；保留它的话，测试会在"镜像与 model 不同步"时依然通过 —— 正是本次要
+    消灭的那类假通过。
     """
     index = view.model().index(row, view.modelColumn())
     font = index.data(Qt.ItemDataRole.FontRole)
     bold = font.bold() if font is not None else False
-    frame = index.data(FrameDataRole)
-    if frame is not None and frame is view.reference_frame_data:
+    if index.data(ReferenceRole):
         bold = True
     return bold
 
@@ -356,10 +359,10 @@ def test_grid_drop_uses_drag_insert_position():
 # 参考帧与禁用态
 # ---------------------------------------------------------------------------
 def test_reference_frame_highlight_toggles_off():
-    """参考帧高亮必须能被清除（加粗）。
+    """参考帧高亮必须能被设置与清除（加粗 + 绿底文字条）。
 
-    加粗由 delegate 依据 `frame_data is widget.reference_frame_data` 判定，因此这里
-    断言的是 delegate 真正会读到的那个状态，而不是某个副本。
+    加粗由 delegate 依据 model 的 `ReferenceRole` 判定，因此这里断言的是
+    delegate 真正会读到的那个角色，而不是视图里的镜像。
     """
     tw = TimelineWidget()
     tw.set_view_mode("grid")
@@ -368,12 +371,154 @@ def test_reference_frame_highlight_toggles_off():
 
     ref = tw.model.get_frame_at(1)
     view.set_visual_reference_frame(ref)
-    assert view.reference_frame_data is ref, "参考帧未记录"
     assert _font_bold(view, 1), "参考帧未加粗"
+    assert not _font_bold(view, 2), "非参考帧不该加粗"
 
     view.set_visual_reference_frame(None)
-    assert view.reference_frame_data is None
-    assert not _font_bold(view, 1), "清除参考帧后加粗残留"
+    assert not _font_bold(view, 1), "清除参考帧后高亮残留"
+
+
+def test_reference_frame_lives_in_business_model_only():
+    """参考帧状态必须只存在**业务模型**里，显示层不得保留镜像。
+
+    这条盯的是真实故障：显示层若各自存一份，加载工程/撤销恢复时走的
+    `MainWindow -> timeline.set_reference_frame -> TimelineModel` 那条路径
+    就改不到镜像，表现为"工程里设了参考帧，界面却不亮"。
+
+    断言方式：绕过视图的 set_visual_reference_frame，**直接**写业务模型，
+    显示必须立刻跟上（说明显示读的就是业务模型，没有第二份）。
+    """
+    tw = TimelineWidget()
+    tw.set_view_mode("grid")
+    _fill(tw, 3)
+    view = _grid(tw)
+
+    ref = tw.model.get_frame_at(1)
+    tw.model.set_reference_frame(ref)   # 只写业务模型，不碰任何视图
+    tw.item_model.dataChanged.emit(
+        tw.item_model.index(0, 0),
+        tw.item_model.index(2, tw.item_model.columnCount() - 1), [])
+
+    assert _font_bold(view, 1), "只改业务模型后，网格高亮没跟上（显示层存了镜像）"
+    assert view.model().index(1, view.modelColumn()).data(ReferenceRole) is True
+
+    tw.model.clear_reference_frame()
+    tw.item_model.dataChanged.emit(
+        tw.item_model.index(0, 0),
+        tw.item_model.index(2, tw.item_model.columnCount() - 1), [])
+    assert not _font_bold(view, 1), "业务模型清了参考帧，网格高亮仍在"
+
+
+def test_delegate_paints_reference_highlight():
+    """delegate 必须真的读 model 的 `ReferenceRole` 来画参考帧高亮。
+
+    为什么需要这条，以及为什么必须**只变 ReferenceRole 这一个变量**：
+    其余参考帧用例断言的是 model 的 `ReferenceRole` 返回什么，中间隔着一层
+    delegate。于是有人把 delegate 改回去读视图的镜像属性（`widget.reference_frame_data`，
+    该属性已删除 → 恒 None → 参考帧**永不显示**），15 个用例照样全绿。
+
+    第一版这条测试用 `set_visual_reference_frame()` 制造"有参考帧"状态再比对渲染结果，
+    但那是**假阳性**：设参考帧会顺带触发 `refresh_all_items()` 重算缩略图，像素差异
+    遍布整个单元格（实测 2265 个差异点、覆盖全部 148 行），与高亮本身无关 ——
+    哪怕高亮完全失效，测试照样通过。
+
+    因此这里直接 patch `data()`，让 ReferenceRole 在两次渲染间取 True/False，
+    **其余一切不变**（不刷新、不重算缩略图）。这样差异就只可能来自 delegate 的
+    高亮绘制。
+    """
+    from PyQt6.QtGui import QImage as _QImage
+    from PyQt6.QtWidgets import QStyleOptionViewItem
+    from PyQt6.QtGui import QPainter
+    from ui.timeline_grid_delegate import TimelineGridDelegate
+    from ui.timeline_item_model import TimelineItemModel as _M
+
+    tw = TimelineWidget()
+    tw.set_view_mode("grid")
+    _fill(tw, 3)
+    view = _grid(tw)
+    view.resize(400, 300)
+    view.show()
+    app.processEvents()
+
+    delegate = view.itemDelegate()
+    assert isinstance(delegate, TimelineGridDelegate), type(delegate)
+
+    class _Harness:
+        """让 ReferenceRole 返回可控值，其余角色照常。"""
+        is_ref = False
+
+        def __enter__(self):
+            self._orig = _M.data
+
+            def patched(self_, index, role=Qt.ItemDataRole.DisplayRole):
+                if role == ReferenceRole:
+                    return _harness.is_ref
+                return self._orig(self_, index, role)
+
+            _M.data = patched
+            return self
+
+        def __exit__(self, *exc):
+            _M.data = self._orig
+            return False
+
+    def render_row(row):
+        idx = view.model().index(row, view.modelColumn())
+        rect = view.visualRect(idx)
+        assert rect.width() > 0, f"row{row} 未排版: {rect}"
+        img = _QImage(rect.width(), rect.height(), _QImage.Format.Format_ARGB32)
+        img.fill(0)
+        opt = QStyleOptionViewItem()
+        opt.rect = rect.translated(-rect.topLeft())
+        opt.widget = view
+        opt.state |= view.style().StateFlag.State_Enabled
+        p = QPainter(img)
+        delegate.paint(p, opt, idx)
+        p.end()
+        return img
+
+    def digest(img):
+        buf = bytearray()
+        for y in range(0, img.height(), 2):
+            for x in range(0, img.width(), 2):
+                buf.extend(img.pixelColor(x, y).getRgb())
+        import hashlib
+        return hashlib.sha1(bytes(buf)).hexdigest()
+
+    _harness = _Harness()
+    with _harness:
+        _harness.is_ref = False
+        plain = render_row(1)
+        _harness.is_ref = True
+        highlighted = render_row(1)
+
+    assert digest(plain) != digest(highlighted), (
+        "ReferenceRole 由 False 变 True 后渲染完全没变 —— delegate 没有读它。"
+        "（可能改回了视图的镜像属性，而那个属性已删除 → 参考帧永不显示）")
+
+
+def test_reference_role_is_not_thumbnail_role():
+    """`ReferenceRole` 与 `ThumbnailRole` 不得取同一个值。
+
+    曾经两者同为 `UserRole + 2`，于是按参考帧取数拿到的是缩略图 QPixmap 而非
+    布尔 —— 参考帧是本项目的特色功能，这种静默错乱（高亮失效，甚至画图时崩溃）
+    比直接报错难查得多，故单独钉住。
+    """
+    assert ReferenceRole != ThumbnailRole, "角色取值冲突：参考帧会拿到缩略图"
+    assert ReferenceRole != FrameDataRole
+
+    tw = TimelineWidget()
+    tw.set_view_mode("grid")
+    _fill(tw, 2)
+    view = _grid(tw)
+    tw.model.set_reference_frame(tw.model.get_frame_at(0))
+    tw.item_model.dataChanged.emit(
+        tw.item_model.index(0, 0),
+        tw.item_model.index(1, tw.item_model.columnCount() - 1), [])
+
+    idx = view.model().index(0, view.modelColumn())
+    v = idx.data(ReferenceRole)
+    assert isinstance(v, bool), f"ReferenceRole 应返回 bool，实际 {type(v).__name__}"
 
 
 def test_disabled_state_read_from_model():

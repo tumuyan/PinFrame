@@ -158,6 +158,8 @@ Singleton `I18nManager` (`i18n`) loaded from `en_US.json` / `zh_CN.json`. Call `
 ### Conventions & gotchas
 - Imports are `src`-relative (no `src.` prefix). Run anything with the repo root as CWD.
 - **时间轴缩略图刻意不套用帧变换**：`TimelineGridWidget.create_thumbnail` 只做 `crop_rect` 裁切 + `KeepAspectRatio` 缩放，不含旋转/镜像/缩放/偏移。这是有意设计（缩略图展示素材本身的样子，而非合成后的帧），**不要**把它接到 `core/transform.py`。
+- **参考帧（`FrameData` 高亮）的真源只有一份：`TimelineModel._reference_frame`。** 加载工程、撤销恢复都只写它；适配层（`TimelineItemModel`）与两个视图**都不得**保留副本 —— 存了就会出现"工程里设了参考帧、界面却不亮"（副本没被改到）。delegate 一律经 `ReferenceRole` 读取。
+- **自定义 `ItemDataRole` 的取值必须互不相同**，文件里有 `assert len({FrameDataRole, ReferenceRole, ThumbnailRole}) == 3` 兜底。新增角色时改偏移即可；若忘了，该断言会在 import 阶段炸掉，而不是等到运行时变成"参考帧高亮莫名失效”这种难查的症状。
 - **两个视图共享 selectionModel 时，两者的 `SelectionBehavior` 必须一致（都用 `SelectRows`）。** 它们显示的是**不同的列**（列表是序号列 0、网格是文件名列 2）。若只有一方是 `SelectItems`，点击就只选中自己那一列，另一方按自己的列去读 `selectedRows()` 就认为"什么都没选" —— 两个视图对"选中了什么"看法完全相反。表现为"点了帧，属性面板显示未选中"。
 - **换 `selectionModel` 会丢弃旧模型上的所有连接。** 用 `setSelectionModel(shared)` 共享选中之后，必须**重新**连接 `selectionChanged` —— 之前在 `bind_model` 里连上的那个已经失效了。见 `TimelineGridWidget.adopt_shared_selection_model()`。
 - **`TimelineItemModel.__init__` 不要给 `_frames` 赋值，交给 `bind()`。** 曾经写成先赋值再调 `bind()`，而 `bind()` 开头有"已绑定则直接返回"的防重入判断 —— 于是构造时传入 model 的实例**永远不接线**（`_connect_frames_model()` 一次都没被调用）。症状极具迷惑性：`rowCount()` 实时查模型所以"行数"永远对，但所有模型信号都不转发给视图，视图只在显式 refresh 或 Resize/Show 时才"碰巧"刷新（表现为"加载工程后时间轴空白，拖一下面板才出来"）。这类故障**测不出来**——除非断言信号被转发，或断言 `visualRect(row0)` 在无任何 resize 的情况下有效。

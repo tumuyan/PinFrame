@@ -3,7 +3,7 @@ from PyQt6.QtCore import Qt, QSize, QRectF, QPoint
 from PyQt6.QtGui import QPainter, QColor, QFont, QIcon, QFontMetrics, QBrush
 from typing import Optional
 import logging
-from ui.timeline_item_model import FrameDataRole, ThumbnailRole
+from ui.timeline_item_model import FrameDataRole, ReferenceRole, ThumbnailRole
 from utils.debug_config import grid_text_debug, grid_text_debug_lines
 
 logger = logging.getLogger(__name__)
@@ -51,9 +51,11 @@ class TimelineGridDelegate(QStyledItemDelegate):
         paint_option.text = ""                   # 文本由 _draw_custom_text 自行绘制
         paint_option.backgroundBrush = QBrush()  # 忽略 model 的参考帧底色
 
-        # 参考帧加粗由本 delegate 依据 frame_data 直接判定，不依赖 model 的 FontRole
-        # —— 那样就等于依赖"当前显示的是哪一列"（model 只在文件名列返回加粗）。
-        is_ref = (frame_data is getattr(widget, 'reference_frame_data', None))
+        # 参考帧加粗走 model 的 `ReferenceRole`，不读 `widget.reference_frame_data`
+        # —— 那是视图自己复制的第二份状态，清理时会与 model 不同步（参考帧是本
+        # 项目的特色功能，两个视图必须一致）。也不依赖 model 的 FontRole：那只在
+        # 文件名列返回加粗，会让判定取决于"当前显示的是哪一列"。
+        is_ref = bool(index.data(ReferenceRole))
         font = index.data(Qt.ItemDataRole.FontRole)
         paint_option.font = font if font is not None else QFont()
         paint_option.font.setBold(is_ref)
@@ -167,12 +169,10 @@ class TimelineGridDelegate(QStyledItemDelegate):
         if widget and hasattr(widget, 'is_dark_theme'):
             is_dark_theme = widget.is_dark_theme
 
-        # Check if this is a reference frame（frame_data 由 paint() 按 index 取好传入，
-        # 不再从 item 的 UserRole 读 —— 那是第二处 item 依赖）
-        is_ref = bool(
-            frame_data is not None
-            and hasattr(widget, 'reference_frame_data')
-            and frame_data is widget.reference_frame_data)
+        # Check if this is a reference frame —— 走 model 的 `ReferenceRole`（唯一真源），
+        # 不再读 `widget.reference_frame_data`（那是视图复制的第二份状态，清理时会与
+        # model 脱节，导致"参考帧没取消但高亮还在/高亮没了"）。
+        is_ref = bool(index.data(ReferenceRole))
 
         # Get text color and background based on selection state and theme
         if option.state & QStyle.StateFlag.State_Selected:

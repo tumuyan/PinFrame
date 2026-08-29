@@ -48,13 +48,6 @@ COLUMN_COUNT = 8
 # 让每一列都直接回答自己那一行的帧，就没有"挂在哪一列"这回事了。
 FrameDataRole = Qt.ItemDataRole.UserRole + 1
 
-# 该行是否为参考帧。网格 delegate 用它决定高亮配色（加粗由 FontRole 带出）。
-#
-# 参考帧状态**只存在一份**（本类的 `_reference_frame`），视图与 delegate 都不再
-# 存镜像：迁移前网格是在 delegate 里拿 `widget.reference_frame_data` 与之比较的，
-# 那等于视图自己复制了一份"哪个帧是参考帧"。
-ReferenceRole = Qt.ItemDataRole.UserRole + 2
-
 # 缩略图。**刻意用自定义角色而不是 DecorationRole** —— 本 model 由列表视图与网格
 # 视图**共享同一个实例**（这是两个视图能共享 QItemSelectionModel 的前提）。
 # DecorationRole 会被 Qt 的默认 delegate 直接画出来，列表视图的每一格就会冒出一个
@@ -64,6 +57,24 @@ ReferenceRole = Qt.ItemDataRole.UserRole + 2
 # （尺寸、背景模式都由网格设置决定），塞进业务模型会污染导出与存档。这里由网格把
 # 自己的 `create_thumbnail` 注入进来（依赖注入，同 `bind_frames_provider`）。
 ThumbnailRole = Qt.ItemDataRole.UserRole + 2
+
+# 该行是否为参考帧（返回 bool）。网格 delegate 用它决定高亮（加粗 + 绿底文字条）。
+#
+# 参考帧状态**只存在一份**，在业务模型 `TimelineModel._reference_frame` 里 —— 本
+# 适配层刻意**不存**副本：若自己存一份，加载工程时走的
+# `MainWindow -> timeline.set_reference_frame -> TimelineModel` 那条路径设置的参考帧
+# 就不会反映到显示上（显示读的是副本），表现为"工程里设了参考帧，界面却不亮"。
+#
+# ⚠️ 取值必须唯一 —— 曾经它与 ThumbnailRole 同为 `UserRole + 2`，于是按本角色
+# 取数拿到的是缩略图 QPixmap 而不是布尔。参考帧是本项目的特色功能，这种静默错乱
+# （高亮失效，甚至画图时崩溃）比直接报错更难查，故用断言钉死。
+ReferenceRole = Qt.ItemDataRole.UserRole + 3
+
+# 三个自定义角色必须互不相同：取值相同会让语义完全不同的两个角色互相覆盖。
+# 新增角色时若漏改偏移，这条断言会在 import 阶段就炸掉，而不是等到运行时出现
+# "参考帧高亮莫名失效"这类难以定位的症状。
+assert len({FrameDataRole, ReferenceRole, ThumbnailRole}) == 3, \
+    "自定义 ItemDataRole 取值冲突：两个角色取了同一个值，语义会互相覆盖"
 
 _RIGHT = Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
 _CENTER = Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignVCenter
@@ -88,7 +99,6 @@ class TimelineItemModel(QAbstractTableModel):
         # 视图只在被显式 refresh 或发生 Resize/Show 时才"碰巧"重新取数 —— 表现为
         # "加载完工程后时间轴是空的，拖一下面板或改一下缩略图尺寸才出来"。
         self._frames = None
-        self._reference_frame: Optional[FrameData] = None
         self._is_dark_theme = True
         # 缩略图提供者，由网格视图注入：`provider(row, frame_data) -> QPixmap`。
         # 未注入时缩略图角色返回 None（列表视图不需要它）。
@@ -179,6 +189,11 @@ class TimelineItemModel(QAbstractTableModel):
 
         if role == FrameDataRole:
             return frame
+
+        if role == ReferenceRole:
+            # 参考帧是"本行是否高亮"的依据，与列无关（网格只显示文件名列，但整格
+            # 都要高亮）。返回 bool 而非帧对象 —— delegate 要的是判断结果。
+            return frame is self._business_reference_frame()
 
         if role == ThumbnailRole:
             if self._thumbnail_provider is None:
@@ -280,12 +295,23 @@ class TimelineItemModel(QAbstractTableModel):
         fname = frame.file_path.rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
         if frame.slice_pos:
             fname += f" [{frame.slice_pos[0]},{frame.slice_pos[1]}]"
-        if frame is self._reference_frame:
+        if self._is_reference(frame):
             fname = f"{i18n.t('label_ref_prefix')}{fname}"
         return fname
 
+    def _business_reference_frame(self) -> Optional[FrameData]:
+        """业务模型里的参考帧（唯一真源）。
+
+        本适配层不存副本 —— 存了就会与业务模型脱节：加载工程、
+        `MainWindow.set_reference_frame` 等都只改业务模型，改不到副本，
+        于是"设了参考帧但高亮不亮"。
+        """
+        if self._frames is None:
+            return None
+        return self._frames.get_reference_frame()
+
     def _is_reference(self, frame: FrameData) -> bool:
-        return frame is self._reference_frame
+        return frame is self._business_reference_frame()
 
     def _background(self, frame: FrameData, col: int):
         # 参考帧高亮只着文件名列（与迁移前的 item.setBackground(2, ...) 一致）
@@ -315,14 +341,16 @@ class TimelineItemModel(QAbstractTableModel):
         （`text.replace(prefix, "")`）—— 若文件名本身含该前缀会被误删。现在前缀
         由 `_filename()` 现算，天然幂等。
         """
-        self._reference_frame = frame
+        if self._frames is not None:
+            # 转发到业务模型（唯一真源）。它不发信号，故下面补发 dataChanged。
+            self._frames.set_reference_frame(frame)
         if self.rowCount() > 0:
             self.dataChanged.emit(
                 self.index(0, 0), self.index(self.rowCount() - 1, COLUMN_COUNT - 1), [])
 
     def set_theme_mode(self, is_dark: bool):
         self._is_dark_theme = is_dark
-        if self._reference_frame is not None and self.rowCount() > 0:
+        if self._business_reference_frame() is not None and self.rowCount() > 0:
             self.dataChanged.emit(
                 self.index(0, 0), self.index(self.rowCount() - 1, COLUMN_COUNT - 1), [])
 
