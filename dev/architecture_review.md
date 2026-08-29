@@ -18,10 +18,13 @@
 | P1-4 `BaseTimelineView` 空转 | ✅ 已解决 | 随 P1-3 第 3 片整个文件删除 |
 | P2-5 `MainWindow` 拆分 | ❌ 未动 | 4579 行 / 157 方法；函数内 import 反增至 34 处 |
 | P2-6 撤销快照 | ✅ 已完成 | 2026-08-29；走**结构共享**而非评审建议的「轻量补丁」，理由见实施记录 |
-| P2-7 三层缓存 | ⚠️ 4 点做 1 点 | 仅"缩略图 key 去 index"随迁移解决；`crop_rect` 死参数 / 按张数 FIFO / 导出无 PIL 缓存仍在 |
+| P2-7 三层缓存 | ✅ 4 点全部完成 | 2026-08-30；字节预算 + LRU、删 `crop_rect` 死参数、导出期源图缓存（缩略图 key 去 index 已于 P1-3 完成）。**三层仍刻意不合并**，理由见实施记录 |
 | P3-8 / 9 / 10 / 11 | ❌ 全部未动 | QSettings 6 处、`version.py` 未 gitignore、1195 行死代码、导出静默吞异常 |
 
 回归基线：`bash dev/run_all_checks.sh --verbose` 实测 **9/9 PASS（约 5s）**。
+
+> **2026-08-30 更新：** 新增第 11 项 `dev/verify_image_cache.py`（P2-7），现为
+> **11/11 PASS（约 6s）**。
 
 ---
 
@@ -40,6 +43,7 @@
 - [P0-1 实施记录](#p0-1-实施记录)
 - [P1-3 实施计划](#p1-3-实施计划)
 - [P2-6 实施记录](#p2-6-实施记录)
+- [P2-7 实施记录](#p2-7-实施记录)
 - [复核方法](#复核方法)
 
 ---
@@ -446,17 +450,121 @@ O(1) —— 若没有第 2 项，这个 O(n) 比较会把省下的克隆又赔�
 
 ---
 
+## P2-7 实施记录
+
+> 完成日期：2026-08-30。目标与本项评审建议的偏差都记在这里。
+
+### 四处改动
+
+**1. `core/image_cache.py`：上限改成字节预算，淘汰改成 LRU。**
+
+`_max_size = 500`（张数）换成 `_max_bytes`（字节，默认 512 MiB），`dict` 换成
+`OrderedDict`，命中时 `move_to_end` —— LRU 与 FIFO 的全部区别就在这一行。
+字节数用 `QImage.sizeInBytes()`（回退 `bytesPerLine() * height()`），算的是
+**解码后**的内存，与文件体积无关。
+
+**2. 同文件：单张超过预算的图刻意保留。**
+
+`_evict_to_fit` 淘汰时绝不淘汰"本次正要放进去的那张"。否则一张 4K 图放进即被踢，
+每次访问都重新解码 —— **比不缓存更慢**，还多一次淘汰遍历。所以 `total_bytes`
+允许超过预算，这是有意的，已写成单测（`test_oversized_image_is_kept_and_reused`）。
+
+**3. 同文件：删除 `get()` 的 `crop_rect` 参数。**
+
+全项目 17 个调用点没有一个传它，内部 key 也从不参与计算。
+
+**4. `utils/exporter.py`：新增 `SourceImageCache` —— 导出期源图缓存。**
+
+三种导出模式各开一个（`with` 块），经新增的可选参数 `source_cache` 传给唯一的
+变换实现 `compose_frame`。缓存的是**解码后、未裁切**的 RGBA 原图：PIL 的
+crop / resize / transpose / rotate 一律返回新对象，从不在原地修改，所以多帧共享
+一张原图是安全的（这条前提由 `test_shared_source_image_is_not_mutated` 钉住）。
+
+### 与建议方向的偏差
+
+**评审说「在 `export_iter` 内加一个局部字典，几行代码」，做了三处偏离：**
+
+- **加了字节上限（256 MiB）。** 评审没提，但**无限**缓存是有风险的：它把峰值内存
+  从"1 张源图"变成"N 张"。精灵表工程（几百帧共用一张）赚，而"几百帧各用各的大图"
+  的工程会**比不缓存更容易 OOM**。设了上限之后，最坏情况退化为"缓存没命中"，
+  不会比改之前更差；不设上限则最坏情况是崩。
+- **三种导出模式共用，不是只改 `export_iter`。** 三者都调 `compose_frame`，
+  各加一个局部字典就是三份重复（正是 P0-1 那类毛病）。
+- **用 `with` 而非裸局部变量。** 确保异常路径也 `close()` 掉文件句柄 ——
+  PIL 的 `Image.open` 是懒加载，`convert()` 之后文件句柄仍挂在对象上。
+
+**「三层缓存合并成一层」刻意没做。** 标题里的"互不知情"听上去像缺陷，但三层存的
+**东西**与**生命周期**都不同，合并是错的：
+
+| 层 | 存什么 | key | 生命周期 |
+|---|---|---|---|
+| `core.image_cache` | 解码后的 QImage（全尺寸） | 路径 | 进程级，手动失效 |
+| 网格缩略图缓存 | 网格专属的 QPixmap（含背景棋盘、按缩略图尺寸缩放） | 内容 + **网格设置** | 视图私有，随设置清空 |
+| `SourceImageCache` | PIL 原图（未裁切） | 路径 | **一次导出** |
+
+缩略图那一层尤其不能合并：它的 key 里有"背景模式 + 缩略图尺寸"这两个**纯展示**
+维度，塞进全局 `image_cache` 等于让画布与属性面板的全尺寸图也按缩略图尺寸分桶。
+
+真正需要修的"不知情"是**失效时机**，而那已经是好的：外部编辑器改图后
+`_reload_edited_images` 会逐个失效三层（`image_cache.remove` +
+`clear_source_image_size_cache` + 缩略图定向失效 + 画布刷新）。
+
+### 为什么必须写单测：改错了功能完全正常
+
+这四处**没有一个**会让导出结果或界面行为发生变化，退化只体现在内存/CPU 上，
+而且很隐蔽：
+
+| 破坏 | 现象 |
+|---|---|
+| 上限退回按张数 | 500 张 4K 图照样吃满 32 GB（正是要修的东西） |
+| 淘汰退回 FIFO | 只在"加载得早却一直被访问"的那张图上变慢，肉眼几乎看不出 |
+| `crop_rect` 参数加回来 | 没人传它，代码照样跑 |
+| 导出期缓存去掉 | 导出结果**逐字节相同**，只是同一张精灵表被解码几百遍 |
+
+所以 `dev/verify_image_cache.py` 断言的是**预算、淘汰顺序、解码次数**这些看不见的
+量。像素正确性交给 `transform_baseline.py`（导出路径改了缓存，它的哈希必须不变）。
+
+### 破坏性验证（4 个破坏点，全部被捕获）
+
+| 破坏 | 被哪个用例捕获 |
+|---|---|
+| 命中时不做 `move_to_end`（退回 FIFO） | `test_eviction_is_lru_not_fifo` |
+| 淘汰条件改回 `len(self._cache) >= 500` | `test_eviction_is_driven_by_bytes_not_count` |
+| `compose_frame` 不复用源图（每帧 `Image.open`） | `test_export_decodes_each_source_once` |
+| 原地修改共享原图（`putpixel`） | `test_shared_source_image_is_not_mutated` |
+
+另有一条**防止假通过**的设计：`test_export_decodes_each_source_once` 开头先断言
+"不开缓存时确实是每帧解码一次" —— 计数器若失灵，后面的"只解码 1 次"就是恒真的。
+
+### 刻意未做的部分
+
+- **导出缓存没有跨导出复用。** 生命周期严格限定在一次导出内：跨次缓存会让
+  "改了图再导出"拿到旧图，而它的失效时机比缩略图还难判（缩略图至少有
+  `invalidate_thumbnail_cache_for_paths` 这个入口）。导出是一次性批处理，
+  一次之内复用已经能覆盖精灵表这个主要场景。
+- **没有做"预算自动调优"。** 512 MiB / 256 MiB 是拍的常量，够用且留了
+  `set_budget()` 口子，但没有去做按可用内存自适应 —— 那属于 P3 级问题，
+  且会引入"同一次运行里行为不一致"的调试困难。
+
+---
+
 ## P2-7｜三层缓存互不知情，外加一个诱导误用的 API
 
 ```
 image_cache (QImage, 按路径)  ←→  _thumbnail_cache (QPixmap, 按 path+crop+index)  ←→  exporter (无缓存)
 ```
 
-> **2026-08-29 复核：4 点只做了 1 点。** 仅第 3 点随 P1-3 迁移顺带解决（缩略图
-> key 已不含行号，见 `timeline_grid.py:_get_cache_key`）。**第 1、2、4 点原样存在**：
-> `crop_rect` 死参数仍在 `image_cache.py:25`，`_max_size = 500` 按张数 + FIFO 仍在，
-> `exporter.py` 仍在 `compose_frame` 内每帧 `Image.open`（3 种导出模式各调一次，
-> 尚无 PIL 层缓存）。
+> **状态：已完成（2026-08-30）。** 见文末 [P2-7 实施记录](#p2-7-实施记录)。
+> 四点全部处理：字节预算 + LRU、删 `crop_rect` 死参数、导出期源图缓存；
+> 第 3 点（缩略图 key 去 `index`）已于 P1-3 随迁移解决。**「三层缓存合并成一层」
+> 刻意没做** —— 三层存的东西与生命周期都不同，理由在实施记录里。
+> 以下保留原始分析，作为改动动机的记录。
+>
+> **2026-08-29 复核（当时）：4 点只做了 1 点。** 仅第 3 点随 P1-3 迁移顺带解决
+> （缩略图 key 已不含行号，见 `timeline_grid.py:_get_cache_key`）。**第 1、2、4 点
+> 原样存在**：`crop_rect` 死参数仍在 `image_cache.py:25`，`_max_size = 500` 按张数
+> + FIFO 仍在，`exporter.py` 仍在 `compose_frame` 内每帧 `Image.open`（3 种导出
+> 模式各调一次，尚无 PIL 层缓存）。
 
 四个具体问题：
 
@@ -1172,10 +1280,19 @@ grep -rn "extract_frame_data_from_item" src/ --include="*.py"
 grep -c "    def " src/ui/main_window.py
 grep -c "^        from \|^            from \|^        import " src/ui/main_window.py
 
-# P2-7 crop_rect 死参数（应为 0 个调用点传参 —— 2026-08-29 复核仍为 0）
-# 但参数**本身**未删，仍在 `src/core/image_cache.py` 的 `get()` 签名上
-grep -rn "image_cache.get(" src/
+# P2-7 全部四点（2026-08-30 已完成，以下为复核命令）
+#  1) get() 签名只剩 (self, file_path)；crop_rect 只应出现在解释"为什么删掉"的
+#     docstring 里，不得出现在 get() 的实现里
+#  2) 上限是字节预算 + LRU：不应再有 _max_size / 按张数的判据，命中处应有 move_to_end
+#  3) 缩略图 key 不含行号（P1-3 期已修）
+#  4) 导出期源图缓存：三种导出模式都用 with SourceImageCache()
 grep -n "def get" src/core/image_cache.py
+grep -rn "crop_rect\|_max_size" src/core/image_cache.py
+grep -n "_get_cache_key" -A 8 src/ui/timeline_grid.py
+grep -n "SourceImageCache()" src/utils/exporter.py   # 应为 3 处
+
+# 行为验证（改错了功能一样正常，只能靠这个）
+python dev/verify_image_cache.py
 
 # P3-8 QSettings 散落点
 grep -rn "QSettings(" src/

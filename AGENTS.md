@@ -21,11 +21,11 @@ PinFrame (定帧) is a PyQt6 desktop application for previewing, fine-tuning, an
   `bash dev/screenshot.sh` launches the app under Xvfb and captures `dev/tmp_screenshot.png`.
 
 - **Run all automated checks (全量回归):**
-  `bash dev/run_all_checks.sh`（10 项约 6s，退出码 0=全过 / 1=有失败 / 2=前置依赖缺失）。
-  依次跑 10 项：`check_no_duplicate_defs.py` → 语法编译 → `test_transform.py` →
+  `bash dev/run_all_checks.sh`（退出码 0=全过 / 1=有失败 / 2=前置依赖缺失）。
+  依次跑 11 项：`check_no_duplicate_defs.py` → 语法编译 → `test_transform.py` →
   `transform_baseline.py --compare` → `verify_timeline_view_sync.py` →
   `verify_grid_view.py` → `smoke_reorder.py` → `smoke_reference_frame.py` →
-  `verify_selection_style.py` → `verify_undo_snapshot.py`。
+  `verify_selection_style.py` → `verify_undo_snapshot.py` → `verify_image_cache.py`。
   `--verbose` 实时回显完整输出，`--fail-fast` 首败即停。
   **改动触及共享层（`core/transform.py`、`timeline_model.py`、`timeline_item_model.py`、
   `project_data.py`）或打包发布前，必须跑全量**；只动某个对话框/i18n 键时可只跑定向项。
@@ -97,7 +97,11 @@ Two dataclasses form the entire project state:
 
 ### Core services (`src/core/`)
 - `transform.py`: 帧变换几何的唯一来源（见上）。Qt-free，有单测覆盖。
-- `image_cache.py`: a global singleton `ImageCache` (`image_cache`) shared across all widgets, keyed by absolute file path (the `crop_rect` argument is accepted but ignored — dead parameter), FIFO-capped at 500 *images* (not bytes). Always read images from `image_cache.get(path)` rather than `QImage(path)` directly to avoid reloading. **必须写成 `from core.image_cache import image_cache`**，不可写 `from src.core.image_cache import ...`：两种写法都能解析（仓库根在 `sys.path` 上），但会产生两个不同的模块对象、进而两个独立的单例——`canvas.py` 与 `property_panel.py` 曾经就是这样，导致内存翻倍且缓存失效被割裂。
+- `image_cache.py`: a global singleton `ImageCache` (`image_cache`) shared across all widgets, keyed by absolute file path. Always read images from `image_cache.get(path)` rather than `QImage(path)` directly to avoid reloading. **必须写成 `from core.image_cache import image_cache`**，不可写 `from src.core.image_cache import ...`：两种写法都能解析（仓库根在 `sys.path` 上），但会产生两个不同的模块对象、进而两个独立的单例。
+  - **淘汰判据必须是字节，不是张数；顺序必须是 LRU，不是 FIFO。** 上限是字节预算（`_max_bytes`，默认 512 MiB，经 `set_budget()` 调整），命中时 `move_to_end` 续命。张数上限对内存毫无约束（500 张 4K 图 ≈ 32 GB），FIFO 会先踢掉反复访问的那张。
+  - **单张超过预算的图要保留，不要"放进即踢"。** `_evict_to_fit` 淘汰时绝不淘汰本次正要放入的那张，否则大图每次访问都重新解码，比不缓存更慢。故 `total_bytes` 允许超过预算。
+  - **`get()` 只收 `file_path`**，不要加回 `crop_rect` 之类的参数——缓存 key 只用路径，加了也不参与计算，只会诱导下一个人以为传了就按裁切区分桶。
+  - **预算没有设置项，也没有环境变量。** 改默认值的唯一方式是改 `DEFAULT_MAX_BYTES`；运行时改是 `image_cache.set_budget(n)`（目前只有单测用，生产代码零调用）。**不要为此新增 UI 项**：预算调小只是命中率下降、多解码几次，不会出错，而调大才是真风险（OOM），一个"调错了会崩"的旋钮比不给更糟。真需要在某台低内存机器上压一压，改常量重打包即可。
 - `history.py`: **线性历史栈**，撤销/重做的唯一真源。改动前必读：
   - **状态模型 `S0 → S1 → … → Sn`。** `entries[k].before` 是 `S(k-1)`、`after` 是 `Sk`，首尾相接成链；`_index` 指向当前状态（`k` = `Sk`，`-1` = 真正的初始 `S0`，由 `_initial_snapshot` 独立保存，栈被裁剪也还原得了）。
   - **撤销/重做可重复任意次。** `undo()` / `redo()` 只移动 `_index` 并返回相邻快照，**不删改任何条目**，故可一路撤到 `-1` 再一路重做回来。
@@ -119,6 +123,13 @@ Two dataclasses form the entire project state:
 **几何共用，像素化不共用。** `CanvasWidget` 用连续浮点 `QPainter` 变换；`Exporter.compose_frame` 用 PIL 量化（`int()` 尺寸、`rotate(expand=True)`、LANCZOS/BICUBIC）。预览与导出**不可能**逐像素一致——重采样滤波器不同、导出两遍重采样而预览一遍、预览还叠了 `view_scale`。`dev/export_pipeline_precision.md` 记录了实测数据、为什么"让两者一致"是错的目标，以及真正值得修的部分（分数位置的阶梯抖动、缩放渐变的 ±0.5px 交替）该如何用单次仿射变换解决。
 
 `Exporter` 只有一份变换实现（`compose_frame`），三种导出模式共用：`export_iter`（PNG 序列，带进度的 generator）、`export_sprite_sheet`、`export_gif`。`parse_range_string` 把 `"1,3,5-7,10-"` 转成 0 基下标。
+
+**三层缓存刻意不合并**（理由见 `dev/architecture_review.md` 的 P2-7）：`core.image_cache`（解码后的 QImage，进程级）、网格缩略图缓存（QPixmap，key 含"背景模式 + 缩略图尺寸"这类**纯展示**维度，视图私有）、`SourceImageCache`（`utils/exporter.py`，PIL 原图）。把缩略图那层塞进全局 `image_cache` 是错的——那等于让画布与属性面板的全尺寸图也按缩略图尺寸分桶。
+
+**导出路径：`SourceImageCache` 的生命周期是一次导出。** 三种导出模式各开一个 `with SourceImageCache()`，经 `compose_frame` 的可选参数 `source_cache` 注入。
+- **不要跨导出复用**：跨次缓存会让"改了图再导出"拿到旧图，而它的失效时机比缩略图还难判。
+- **上限必须设（默认 256 MiB）**，不要做成无限：无上限会把峰值内存从 1 张变成 N 张，几百帧各用各的大图时**比不缓存更容易 OOM**。
+- 缓存**未裁切**的原图：安全前提是 PIL 的 crop / resize / transpose / rotate 一律返回新对象、从不在原地修改。改用任何原地 API 都会让多帧互相污染且不报错。
 
 **`aspect_ratio` 的符号是有语义的。** 它是 X/Y 失真系数，**负值编码镜像状态**——`property_panel._mirror_axis` 对水平镜像同时翻转 `scale` 与 `aspect_ratio` 的符号，垂直镜像只翻转 `aspect_ratio`，而 `reset_mirror` 靠符号**组合**反推镜像轴。只有 `0` 是无效值（除零且无语义）；`normalize_aspect_ratio()` 把它归一为 `1.0`，已应用于 `resolve_frame_geometry`、`frame_aabb`、`effective_target_size()`、`FrameData.from_dict`。**绝不可归一负值**——那会让水平镜像静默变成 180° 旋转、垂直镜像直接失效。
 
@@ -229,6 +240,7 @@ Singleton `I18nManager` (`i18n`) loaded from `en_US.json` / `zh_CN.json`. Call `
   `dev/verify_selection_style.py` 是时间轴选中配色的跨平台一致性（见下条），
   `dev/verify_undo_snapshot.py` 是撤销快照（恢复走增量而非整体替换、快照之间按帧
   共享对象、历史快照不被后续编辑污染 —— 增量/回落两条路径各测一遍），
+  `dev/verify_image_cache.py` 是缓存（`image_cache` 的字节预算 + LRU、导出期源图每张只解码一次、共享原图不被污染），
   `dev/screenshot.sh` 是人工目视检查。
   **另有三个缺口无任何自动化覆盖**：右键菜单、外部文件拖入、播放时的选中跟随。
 

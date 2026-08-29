@@ -37,7 +37,7 @@
 #    绝不带病运行。
 #
 #    两处清理：开头一次；第 2 项 compileall 之后再一次（它会写满 src/ 与 dev/，
-#    不清掉 3~9 项读的就是它刚生成的那批）。
+#    不清掉 3~11 项读的就是它刚生成的那批）。
 #
 # 4. 第 1 项（重复定义）是**纯标准库**的结构性检查，刻意放在最前：它只要 ~0.1s，
 #    且能挡住"改了代码却没效果"这类最费解的问题 —— Python 对同名的后定义静默
@@ -230,10 +230,10 @@ echo "============================================================"
 FAILED=0
 ABORTED=0
 
-if [ "$ABORTED" -eq 0 ]; then run_check "1/10 重复定义（结构性）"      "$PY" dev/check_no_duplicate_defs.py          || FAILED=1; fi
-if [ "$ABORTED" -eq 0 ]; then run_check "2/10 语法编译 main.py+src"    "$PY" -m compileall -q main.py src            || FAILED=1; fi
+if [ "$ABORTED" -eq 0 ]; then run_check "1/11 重复定义（结构性）"      "$PY" dev/check_no_duplicate_defs.py          || FAILED=1; fi
+if [ "$ABORTED" -eq 0 ]; then run_check "2/11 语法编译 main.py+src"    "$PY" -m compileall -q main.py src            || FAILED=1; fi
 
-# compileall 刚把 pyc 写满了 src/ 与 dev/，3~10 项不清掉就会读这批而非源码。
+# compileall 刚把 pyc 写满了 src/ 与 dev/，3~11 项不清掉就会读这批而非源码。
 # 同样失败即中止。根目录 __pycache__（compileall 为 main.py 生成的）刻意不动：
 # 没有任何测试 import main 模块，且 find 到仓库根会一路扫进 venv/，得不偿失。
 if ! purge_bytecode; then
@@ -241,14 +241,15 @@ if ! purge_bytecode; then
     ABORTED=1
 fi
 
-if [ "$ABORTED" -eq 0 ]; then run_check "3/10 几何与模型单测"          "$PY" dev/test_transform.py                   || FAILED=1; fi
-if [ "$ABORTED" -eq 0 ]; then run_check "4/10 渲染像素哈希 --compare"   "$PY" dev/transform_baseline.py --compare     || FAILED=1; fi
-if [ "$ABORTED" -eq 0 ]; then run_check "5/10 双视图同步与拖拽"         "$PY" dev/verify_timeline_view_sync.py        || FAILED=1; fi
-if [ "$ABORTED" -eq 0 ]; then run_check "6/10 网格视图"                 "$PY" dev/verify_grid_view.py                 || FAILED=1; fi
-if [ "$ABORTED" -eq 0 ]; then run_check "7/10 MainWindow 接线：重排"    "$PY" dev/smoke_reorder.py                    || FAILED=1; fi
-if [ "$ABORTED" -eq 0 ]; then run_check "8/10 MainWindow 接线：参考帧"  "$PY" dev/smoke_reference_frame.py            || FAILED=1; fi
-if [ "$ABORTED" -eq 0 ]; then run_check "9/10 选中配色跨平台一致"       "$PY" dev/verify_selection_style.py           || FAILED=1; fi
-if [ "$ABORTED" -eq 0 ]; then run_check "10/10 撤销快照：增量与共享"    "$PY" dev/verify_undo_snapshot.py             || FAILED=1; fi
+if [ "$ABORTED" -eq 0 ]; then run_check "3/11 几何与模型单测"          "$PY" dev/test_transform.py                   || FAILED=1; fi
+if [ "$ABORTED" -eq 0 ]; then run_check "4/11 渲染像素哈希 --compare"   "$PY" dev/transform_baseline.py --compare     || FAILED=1; fi
+if [ "$ABORTED" -eq 0 ]; then run_check "5/11 双视图同步与拖拽"         "$PY" dev/verify_timeline_view_sync.py        || FAILED=1; fi
+if [ "$ABORTED" -eq 0 ]; then run_check "6/11 网格视图"                 "$PY" dev/verify_grid_view.py                 || FAILED=1; fi
+if [ "$ABORTED" -eq 0 ]; then run_check "7/11 MainWindow 接线：重排"    "$PY" dev/smoke_reorder.py                    || FAILED=1; fi
+if [ "$ABORTED" -eq 0 ]; then run_check "8/11 MainWindow 接线：参考帧"  "$PY" dev/smoke_reference_frame.py            || FAILED=1; fi
+if [ "$ABORTED" -eq 0 ]; then run_check "9/11 选中配色跨平台一致"       "$PY" dev/verify_selection_style.py           || FAILED=1; fi
+if [ "$ABORTED" -eq 0 ]; then run_check "10/11 撤销快照：增量与共享"    "$PY" dev/verify_undo_snapshot.py             || FAILED=1; fi
+if [ "$ABORTED" -eq 0 ]; then run_check "11/11 图片缓存与导出缓存"      "$PY" dev/verify_image_cache.py               || FAILED=1; fi
 
 # ---- 基线未改写校验 ---------------------------------------------------------
 BASELINE_AFTER="$("$PY" -c "import hashlib,sys; print(hashlib.md5(open(sys.argv[1],'rb').read()).hexdigest())" "$BASELINE_JSON")"
@@ -294,7 +295,7 @@ if [ "$FAILED" -ne 0 ]; then
     echo "排查提示："
     echo "  - 若第 1 项失败（重复定义）：Python 只保留最后一个定义，前面的永不执行。"
     echo "     删除被覆盖的那些；若两处都有用，说明其中一个该改名。"
-    echo "     注意 `src/ui/temp_prop.py` 是 PropertyPanel 的旧副本（无人 import），"
+    echo "     注意 src/ui/temp_prop.py 是 PropertyPanel 的旧副本（无人 import），"
     echo "     它作为死文件被单独排除，不在本项检查范围内。"
     echo "  - 若第 9 项失败（选中配色跨平台不一致）："
     echo "     选中色由 ui/timeline_selection_style.py 单一真源提供，QSS 与两个 delegate"
@@ -313,6 +314,14 @@ if [ "$FAILED" -ne 0 ]; then
     echo "      · '未变帧未共享' → _capture_snapshot 的 reuse_from 或"
     echo "        HistoryManager.push 的 before 复用被去掉（功能正常，只是退回"
     echo "        O(帧数×历史条数) 内存）。"
+    # 反引号在双引号里会被 bash 当**命令替换**执行，ASCII 双引号则会提前闭合字符串
+    # —— 两者都会让这段提示在真失败时输出残缺并往 stderr 喷 command not found。
+    # 故提示文字一律不用反引号包裹标识符，且整段拆成单行 echo（与周围风格一致）。
+    echo "  - 若第 11 项失败（缓存）：image_cache.py 与 exporter.py 的"
+    echo "     SourceImageCache 都是「字节预算 + LRU」。退回按张数或 FIFO 功能完全正常，"
+    echo "     只是内存/性能退化，肉眼几乎看不出来，所以只能靠这一项拦。"
+    echo "     另：ImageCache.get() 的 crop_rect 是已删的死参数，加回来不会报错、"
+    echo "     也不会有任何效果，只有这一项会红。"
     echo "  - 若第 4 项失败（MAIN_DIGEST 变化）而你【有意为之】地改了渲染："
     echo "      确认差异符合预期后，跑 'python dev/transform_baseline.py' 刷新基线。"
     echo "  - 若某项的失败是异常而非断言（exit=134 之类）："
