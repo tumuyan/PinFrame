@@ -18,22 +18,15 @@ DEFAULT_MAX_BYTES = 512 * 1024 * 1024
 
 
 def _image_bytes(img: QImage) -> int:
-    """估算一张 QImage 的像素内存（字节）。
+    """一张 QImage 的像素内存（字节）。
 
-    `sizeInBytes()` 已计入每行的对齐填充，`bytesPerLine() * height()` 是它的等价
-    回退式（老版本 Qt 没有前者）。两者都算的是**解码后**的内存，与文件体积无关 ——
-    一张压缩率极高的 PNG 展开后可能是文件大小的几十倍。
+    算的是**解码后**的内存，与文件体积无关 —— 一张压缩率极高的 PNG 展开后可能是
+    文件大小的几十倍；`sizeInBytes()` 已计入每行的对齐填充。
+
+    不做回退：`sizeInBytes()` 自 Qt 5.10 起存在，PyQt6 必然有；调用点也都在
+    `isNull()` 之后（或取自缓存），`img` 必然非空（空图调用它也返回 0，实测）。
     """
-    size = 0
-    getter = getattr(img, "sizeInBytes", None)
-    if getter is not None:
-        try:
-            size = getter()
-        except (RuntimeError, TypeError):
-            size = 0
-    if size <= 0:
-        size = img.bytesPerLine() * img.height()
-    return max(size, 0)
+    return img.sizeInBytes()
 
 
 class ImageCache:

@@ -490,8 +490,8 @@ crop / resize / transpose / rotate 一律返回新对象，从不在原地修改
   不会比改之前更差；不设上限则最坏情况是崩。
 - **三种导出模式共用，不是只改 `export_iter`。** 三者都调 `compose_frame`，
   各加一个局部字典就是三份重复（正是 P0-1 那类毛病）。
-- **用 `with` 而非裸局部变量。** 确保异常路径也 `close()` 掉文件句柄 ——
-  PIL 的 `Image.open` 是懒加载，`convert()` 之后文件句柄仍挂在对象上。
+- **生命周期用 `with` 收口，确保异常路径也 `close()`。** 注意这条的理由**不是**
+  "修一个已存在的泄漏"，当初写下的那句理由已被实测推翻，见下。
 
 **「三层缓存合并成一层」刻意没做。** 标题里的"互不知情"听上去像缺陷，但三层存的
 **东西**与**生命周期**都不同，合并是错的：
@@ -532,9 +532,40 @@ crop / resize / transpose / rotate 一律返回新对象，从不在原地修改
 | 淘汰条件改回 `len(self._cache) >= 500` | `test_eviction_is_driven_by_bytes_not_count` |
 | `compose_frame` 不复用源图（每帧 `Image.open`） | `test_export_decodes_each_source_once` |
 | 原地修改共享原图（`putpixel`） | `test_shared_source_image_is_not_mutated` |
+| `get()` 返回即将被 `with` 关闭的中间对象 | `test_cached_images_survive_source_close`（另 3 条同时变红） |
+
+最后一条是补的：`get()` 加了 `with` 之后引入了一个新的耦合点 —— 若返回的是那个
+即将被关闭的中间对象，缓存里的图会在 `with` 退出的同一刻失效，而**首帧仍能正常
+导出**，错误要等到第 2 帧才出现。故用例刻意用多帧的 GIF 而非 PNG 作夹具。
 
 另有一条**防止假通过**的设计：`test_export_decodes_each_source_once` 开头先断言
 "不开缓存时确实是每帧解码一次" —— 计数器若失灵，后面的"只解码 1 次"就是恒真的。
+
+### 两条当初写错的理由（复核时由实测推翻，记在这里以免重犯）
+
+code review 让"把投机性防御删掉"，逐条实测之后发现**两条当初的理由都是错的**，
+其中一条是我自己写进注释的臆测：
+
+**1. 「`convert()` 之后文件句柄仍挂在对象上」—— 错的。**
+
+`Image.open()` 是懒加载，但 `convert()` 触发的 `load()` 在读完数据后就**自己关了**
+文件。实测：`convert()` 之后 `im.fp` 变 `None`；不显式 close 循环 200 次，
+`/proc/self/fd` 增量为 **0**。亦即 `Image.open(p).convert("RGBA")` 这条原写法
+**根本没有泄漏句柄**，跟引用计数无关 —— 是 Pillow 主动关的。
+
+那 `with` 与 `close()` 还有没有用？有，但性质从"修泄漏"降级为"**不依赖 Pillow
+对具体格式的实现细节**"：单帧 PNG 会自己关，多帧格式（GIF / TIFF）未必。
+所以 `with` 保留、注释改写，`close()` 也保留为防御。
+
+**2. 「`_image_bytes` 需要回退分支」—— 也不需要。**
+
+原本写了 `getattr(img,"sizeInBytes",None)` + `try/except (RuntimeError,TypeError)` +
+`size <= 0` 回退到 `bytesPerLine()*height()`，三层防御。实测：`sizeInBytes()` 自
+Qt 5.10 起存在、PyQt6 必然有；三处调用点都在 `isNull()` 之后或取自缓存，`img` 必然
+非空；**空图调用它也返回 0**。三层分支全部不可达，已简化为一行。
+
+教训：这两条都是"听起来应该防御一下"就写下的，没有任何一条来自实测。防御性代码
+的代价不只是行数 —— 不可达的分支会让读者以为那些情况真的会发生。
 
 ### 刻意未做的部分
 

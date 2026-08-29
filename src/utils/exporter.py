@@ -19,8 +19,7 @@ class SourceImageCache:
 
     `compose_frame` 原本对每一帧都 `Image.open(path).convert("RGBA")` —— 精灵表工程
     里几百帧共用同一张源图，于是同一文件被完整解码几百遍（P2-7 第 4 点）。这里按
-    路径缓存**解码后、未裁切**的原图，一次导出结束（`with` 退出）时统一 `close()`
-    释放文件句柄。
+    路径缓存**解码后、未裁切**的原图。
 
     缓存未裁切的原图是安全的：`compose_frame` 随后对它做的 crop / resize /
     transpose / rotate **一律返回新对象**，PIL 从不在原地修改图像，所以多帧共享
@@ -43,7 +42,13 @@ class SourceImageCache:
             self._images[path] = img
             return img
 
-        img = Image.open(path).convert("RGBA")
+        # 用 `with` 显式关掉中间那个解码对象，而不是依赖 `convert()` 的副作用：
+        # `convert()` 触发的 `load()` 确实会在读完后自行关文件（实测 PNG：fp 变
+        # None，循环 200 次 fd 增量为 0），但那是 Pillow 对具体格式的实现细节 ——
+        # 多帧格式（GIF / TIFF）未必如此。转换结果是全新对象，不受这里关闭的影响。
+        with Image.open(path) as decoded:
+            img = decoded.convert("RGBA")
+
         size = self._image_bytes(img)
         self._evict_to_fit(size)
         self._images[path] = img
@@ -51,7 +56,12 @@ class SourceImageCache:
         return img
 
     def close(self) -> None:
-        """释放全部缓存图像的文件句柄。"""
+        """释放全部缓存图像的文件句柄。
+
+        防御性的，不是修一个已存在的泄漏：`convert()` 的结果通常已不持有 fp（实测
+        PNG 如此）。但对多帧格式（GIF / TIFF）Pillow 可能仍保持着 fp，故导出结束时
+        统一关一遍。
+        """
         for img in self._images.values():
             try:
                 img.close()

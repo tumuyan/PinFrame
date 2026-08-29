@@ -308,6 +308,35 @@ def test_shared_source_image_is_not_mutated():
     assert again == cached, "第二轮（全部命中缓存）结果与第一轮不同"
 
 
+def test_cached_images_survive_source_close():
+    """缓存返回的图必须独立于打开时的中间对象，拿到手就是可用的。
+
+    `SourceImageCache.get()` 用 `with Image.open(path) as decoded:` 显式关掉中间那个
+    解码对象。转换结果是新对象、不受影响，但这是个**容易踩反**的点：若哪天改成让
+    `get()` 返回那个即将被关闭的中间对象（例如省掉 `convert()`），缓存里的图会在
+    `with` 退出的同一刻失效，而首帧仍能正常导出 —— 错误要等到第 2 帧才开始出现。
+
+    所以这里刻意**不**用 PNG：GIF 是多帧格式，Pillow 对它的 fp 处理与 PNG 不同，
+    是这条性质更容易翻车的地方。
+    """
+    gif_path = os.path.join(_tmpdir(), "multi.gif")
+    Image.new("RGBA", (32, 32), (10, 20, 30, 255)).save(gif_path)
+
+    with SourceImageCache() as cache:
+        img = cache.get(gif_path)
+        assert img.mode == "RGBA", f"前置条件失败：期望 RGBA，实际 {img.mode}"
+        # 关键：取到手就能用，不依赖 with 尚未退出
+        assert img.tobytes()[:4] == bytes((10, 20, 30, 255)), \
+            "缓存返回的图像内容不对 —— 中间对象被关闭后数据跟着没了"
+        # 对照必须在 close 之前做：之后 img 已关闭，比对会抛异常而非给出结论
+        with Image.open(gif_path) as decoded:
+            assert decoded.convert("RGBA").tobytes() == img.tobytes(), \
+                "走缓存与不走缓存得到的像素不同"
+
+    # with 已退出，此刻才该是"已关闭"状态
+    assert _is_closed(img), "with 退出后缓存里的图未被 close（见 close() 的防御性说明）"
+
+
 def test_source_cache_is_bounded_and_closed():
     """导出期缓存必须有字节上限，且导出结束要 close 掉全部文件句柄。
 
