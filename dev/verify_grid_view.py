@@ -7,7 +7,8 @@
 
 本脚本钉住的是**迁移时必须保持不变的行为**，而不是当前的实现细节：
   - 缩略图：按 `crop_rect` 裁切 + `KeepAspectRatio`，**不含**帧变换（旋转/镜像/缩放/偏移）；
-  - 缩略图缓存：命中/失效的边界（key 含 index，移动一帧会失效 —— 已知待改进项）；
+  - 缩略图缓存：命中/失效的边界（key **不含** index，重排不重算 —— 刻意设计，
+    见 `test_reorder_keeps_thumbnails_cached`）；
   - 序号：由 delegate 按 row 绘制，随位置变化；
   - 拖拽插入点：`_calc_insert_before` 的"网格按行主序"规则；
   - 参考帧高亮、禁用态。
@@ -67,8 +68,26 @@ def _make_png(name, size=(64, 64)):
     return path
 
 
+def _crop_for(i):
+    """第 i 帧的裁切区 —— 刻意让**任意两帧**裁出的像素都不同。
+
+    为什么需要它：`test_reorder_keeps_thumbnails_cached` 是按位置比对的
+    （"帧 A 从 row0 移到 row2"）。`_frames()` 以前造的是"同一张图案的 n 个文件"且
+    不带裁切，四行缩略图哈希实测完全相同（`bf5c87d6ccf07fea` ×4），于是那个位置比对
+    是空转的 —— 怎么换序都成立，测试通过是因为看不出差别，而不是行为正确。
+
+    取法与真实工程保持一致：**同一张源图 + 每帧不同裁切**（`test_long2.json` 正是这个
+    形态：15 帧共用一张 png，裁切互不相同）。起点按四象限轮转（跨象限色块必不同），
+    尺寸随轮次递减（轮转回同一象限时也不会裁出同一块）。
+    """
+    x, y = [(0, 0), (32, 0), (0, 32), (32, 32)][i % 4]
+    size = max(8, 32 - 4 * (i // 4))  # 源图 64×64，起点最大 32 → 永不出界
+    return (x, y, size, size)
+
+
 def _frames(n):
-    return [FrameData(file_path=_make_png(f"f{i}.png")) for i in range(n)]
+    return [FrameData(file_path=_make_png(f"f{i}.png"), crop_rect=_crop_for(i))
+            for i in range(n)]
 
 
 def _grid(tw):
@@ -113,6 +132,62 @@ def _thumb_sig(view, row):
             buf.extend(img.pixelColor(x, y).getRgb())
     import hashlib
     return hashlib.sha1(bytes(buf)).hexdigest()[:16]
+
+
+def _rewrite_source_image(path):
+    """把磁盘上的源图整张换成另一种图案（不只是改个颜色，避免与裁切/缩放撞上）。"""
+    from PIL import Image
+    img = Image.new("RGBA", (64, 64), (255, 255, 255, 255))
+    px = img.load()
+    for y in range(64):
+        for x in range(64):
+            px[x, y] = (x * 4 % 256, y * 4 % 256, 128, 255)
+    img.save(path)
+
+
+def count_paint_events(widget, sink):
+    """把 widget 此后收到的 Paint 事件记进 `sink`（列表），用来断言"有没有重画"。
+
+    ⚠️ 返回值必须留住引用：事件过滤器是 QObject，被 GC 掉之后事件就再也收不到了，
+    于是"一次都没重画"和"过滤器没了"长得一模一样。
+    """
+    from PyQt6.QtCore import QObject, QEvent
+
+    class _Counter(QObject):
+        def eventFilter(self, _obj, event):
+            if event.type() == QEvent.Type.Paint:
+                sink.append(event.type())
+            return False
+
+    counter = _Counter(widget)
+    widget.installEventFilter(counter)
+    return counter
+
+
+# ---------------------------------------------------------------------------
+# 夹具自身的有效性（先证明"看得见差别"，否则下面的断言都可能失明）
+# ---------------------------------------------------------------------------
+def test_fixture_frames_have_distinct_thumbnails():
+    """夹具的 n 帧必须有**互不相同**的缩略图。
+
+    这条钉的是本文件曾真实存在过的盲区：`_frames()` 造的帧不带裁切，四行缩略图哈希
+    实测完全相同，于是所有按**位置/顺序**的比对（如
+    `test_reorder_keeps_thumbnails_cached` 里的 `after[2] == before[0]`）无论怎么换序
+    都成立 —— 典型的"测试数据无法分辨被测行为"。
+
+    因此把夹具改成"同一张源图 + 每帧不同裁切"，并由本用例守住这个前提：
+    哪天夹具退化回不可分辨，这里先红。
+    """
+    tw = TimelineWidget()
+    tw.set_view_mode("grid")
+    _fill(tw, 5)
+    view = _grid(tw)
+    view.refresh_all_items()
+
+    sigs = [_thumb_sig(view, r) for r in range(tw.model.get_frame_count())]
+    assert len(sigs) == 5, f"夹具帧数不对: {len(sigs)}"
+    assert len(set(sigs)) == len(sigs), \
+        f"夹具缩略图有重复，位置/顺序断言会失明: {sigs}"
 
 
 # ---------------------------------------------------------------------------
@@ -182,18 +257,87 @@ def test_thumbnail_follows_source_image_change():
     before = _thumb_sig(view, 0)
 
     path = tw.model.get_frame_at(0).file_path
-    from PIL import Image
-    # 整张换成另一种图案（不只是改个颜色，避免与裁切/缩放的结果撞上）
-    img = Image.new("RGBA", (64, 64), (255, 255, 255, 255))
-    px = img.load()
-    for y in range(64):
-        for x in range(64):
-            px[x, y] = (x * 4 % 256, y * 4 % 256, 128, 255)
-    img.save(path)
+    _rewrite_source_image(path)
     view.invalidate_thumbnail_cache_for_paths([path])
     view.refresh_all_items()
 
     assert _thumb_sig(view, 0) != before, "换了源图但缩略图未重算"
+
+
+def test_invalidate_for_paths_notifies_rows_using_those_paths():
+    """`invalidate_thumbnail_cache_for_paths` 必须同时做两件事：丢缓存 **且** 通知视图。
+
+    只做前者（本文件曾经的实现）会这样：源图已经换掉、缓存也清了，但视图仍握着那张
+    废弃的 QPixmap —— 缩略图缓存是**本视图私有的**，model 的 `data()` 无从知晓它被
+    动过，不通知就没人去重取。表现为"外部编辑器改完图，时间轴毫无变化"。
+    `TimelineItemModel.set_thumbnail_provider` 的 docstring 承诺的正是
+    "缓存失效也由网格发起（→ `dataChanged`）"。
+
+    ⚠️ 这里断言信号是因为**像素这条路在无头环境下根本走不通**：
+    `viewport().grab()` 会**强制**重绘（`QWidget::render()` 直接给 widget 发
+    PaintEvent），于是无论有没有通知，抓到的都是最新图 —— 用它断言必然假通过
+    （第一版这条就是比像素写的，修复前也照样 PASS）。真正落到"视口确实重画了"的
+    断言在下面 `test_invalidate_for_paths_repaints_viewport`（数 Paint 事件）。
+    """
+    tw = TimelineWidget()
+    tw.set_view_mode("grid")
+    _fill(tw, 3)
+    view = _grid(tw)
+    view.refresh_all_items()
+    before = _thumb_sig(view, 0)
+
+    seen = []
+    tw.item_model.dataChanged.connect(lambda a, b, _roles: seen.append((a.row(), b.row())))
+
+    # 与这批路径无关的行不该被通知（定向失效的意义就在于不惊动整表）
+    view.invalidate_thumbnail_cache_for_paths([os.path.join(_TMPDIR, "unrelated.png")])
+    assert seen == [], f"无关路径也触发了通知: {seen}"
+
+    path = tw.model.get_frame_at(0).file_path
+    _rewrite_source_image(path)
+    view.invalidate_thumbnail_cache_for_paths([path])
+
+    assert seen == [(0, 0)], f"未精确通知受影响的行（期望只通知 row0）: {seen}"
+    # 另一半：缓存确实被丢掉 —— 否则重取到的还是旧图，通知了也白通知
+    assert _thumb_sig(view, 0) != before, "缓存没被丢掉，重取到的仍是旧缩略图"
+
+
+def test_invalidate_for_paths_repaints_viewport():
+    """失效之后视口必须**真的重画** —— 只丢缓存不发通知的话，屏幕一直是旧图。
+
+    这条是上一条的落地点：上一条钉的是"发了 dataChanged"，这条钉的是"视图因此重画了"
+    （中间还隔着 Qt 的 update 调度与 widget 可见性，并非发了就一定会画）。实测：
+    修复前 Paint=0，修复后 Paint=1。
+
+    ⚠️ 两个必备前提，缺一个这条就失明（都实测过）：
+      - **必须 `tw.show()` 而不是 `view.show()`**：父窗口不可见时子 widget 的
+        `isVisible()` 为 False，`QWidget::update()` 直接空转 —— 那时新旧实现都数到
+        0 个 Paint，测试照样通过；
+      - **必须在装过滤器之前把首绘跑完**：否则数到的是"终于画完了"，与被测行为无关。
+
+    ⚠️ 也不能改成比像素：`viewport().grab()` 会强制重绘，任何实现都能拿到最新图。
+    """
+    tw = TimelineWidget()
+    tw.set_view_mode("grid")
+    _fill(tw, 3)
+    view = _grid(tw)
+    view.resize(400, 300)
+    tw.resize(500, 400)
+    tw.show()  # 顶层窗口必须可见，否则 update() 空转
+    for _ in range(5):
+        app.processEvents()  # 跑完首绘，避免把它数进下面的计数
+
+    paints = []
+    counter = count_paint_events(view.viewport(), paints)  # noqa: F841 必须留住引用
+
+    path = tw.model.get_frame_at(0).file_path
+    _rewrite_source_image(path)
+    view.invalidate_thumbnail_cache_for_paths([path])  # 只有这一句，刻意不补刷新
+    app.processEvents()
+    app.processEvents()
+
+    assert paints, (
+        "缓存失效后视口一次都没重画：界面会一直显示旧缩略图（外部编辑器改完图可见）")
 
 
 # ---------------------------------------------------------------------------
@@ -272,6 +416,9 @@ def test_reorder_keeps_thumbnails_cached():
 
     paths = [f.file_path for f in tw.model.get_all_frames()]
     before = [_thumb_sig(view, r) for r in range(len(paths))]
+    # 前置：下面按**位置**比对，若各行缩略图本就相同，比对是空转的 —— 先自证可分辨
+    assert len(set(before)) == len(before), \
+        f"夹具失明：各行缩略图相同，位置比对无意义 {before}"
 
     hidden = [p + ".hidden" for p in paths]
     for p, h in zip(paths, hidden):

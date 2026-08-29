@@ -3320,6 +3320,12 @@ class MainWindow(QMainWindow):
             # Rasterization settings are now global, don't load from project
 
             self.timeline.clear()
+            # 参考帧**不持久化**（工程 JSON 里没有这个字段，见 ProjectData.to_json），
+            # 所以载入后一律清除。必须连 MainWindow 这份一起清：`timeline.clear()`
+            # 只清得掉业务模型那份（`_reference_frame`），画布读的是
+            # `MainWindow.reference_frame`，不清就会继续画**上一个工程**的帧对象。
+            # 放在帧列表为空时清最干净 —— 此刻没有任何行需要刷新。
+            self.clear_reference_frame()
             # timeline 已清空，此刻才绑定：从这里起 project.frames 就是新工程的实时
             # 内容，不存在"新工程对象报告旧工程帧"的窗口。填充循环必须用
             # loaded_frames——绑定后拿 project.frames 驱动循环会边遍历边追加。
@@ -3341,13 +3347,13 @@ class MainWindow(QMainWindow):
             self.timeline.grid_view._clear_thumbnail_cache()
             self.timeline.grid_view.refresh_all_items()
 
-            if self.project.frames:
-                # Select first by default - use unified interface
-                if self.timeline.get_frame_count() > 0:
-                    # Select first frame
-                    first_frame = self.timeline.get_frame_at(0)
-                    if first_frame:
-                        self.timeline.set_reference_frame(first_frame)
+            # 载入后默认选中第一帧 —— 用 setCurrentRow 而不是 set_reference_frame：
+            # 后者会把第一帧标成参考帧（写业务模型 + 时间轴高亮），却不动画布那份
+            # 真源，于是"工程里设了参考帧、预览却没效果"。
+            if self.timeline.get_frame_count() > 0:
+                self.timeline.setCurrentRow(0)
+            # 参考帧已清除，菜单文案回到"设置参考帧"（不依赖选中信号的触发时机）
+            self._update_ref_action_text()
             self.is_dirty = False
             self.update_title()
             self.update_onion_state()
@@ -3429,7 +3435,11 @@ class MainWindow(QMainWindow):
 
         # Clear timeline
         self.timeline.clear()
-        
+        # 与 _load_from_path 同理：参考帧不持久化，新建/关闭工程必须连 MainWindow
+        # 这份一起清（timeline.clear() 管不到它），否则画布继续画上一个工程的帧。
+        self.clear_reference_frame()
+        self._update_ref_action_text()
+
         # Clear canvas selection
         self.canvas.set_selected_frames([])
         
@@ -3631,10 +3641,11 @@ class MainWindow(QMainWindow):
             # 源图尺寸缓存与 image_cache 互不感知，必须在这里一并失效，
             # 否则时间轴的分辨率列会一直显示改图前的尺寸
             clear_source_image_size_cache(p)
-        # 仅定向失效编辑路径的缩略图缓存并刷新时间轴（避免全量重建造成的磁盘 I/O）
+        # 仅定向失效编辑路径的缩略图缓存并刷新时间轴（避免全量重建造成的磁盘 I/O）。
+        # 网格不必再单独 refresh：`invalidate_thumbnail_cache_for_paths` 自己会向
+        # 用到这批源图的行发 `dataChanged`（缓存是视图私有的，model 无从知晓）。
         self.timeline.grid_view.invalidate_thumbnail_cache_for_paths(abs_paths)
         self.timeline.list_view.refresh_current_items()
-        self.timeline.grid_view.refresh_all_items()
         # 刷新画布（仅重新预加载活动帧并重绘）
         self.canvas.refresh_resources()
         self.statusBar().showMessage(

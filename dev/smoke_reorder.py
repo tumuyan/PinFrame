@@ -3,6 +3,7 @@
 
 只覆盖"接线"，不替代 dev/verify_timeline_view_sync.py 的契约测试：
   - MainWindow 能加载真实工程；
+  - 载入后参考帧被清除、第一帧被选中（参考帧有两份真源，只清一份的残留最难查）；
   - 视图拖拽 → model.move_frames → 视图重排；
   - 撤销快照是在改模型**之前**捕获的（这是本片最容易错的接线：
     顺序改为当场生效后，等到 order_changed 再捕获快照就是新顺序，撤销变空操作）。
@@ -18,10 +19,11 @@ REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(REPO_ROOT, "src"))
 
 from PyQt6.QtWidgets import QApplication  # noqa: E402
+from PyQt6.QtTest import QTest  # noqa: E402
 from PyQt6.QtCore import QMimeData, QPoint, QPointF, Qt, QEvent  # noqa: E402
 from PyQt6.QtGui import QDropEvent  # noqa: E402
 from i18n.manager import i18n  # noqa: E402
-from ui.timeline_item_model import FrameDataRole  # noqa: E402
+from ui.timeline_item_model import FrameDataRole, ReferenceRole  # noqa: E402
 
 app = QApplication(sys.argv)
 
@@ -41,7 +43,7 @@ def internal_drop_event():
 def sig(win):
     """帧的稳定签名，用来表达"顺序"。
 
-    不能用文件名：dev/test_long.json 里 16 帧共用同一张源图，按名字比任何顺序都相等，
+    不能用文件名：夹具的 15 帧共用同一张源图（只有裁切不同），按名字比任何顺序都相等，
     断言会假通过。
     也不能用对象身份：撤销是全量深拷贝快照（P2-6），恢复后帧对象全是新的 —— 用它
     比较会让"顺序没变"也被判成失败。
@@ -73,6 +75,40 @@ def main():
     total = win.timeline.get_frame_count()
     print(f"loaded: {total} frames")
     assert total > 3, f"工程帧数太少，无法验证拖拽: {total}"
+
+    # ---- 载入后：参考帧必须清除，第一帧必须选中 ----
+    # 参考帧**不持久化**（ProjectData.to_json 里没有这个字段），但它有两份真源：
+    #   MainWindow.reference_frame —— 画布读它；
+    #   TimelineModel._reference_frame —— 时间轴高亮读它。
+    # 载入时 `timeline.clear()` 只会清掉后者。不清前者，画布就会继续画**上一个
+    # 工程**的帧对象——那个对象已经不在帧列表里，症状是"参考帧凭空出现且无法取消"。
+    # 所以这里先**故意设一个**参考帧，再重载工程，验证两份都被清掉。
+    # 视图 → 模型的选中回写走 50ms 防抖定时器（`_selection_debounce_timer`），
+    # 不推进事件循环的话 `get_selected_frames()` 恒为空，下面的设置会静默失败。
+    win.timeline.setCurrentRow(1)
+    QTest.qWait(80)
+    win.set_reference_frame_from_selection()
+    assert win.reference_frame is win.timeline.get_frame_at(1), \
+        "前置条件失败：设置参考帧没落到 MainWindow 那份"
+    assert win.canvas.reference_frame is win.reference_frame, \
+        "前置条件失败：设置参考帧没落到画布"
+
+    win._load_from_path(project)
+
+    assert win.reference_frame is None, "载入后 MainWindow 那份参考帧未清除"
+    assert win.canvas.reference_frame is None, \
+        "载入后画布仍在画上一个工程的参考帧（跨工程残留）"
+    assert win.timeline.model.get_reference_frame() is None, \
+        "载入后业务模型那份参考帧未清除"
+    # 时间轴高亮走 ReferenceRole 读业务模型，第一帧不能被误标成参考帧
+    assert win.timeline.list_view.model().index(0, 2).data(ReferenceRole) is False, \
+        "载入后第一帧被误标成参考帧"
+    QTest.qWait(80)  # 同上：等选中防抖回写
+    assert win.timeline.get_selected_indices_from_model() == [0], \
+        f"载入后应默认选中第一帧，实际 {win.timeline.get_selected_indices_from_model()}"
+    assert win.set_ref_action.text() == i18n.t("action_set_reference"), \
+        f"载入后菜单文案应回到'设置参考帧'，实际 {win.set_ref_action.text()!r}"
+    print("载入后：参考帧已清除（两份真源）、第一帧已选中")
 
     def _sig_of(frame):
         return tuple(frame.crop_rect) + (frame.scale, frame.rotation, frame.is_disabled)

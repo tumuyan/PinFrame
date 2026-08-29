@@ -97,8 +97,9 @@ require_file() {
 }
 require_file "$REPO_ROOT/dev/test_long2.json" \
     "第 6 项（smoke_reorder.py）硬依赖它加载真实工程。\
- 用它而不是 test_long.json：后者的第 4 与第 15 帧参数完全相同，\
- 顺序断言对这两帧的交换完全失明（见 dev/code_review_p1_3.md）"
+ 选它的理由：15 帧来自同一张源图但裁切互不相同，帧签名（crop_rect+scale+rotation+is_disabled）\
+ 全部唯一，105 种两两交换无一失明；旧的 test_long.json 有 1 组重复签名（第 4/15 帧），\
+ 已作为死文件删除（见 dev/code_review_p1_3.md）"
 require_file "$REPO_ROOT/dev/tmp_baseline/hashes.json" \
     "第 3 项需要它做比对；缺失时该脚本会静默新建基线并返回 0（假通过）。先跑一次 'python dev/transform_baseline.py' 生成"
 

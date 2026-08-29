@@ -149,16 +149,50 @@ class TimelineGridWidget(QListView):
         self._thumbnail_cache.clear()
 
     def invalidate_thumbnail_cache_for_paths(self, paths):
-        """仅失效指定源图路径对应的缩略图缓存，避免全量重建导致的磁盘 I/O。
+        """失效指定源图路径对应的缩略图缓存，并让用到这批图的行重取。
 
         paths: 绝对路径列表。匹配缓存 key 中的源图路径（image_path）进行定向清除。
+
+        **清除之后必须通知视图重取**（本方法负责，调用方不必再补一次刷新）：
+        缩略图缓存是本视图自己维护的，model 的 `data()` 不知道缓存被动过，不通知
+        的话视图会继续画缓存里那张已废弃的 QPixmap —— 表现为"外部编辑器改完图，
+        时间轴毫无变化"，而数据层其实已经是新的。
         """
         if not paths:
             return
-        path_set = set(os.path.abspath(p) for p in paths)
+        path_set = {os.path.abspath(p) for p in paths}
         stale = [k for k in self._thumbnail_cache if k[0] in path_set]
         for k in stale:
             self._thumbnail_cache.pop(k, None)
+        self._notify_rows_using_paths(path_set)
+
+    def _notify_rows_using_paths(self, path_set):
+        """只让 `file_path` 落在 `path_set` 里的行发 `dataChanged`。
+
+        按行判断而非按"删了几条缓存"判断：一张源图常被几十帧共用（切片工程尤其），
+        而缓存是按内容做 key 的 —— 删除条数既不等于行数，被删时也可能一个都不剩
+        （行还没渲染过）。以行为准才不会漏通知。
+        """
+        model = self._get_model()
+        item_model = self.model()
+        if model is None or item_model is None:
+            return
+        rows = [r for r in range(item_model.rowCount())
+                if (f := model.get_frame_at(r)) is not None
+                and os.path.abspath(f.file_path) in path_set]
+        if not rows:
+            return
+
+        col = self.modelColumn()
+        start = prev = rows[0]
+        for r in rows[1:] + [None]:  # 末尾哨兵：把最后一段冲出去
+            if r is not None and r == prev + 1:
+                prev = r
+                continue
+            item_model.dataChanged.emit(
+                item_model.index(start, col), item_model.index(prev, col), [])
+            if r is not None:
+                start = prev = r
 
     def update_item_size(self):
         """Update grid item size based on thumbnail dimensions"""
