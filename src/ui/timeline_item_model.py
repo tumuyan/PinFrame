@@ -100,7 +100,7 @@ class TimelineItemModel(QAbstractTableModel):
         # "加载完工程后时间轴是空的，拖一下面板或改一下缩略图尺寸才出来"。
         self._frames = None
         self._is_dark_theme = True
-        # 缩略图提供者，由网格视图注入：`provider(row, frame_data) -> QPixmap`。
+        # 缩略图提供者，由网格视图注入：`provider(frame_data) -> QPixmap`。
         # 未注入时缩略图角色返回 None（列表视图不需要它）。
         self._thumbnail_provider = None
         if frames_model is not None:
@@ -112,6 +112,9 @@ class TimelineItemModel(QAbstractTableModel):
         缩略图是网格视图的展示形态（尺寸、背景模式都是网格的设置），因此由网格自己
         算、自己缓存；本 model 只负责在 `ThumbnailRole` 上把它递给网格的 delegate。
         缓存失效也由网格发起（`invalidate_thumbnail_cache_for_paths` → `dataChanged`）。
+
+        签名刻意**不含行号**：缩略图只由内容决定，与帧处在哪一行无关（含行号会让
+        重排触发全量重算）。
         """
         self._thumbnail_provider = provider
 
@@ -198,7 +201,7 @@ class TimelineItemModel(QAbstractTableModel):
         if role == ThumbnailRole:
             if self._thumbnail_provider is None:
                 return None
-            return self._thumbnail_provider(row, frame)
+            return self._thumbnail_provider(frame)
 
         if role == Qt.ItemDataRole.ToolTipRole:
             # 给文件名列一个悬浮提示（长文件名会被截断，列表与网格都是）。

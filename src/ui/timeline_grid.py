@@ -1,9 +1,9 @@
 from PyQt6.QtWidgets import QListView, QAbstractItemView, QMenu
-from PyQt6.QtCore import Qt, pyqtSignal, QSize, QTimer, QPoint, QRectF, QItemSelectionModel, QModelIndex, QMimeData
-from PyQt6.QtGui import QColor, QImage, QPixmap, QPainter, QBrush, QPen, QFont, QIcon, QAction, QDrag
+from PyQt6.QtCore import Qt, pyqtSignal, QSize, QTimer, QItemSelectionModel, QMimeData
+from PyQt6.QtGui import QColor, QImage, QPixmap, QPainter, QPen, QAction, QDrag
 from i18n.manager import i18n
 from ui.timeline_grid_delegate import TimelineGridDelegate
-from ui.timeline_item_model import COL_FILENAME, TimelineItemModel, ThumbnailRole
+from ui.timeline_item_model import COL_FILENAME, TimelineItemModel
 from model.project_data import FrameData
 from typing import List, Optional
 import os
@@ -17,8 +17,9 @@ class TimelineGridWidget(QListView):
     帧数据或顺序** —— 那些都在 `TimelineModel` 里。
 
     缩略图仍由本视图计算与缓存（它是网格的展示形态：尺寸、背景模式都是网格的设置），
-    通过 `TimelineItemModel.set_thumbnail_provider` 注入、经 `ThumbnailRole` 递给
-    delegate。迁移前它是 `QListWidget`，帧数据挂在 `QListWidgetItem` 的 UserRole 上。
+    通过 `TimelineItemModel.set_thumbnail_provider` 注入、经
+    `TimelineItemModel.ThumbnailRole` 递给 delegate。迁移前它是 `QListWidget`，
+    帧数据挂在 `QListWidgetItem` 的 UserRole 上。
     """
 
     selection_changed = pyqtSignal(list)
@@ -138,10 +139,14 @@ class TimelineGridWidget(QListView):
             self._clear_thumbnail_cache()
             self.refresh_all_items()
 
-    def _get_cache_key(self, image_path, frame_data, index):
-        """Generate cache key for thumbnail"""
+    def _get_cache_key(self, image_path, frame_data):
+        """Generate cache key for thumbnail
+
+        刻意**不含行号**：帧号由 delegate 另画、不烤进位图，所以缓存只取决于"内容"。
+        带上行号的话，重排会让全部缩略图缓存一并失效并逐张重算 —— 切片工程动辄
+        上百帧，那是一次肉眼可见的卡顿。签名里没有行号参数，就是这个约定。
+        """
         crop_key = tuple(frame_data.crop_rect) if frame_data.crop_rect else None
-        # Frame number (index) is no longer part of cache key since it's drawn by delegate
         return (image_path, crop_key, self.background_mode, self.thumbnail_width, self.thumbnail_height, frame_data.is_disabled)
 
     def _clear_thumbnail_cache(self):
@@ -286,7 +291,7 @@ class TimelineGridWidget(QListView):
         # 网格展示的是文件名那一列（决定悬浮提示等由 model 提供的角色）
         self.setModelColumn(COL_FILENAME)
         # 缩略图仍由本视图算（尺寸/背景模式都是网格的设置），注入给 model 转发
-        self._item_model.set_thumbnail_provider(self.thumbnail_for_row)
+        self._item_model.set_thumbnail_provider(self.thumbnail_for_frame)
         self.selectionModel().selectionChanged.connect(self.on_selection_changed)
 
     def adopt_shared_selection_model(self, selection_model):
@@ -306,11 +311,16 @@ class TimelineGridWidget(QListView):
             pass  # 未曾连接，或已被 disconnect
         selection_model.selectionChanged.connect(self.on_selection_changed)
 
-    def thumbnail_for_row(self, row: int, frame_data: FrameData) -> Optional[QPixmap]:
-        """`ThumbnailRole` 的提供者：把本视图的缩略图缓存交给 delegate。"""
+    def thumbnail_for_frame(self, frame_data: FrameData) -> Optional[QPixmap]:
+        """`TimelineItemModel.ThumbnailRole` 的提供者：把本视图的缩略图缓存交给 delegate。
+
+        刻意**不接收行号**：缩略图只由内容决定（见 `_get_cache_key`），与帧处在哪
+        一行无关。原签名带 `row`，容易让人以为行号参与绘制、进而误判"重排要重算
+        缩略图"。
+        """
         if frame_data is None:
             return None
-        return self.create_thumbnail(frame_data.file_path, frame_data, row)
+        return self.create_thumbnail(frame_data.file_path, frame_data)
 
     def _get_model(self):
         """取模型真源；未显式注入时回退到 parent（TimelineWidget.model）。"""
@@ -370,9 +380,12 @@ class TimelineGridWidget(QListView):
                        | QItemSelectionModel.SelectionFlag.Rows)
         self._selection_blocked = was_blocked
     
-    def create_thumbnail(self, image_path, frame_data, index):
-        """Create thumbnail with overlay information (with caching)"""
-        cache_key = self._get_cache_key(image_path, frame_data, index)
+    def create_thumbnail(self, image_path, frame_data):
+        """Create thumbnail with overlay information (with caching)
+
+        刻意**不接收行号** —— 见 `_get_cache_key`。
+        """
+        cache_key = self._get_cache_key(image_path, frame_data)
 
         # Check cache first
         if cache_key in self._thumbnail_cache:
@@ -415,7 +428,7 @@ class TimelineGridWidget(QListView):
             painter.drawText(img.rect(), Qt.AlignmentFlag.AlignCenter, "N/A")
 
         # Draw overlays (only disabled state, frame number is drawn by delegate)
-        self.draw_overlays(painter, img.rect(), frame_data, index, draw_frame_number=False)
+        self.draw_overlays(painter, img.rect(), frame_data)
 
         painter.end()
         pixmap = QPixmap.fromImage(img)
@@ -447,27 +460,17 @@ class TimelineGridWidget(QListView):
             # Don't draw any background - keep it truly transparent
             pass
     
-    def draw_overlays(self, painter, rect, frame_data, index, draw_frame_number=False):
-        """Draw overlay information on thumbnail"""
+    def draw_overlays(self, painter, rect, frame_data):
+        """Draw overlay information on thumbnail
+
+        帧号**不在这里画**：它由 delegate 的 `_draw_frame_number` 单独绘制，这样
+        它才能跟着行走而不必重算位图缓存（见 `_get_cache_key`）。
+        """
         # Draw disabled overlay
         if frame_data.is_disabled:
             overlay_color = QColor(0, 0, 0, 120)
             painter.fillRect(rect, overlay_color)
 
-        # Draw frame number (optional - frame numbers are now drawn by delegate by default)
-        # This parameter is kept for compatibility and can be enabled if needed
-        if draw_frame_number:
-            painter.setPen(QColor(255, 255, 255))
-            painter.setFont(QFont("Arial", 10, QFont.Weight.Bold))
-
-            # Add semi-transparent background for text readability
-            text_bg_rect = QRectF(rect.width() - 30, rect.height() - 25, 28, 20)
-            painter.setBrush(QBrush(QColor(0, 0, 0, 150)))
-            painter.setPen(Qt.PenStyle.NoPen)
-            painter.drawRoundedRect(text_bg_rect, 3, 3)
-
-            painter.setPen(QColor(255, 255, 255))
-            painter.drawText(text_bg_rect.toRect(), Qt.AlignmentFlag.AlignCenter, str(index + 1))
     
     def refresh_all_items(self):
         """让所有行重取缩略图与文本（model 的 `data()` 是现算的）。"""
@@ -675,7 +678,7 @@ class TimelineGridWidget(QListView):
         if rows:
             # 拖拽反馈图标：直接问 model 要缩略图，不再经过 item
             frame = self._get_model().get_frame_at(rows[0])
-            pixmap = self.thumbnail_for_row(rows[0], frame)
+            pixmap = self.thumbnail_for_frame(frame)
             if pixmap is not None and not pixmap.isNull():
                 drag.setPixmap(pixmap)
 

@@ -451,10 +451,13 @@ class TimelineWidget(QStackedWidget):
     def _apply_selection_to_view(self, selected_indices, mode=None):
         """Apply selection indices to a view and sync currentIndex/anchor
 
-        mode: 目标视图。**必须显式指定**——本方法也被 `_rebuild_list_view` /
-        `_rebuild_grid_view` 调用，而它们重建的是**非当前**视图。若这里默许读
-        `current_view_mode`，重建 list 时就会把 selection 写进 grid（反之亦然），
-        于是"重建一个视图"顺手覆盖了另一个视图刚排好的选中状态。
+        mode: 目标视图（`"list"` / `"grid"`）；省略时取 `current_view_mode`。
+
+        两视图共享同一个 `QItemSelectionModel`，选中只有一份，故 `mode` 不区分"写进
+        哪个视图"，只决定**列**：调哪个视图的 `_apply_selection_from_set`（两者构造
+        `QModelIndex` 用的列不同：列表固定列 0、网格用 `modelColumn()`），以及
+        `currentIndex` 落在哪一列 —— 它是 Shift/Ctrl 连续多选的锚点，必须与用户
+        正在看的视图一致。
         """
         selected_set = selected_indices if isinstance(selected_indices, set) else set(selected_indices)
         mode = mode or self.current_view_mode

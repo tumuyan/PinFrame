@@ -1,12 +1,24 @@
 # Code Review — P1-3 时间轴 model/view 迁移
 
-- **评审对象**：`git diff --cached`（18 个文件，+3405 / -1124）
+- **评审对象**：`git diff --cached`（评审当时的暂存快照）
 - **评审日期**：2026-08-29
 - **上下文**：`CNB_PULL_REQUEST_IID` 未设置 → 本地评审，未发送 PR 评论
 - **结论**：🔴 critical 项**已修复并验证**（连同 🟠 参考帧双份状态一并收敛）
 - **状态更新（2026-08-29）**：critical、参考帧、夹具盲区、缓存失效四条均已处理并验证
   （缓存失效改为定向 `dataChanged`，新增 2 条回归测试）。
   死夹具 `test_long.json` / `test_long_.json` 已删除。剩余 🔵 两条文档/死参数仍待办。
+- **行号校准（2026-08-29 复核）**：全文行号已按 HEAD `6b83466` 重校，对照表见文末
+  「行号与进度校准」。引用行号的评审文档必然漂移，**用前先校**。
+- **复核结论**：4 条已修复项复核全部属实，全量回归 9/9 PASS；🔵 两条确认仍待办，
+  其中死参数一条复核时新发现连带死代码（见该节）。
+- **进度（同日推进）**：🔵 两条均已修复并验证（9/9 PASS，`MAIN_DIGEST` 不变），
+  问题清单 6 条全部关闭。
+
+> **评审对象已入库**：当时的 `--cached` 快照对应提交 `2764051`
+> （19 文件 +3196/-1139）。原记的「18 文件 +3405/-1124」是暂存快照与最终提交之间的
+> 中间态，现已不可复现，**以 `2764051` 为准**。四条修复随后分 4 个提交落地：
+> `4a686cb`（参考帧收敛到业务模型）→ `558ce0e`（跨工程残留 + 缓存失效通知）→
+> `4ab91eb`（选中配色统一）→ `6b83466`（网格文件名重复绘制）。
 
 变更把时间轴从 item-based widget 迁到 Qt model/view：
 `TimelineModel`（业务真源，一维帧列表）
@@ -44,11 +56,13 @@
 
 ### 🔴 critical — 两个自定义角色取了同一个值【已修复】
 
-**位置**：`src/ui/timeline_item_model.py:56` 与 `:66`
+**位置**：`src/ui/timeline_item_model.py:49`、`:59`、`:71`（校准后）
 
 ```python
-ReferenceRole = Qt.ItemDataRole.UserRole + 2   # 258
-ThumbnailRole = Qt.ItemDataRole.UserRole + 2   # 258  ← 同一个值！
+FrameDataRole = Qt.ItemDataRole.UserRole + 1   # 257  ← :49
+ThumbnailRole = Qt.ItemDataRole.UserRole + 2   # 258  ← :59
+ReferenceRole = Qt.ItemDataRole.UserRole + 3   # 259  ← :71
+assert len({FrameDataRole, ReferenceRole, ThumbnailRole}) == 3, ...   # ← :76
 ```
 
 **修复过程还挖出了更深的问题（远比角色冲突本身严重）**：
@@ -68,8 +82,8 @@ ThumbnailRole = Qt.ItemDataRole.UserRole + 2   # 258  ← 同一个值！
 
 **已做的修复**：
 
-1. `ReferenceRole` 改为 `UserRole + 3`，并在 `data()` 中实现（返回 `frame is
-   <业务模型的参考帧>`）；
+1. `ReferenceRole` 改为 `UserRole + 3`（`timeline_item_model.py:71`），并在 `data()`
+   中实现（`:193-196`，返回 `frame is <业务模型的参考帧>`）；
 2. 加断言 `assert len({FrameDataRole, ReferenceRole, ThumbnailRole}) == 3` ——
    新增角色若漏改偏移，import 阶段就炸，不会拖到运行时变成"高亮莫名失效"；
 3. **删除适配层的副本**，`_business_reference_frame()` 直接问业务模型；
@@ -123,9 +137,10 @@ dev/test_long2.json: 15帧, 105 种两两交换, 断言失明的交换数 = 0
 
 ### 🟠 warning — 参考帧仍是两份状态，且注释与实现不符【已随 🔴 一并修复】
 
-**位置**：`src/ui/timeline_item_model.py:53-54`（注释）、`src/ui/timeline_grid.py:173-175`
+**位置**：`src/ui/timeline_item_model.py:63-66`（注释，校准后）、
+`src/ui/timeline_grid.py:211-222`、同族 `src/ui/timeline_list.py:325-332`
 
-`timeline_item_model.py:53-54` 声称：
+`timeline_item_model.py:63-66` 声称：
 
 > 参考帧状态只存在一份（本类的 `_reference_frame`），视图与 delegate 都不再存镜像
 
@@ -134,7 +149,7 @@ dev/test_long2.json: 15帧, 105 种两两交换, 断言失明的交换数 = 0
 | 视图 | 读谁 |
 |---|---|
 | 列表 | `model._reference_frame`（经 `BackgroundRole` / `FontRole`） |
-| 网格 | `widget.reference_frame_data`（网格自己的属性，`timeline_grid_delegate.py:56`、`:174-175`） |
+| 网格 | `widget.reference_frame_data`（网格自己的属性，`timeline_grid_delegate.py:62`、`:181`） |
 
 `set_visual_reference_frame` 只设自己那份，**不碰共享 model**。当前仅靠
 `TimelineWidget.set_visual_reference_frame` 同时调两者才碰巧一致；任何只调其一的
@@ -153,7 +168,7 @@ def set_visual_reference_frame(self, frame_data):
 
 并把 `timeline_grid_delegate.py` 里的 `frame_data is widget.reference_frame_data`
 改为读 `index.data(ReferenceRole)`（需与 🔴 第 1 条一并处理）。
-同时修正 `timeline_item_model.py:53-54` 那两句已与实现不符的注释。
+同时修正 `timeline_item_model.py:63-66` 那几句已与实现不符的注释。
 
 **已实际采用的做法**（比上面更彻底）：不保留任何视图/适配层副本，参考帧真源收敛到
 `TimelineModel`；`_business_reference_frame()` 直接问它。详见 🔴 那一节。
@@ -171,13 +186,14 @@ def set_visual_reference_frame(self, frame_data):
 > （通知精确到行 + 无关路径不通知）、`test_invalidate_for_paths_repaints_viewport`
 > （视口确实重画）。
 
-**位置**：`src/ui/timeline_grid.py:147-157`
+**位置**：`src/ui/timeline_grid.py:151-167`（校准后；修复新增的
+`_notify_rows_using_paths` 在 `:169` 起）
 
 `invalidate_thumbnail_cache_for_paths()` 只做 `_thumbnail_cache.pop(...)`，**既不发
 `dataChanged` 也不 `viewport().update()`**。
 
 而 `TimelineItemModel.set_thumbnail_provider` 的 docstring
-（`timeline_item_model.py:103-104`）明确写着：
+（`timeline_item_model.py:114`，校准后）明确写着：
 
 > 缓存失效也由网格发起（`invalidate_thumbnail_cache_for_paths` → `dataChanged`）
 
@@ -202,36 +218,127 @@ def invalidate_thumbnail_cache_for_paths(self, paths):
 
 ### 🔵 info — docstring 描述的"写串视图"风险已不存在
 
-**位置**：`src/ui/timeline.py:438-444`
+**位置**：`src/ui/timeline.py:451-475`（校准后，原记 `:438-444`）
+**状态**：✅ 已修复（2026-08-29），全量回归 9/9 PASS
 
-`_apply_selection_to_view` 的 docstring 警告：
+`_apply_selection_to_view` 的 docstring 曾警告：
 
 > 本方法也被 `_rebuild_list_view`/`_rebuild_grid_view` 调用，而它们重建的是**非当前**
 > 视图……重建 list 时就会把 selection 写进 grid
 
 迁移后两个视图共享同一个 `QItemSelectionModel`，写任一视图等价于写同一份选中，
-不存在"写串视图"；且 `rebuild_current_view`（`:380-382`）现在只重建**当前**视图。
-这类过时注释会误导后来者去防御一个不存在的问题。
+不存在"写串视图"；且 `rebuild_current_view`（`:390-395`，校准后）现在只重建
+**当前**视图。这类过时注释会误导后来者去防御一个不存在的问题。
 
 **修法**：更新 docstring，说明共享 selectionModel 之后 `mode` 仅用于决定
 `currentIndex` 取哪一列（列表用列 0、网格用 `modelColumn()`）。
+
+**实际做法**：删掉那段"写串视图"警告并改写为 10 行。第一版写成了 24 行，其中 11 行
+是"引用旧警告原文 + 论证其两条前提为何不成立 + 别再写回来"—— 那是给已删除的代码
+写墓志铭，讲的全是过去而非当前代码。已按"描述当前行为、不记录变更历史"精简掉，
+只留两条正面陈述：共享 selectionModel 使选中只有一份；`mode` 只决定列，其中
+`currentIndex` 是锚点。
+
+删掉旧警告不需要留"别写回来"的元注释：新 docstring 正面说明了"选中只有一份、
+`mode` 只决定列"，与旧警告**直接矛盾**，谁想补回去都会立刻撞上。
+
+精简后的 docstring 讲清三件事：
+
+1. 两视图共享 selectionModel，选中只有一份 —— 这是理解"为什么 `mode` 不区分写哪个
+   视图"的前提；
+2. `mode` 现在只决定**列**：调哪个视图的 `_apply_selection_from_set`（两者构造
+   `QModelIndex` 用的列不同：列表固定列 0、网格用 `modelColumn()`）；
+3. `currentIndex` 落在哪一列。
+
+第 3 点里加了一条原文没提的信息：`currentIndex` **是 Shift/Ctrl 连续多选的锚点**
+（也决定键盘导航从哪一列起步），必须与用户正在看的视图一致 —— 这正是 `mode` 参数
+至今仍需存在的真正理由。旧注释把 `mode` 的存在归因于一个已消失的风险，等于让这个
+参数看起来是纯历史包袱，容易被人顺手删掉。
 
 ---
 
 ### 🔵 info — 死参数 `index`
 
-**位置**：`src/ui/timeline_grid.py:310`
+**位置**（改动前）：`src/ui/timeline_grid.py:375`（`cache_key = ...` 那行，
+原记 `:310`，漂移 +65 行）
 
 ```python
-cache_key = self._get_cache_key(image_path, frame_data, index)
+# :381  定义：def create_thumbnail(self, image_path, frame_data, index):
+# :387  传参：cache_key = self._get_cache_key(image_path, frame_data, index)
+# :322  唯一调用点：return self.create_thumbnail(frame_data.file_path, frame_data, row)
 ```
 
-`_get_cache_key`（`:137-141`）明确不含 index，`:140` 的注释也说明了原因。
+**状态**：✅ 已修复（2026-08-29），全量回归 9/9 PASS，`MAIN_DIGEST` 不变
+
+`_get_cache_key`（`:141-145`）明确不含 index，`:144` 的注释也说明了原因。
 留着它容易让后来者误以为 index 参与缓存，进而误判"重排会导致缩略图重算"
 （P2-7 已把这列进待办，实际**不会**重算 —— 这是刻意设计）。
 
 **修法**：移除该参数，同步更新 `create_thumbnail` 的签名与所有调用点，
 让"重排不会导致缩略图重算"在签名上一眼可见。
+
+**连带死代码**（复核时新发现，原文未记）：`create_thumbnail` 把 `index` 继续传给
+`draw_overlays(..., index, draw_frame_number=False)`（`:418`），而 `draw_overlays`
+（`:450-470`）里 `index` **只在 `draw_frame_number=True` 分支被用**（`:470`），
+全仓库唯一调用点传的正是 `False`；帧号实际由 delegate 自己的
+`_draw_frame_number`（`timeline_grid_delegate.py:584`）绘制。
+即 `draw_overlays` 的 `index` 参数与整个 `draw_frame_number` 分支**都是死的**。
+只改签名会留下"参数还在但永远走不到"的半吊子状态，应与本条一并清掉。
+
+**实际做法**：一行 `index` 牵出整条链，比原文记的更深。完整改动 8 处：
+
+| 位置 | 改动 |
+|---|---|
+| `timeline_grid.py:2-3` | 删 `QRectF` / `QBrush` / `QFont` —— **只**被死分支用到（AST 核验） |
+| `timeline_grid.py:141-149` | `_get_cache_key` 删 `index`，注释扩为解释"刻意不含行号" |
+| `timeline_grid.py:315-323` | `thumbnail_for_row(row, frame)` → `thumbnail_for_frame(frame)` |
+| `timeline_grid.py:293` | 注入点同步改名 |
+| `timeline_grid.py:381-387` | `create_thumbnail` 删 `index` |
+| `timeline_grid.py:421` | `draw_overlays` 调用删 `index` 与 `draw_frame_number` |
+| `timeline_grid.py:453-465` | `draw_overlays` 删 `index` 参数与整个帧号分支 |
+| `timeline_item_model.py:103/204` | provider 契约 `provider(row, frame)` → `provider(frame)` |
+
+`thumbnail_for_row` **必须一起改名**：去掉 `row` 参数却留着 "for_row" 的名字，等于
+留一个与实现相反的说法 —— 名字本身也是一种需要维护的状态。
+
+**验证**：
+
+1. 全量回归 **9/9 PASS**。
+2. `MAIN_DIGEST` = `ba2304d808c6aef3` 与改动前一致（基线文件 mtime 18:33 早于改动
+   23:06，是真比对而非"缺失时静默建基线"的假通过）—— 逐像素不变，证明删掉的确实是
+   从未执行的死分支。
+3. **破坏验证**：临时把 `row` 塞回缓存 key（经 model 反查行号模拟该回归），
+   `test_reorder_keeps_thumbnails_cached` 立刻失败并报出预期消息
+   "移动的那帧缩略图被重算了（本应命中缓存）"，另有 3 条相关用例一并失败。
+   这一步是必需的：参数从签名里消失后，该守卫是否还咬得住**不能靠推断** ——
+   已实测它仍然有效，不是空断言。
+4. 未新增测试：`test_reorder_keeps_thumbnails_cached` 已守住这条性质，而断言
+   `inspect.signature` 属低价值脆断言。
+5. **运行时直验**（针对 `startDrag` 那处改动）：`test_grid_multi_select_drag_starts_drag`
+   虽用真实鼠标手势驱动到了 `startDrag`，但它只断言 `_dragged_rows`，**不覆盖
+   `drag.setPixmap` 那一段** —— 报不出"缩略图取不到"这类错误。故另做了直接调用：
+   构造真实网格 + 夹具源图，调 `thumbnail_for_frame` 得到 120×120 非空 `QPixmap`，
+   并复跑 `startDrag` 里取图那两行；同时确认缓存 key 为 6 元素、首元素非行号。
+   `thumbnail_for_frame` 在 `drag.exec()` **之前**调用，所以 stub 掉 `exec` 不会
+   跳过它 —— 但测试不断言它，照样是盲区。
+
+**顺带清理的存量未使用 import**（原记"与本条无关、不扩大 diff"，后按用户要求一并
+清掉）：`QPoint` / `QModelIndex` / `QIcon` / `ThumbnailRole`。
+
+它们是**改动前就存在**的存量问题（AST 对比 HEAD 核验：本次新引入 0 处），与本条死
+参数无关。清掉前先排除了两类风险：
+
+- **再导出**：全仓库只有 `timeline.py:4` 一句 `from ui.timeline_grid import
+  TimelineGridWidget`，没有 `import *`，删哪个符号都不会连带断掉别人的导入。
+- **动态引用**：逐个正则整词核验（`\bQPoint\b` 这类写法不会误伤 `QPointF`），
+  四个名字除 import 行外**零出现**，不存在 `getattr` / 字符串取符号的漏检。
+
+`ThumbnailRole` 特殊一点：它有 3 处出现，另 2 处在 docstring 的**行文**里（`:20`、
+`:314`）。删 import 后这两处会指向一个本模块里不存在的裸名，故改为带限定的
+`TimelineItemModel.ThumbnailRole`（该类确实在本模块导入，读起来仍是可解析的真实
+符号），而不是留一个悬空引用。
+
+清理后 AST 复查：**未使用 import 归零**。
 
 ---
 
@@ -263,13 +370,15 @@ cache_key = self._get_cache_key(image_path, frame_data, index)
 
 ### 已做的改动
 
-| 文件 | 改动 |
-|---|---|
-| `dev/smoke_reorder.py:70` | 夹具改 `test_long2.json` |
-| `dev/smoke_reorder.py:127-131` | 文件名断言改为按基名校验（兼容 `slice_pos` 后缀） |
-| `dev/run_all_checks.sh:98` | `require_file` 改 `test_long2.json`，并注明选择理由 |
+| 文件 | 改动 | 校准后位置 |
+|---|---|---|
+| `dev/smoke_reorder.py` | 夹具改 `test_long2.json` | `:72`（原记 `:70`） |
+| `dev/smoke_reorder.py` | 文件名断言改为按基名校验（兼容 `slice_pos` 后缀） | `:166-179`（原记 `:127-131`） |
+| `dev/run_all_checks.sh` | `require_file` 改 `test_long2.json`，并注明选择理由 | `:141-146`（原记 `:98`，漂移 +43 行） |
 
 ### 验证结果
+
+**原文记录（6 项时期，已过期）**：
 
 ```
 1/6 语法编译 main.py+src      PASS
@@ -281,11 +390,69 @@ cache_key = self._get_cache_key(image_path, frame_data, index)
                                → 6/6 PASS
 ```
 
+**2026-08-29 复核（HEAD `6b83466`，回归项已扩到 9 项）**：
+
+```
+1/9 重复定义（结构性）      PASS      6/9 网格视图                  PASS
+2/9 语法编译 main.py+src    PASS      7/9 MainWindow 接线：重排     PASS
+3/9 几何与模型单测          PASS  (37/37)   8/9 MainWindow 接线：参考帧  PASS
+4/9 渲染像素哈希 --compare  PASS      9/9 选中配色跨平台一致        PASS
+5/9 双视图同步与拖拽        PASS  (27/27)  → 9/9 PASS，5s
+```
+
+用例条数变化（原文数字已落后）：网格视图 **13 → 20**（评审新增 4 条 + 后续
+`6b83466` 新增 1 条 + 其他）；双视图同步 **25 → 27**。几何单测 37/37 未变。
+
 ### 遗留建议
 
-- `dev/test_long_.json`（4 帧）全仓库**无任何引用**，是死文件，建议删除。
-- `dev/test_long.json` 切换后也无引用了，可一并删除；若想保留作为"大工程"
-  夹具，建议先修掉第 4/15 帧重复签名的问题（否则它会一直是个断言陷阱）。
+- ✅ `dev/test_long_.json`（4 帧）已删除。
+- ✅ `dev/test_long.json` 已删除（`git ls-files` 确认仅剩 `test_long2.json`；
+  旧文件只存在于 `.Trash-0/files/`，不入库）。
+
+---
+
+## 行号与进度校准（2026-08-29 复核，HEAD `6b83466`）
+
+评审文档一旦写了行号就开始漂移。本节是**复核时的实测值**与原文记值的对照，
+后续使用本文请以此为准。
+
+| 引用对象 | 原文记值 | 校准后 | 漂移 |
+|---|---|---|---|
+| 三角色定义 | `timeline_item_model.py:56` / `:66` | `:49` / `:59` / `:71` | 结构性变化 |
+| 角色唯一性断言 | 未记 | `:76-77` | 新增 |
+| `ReferenceRole` 数据分支 | 未记 | `:193-196` | 新增 |
+| 参考帧注释 | `timeline_item_model.py:53-54` | `:63-66` | +10 |
+| 网格 `set_visual_reference_frame` | `timeline_grid.py:173-175` | `:211-222` | +38 |
+| （同族）列表版 | 未记 | `timeline_list.py:325-332` | 新增 |
+| delegate 读参考帧 | `timeline_grid_delegate.py:56` / `:174-175` | `:62` / `:181` | +6 / +7 |
+| `invalidate_thumbnail_cache_for_paths` | `timeline_grid.py:147-157` | `:151-167` | +4 |
+| `_notify_rows_using_paths`（修复新增） | 未记 | `timeline_grid.py:169` 起 | 新增 |
+| `set_thumbnail_provider` docstring | `timeline_item_model.py:103-104` | `:114` | +10 |
+| `_apply_selection_to_view` docstring | `timeline.py:438-444` | `:451-475`（已改写） | +13 |
+| `rebuild_current_view` | `timeline.py:380-382` | `:390-395` | +10 |
+| 死参数 `index` 传参行 | `timeline_grid.py:310` | `:387`（已删该参数） | 已修复 |
+| `_get_cache_key` | `timeline_grid.py:137-141`（注释 `:140`） | `:141-149` | +4 |
+| `create_thumbnail` 定义 | 未记 | `timeline_grid.py:381` | 已修复 |
+| 唯一调用点 | 未记 | `timeline_grid.py:322` | 已修复 |
+| smoke_reorder 夹具路径 | `dev/smoke_reorder.py:70` | `:72` | +2 |
+| smoke_reorder 文件名断言 | `dev/smoke_reorder.py:127-131` | `:166-179` | +39 |
+| run_all_checks `require_file` | `dev/run_all_checks.sh:98` | `:141-146` | +43 |
+
+**进度**
+
+| 项 | 原文状态 | 复核状态 |
+|---|---|---|
+| 🔴 角色取值冲突 | 已修复 | ✅ 已验证（`assert` 在 import 期生效） |
+| 🟠 夹具顺序断言盲区 | 已完成切换 | ✅ 已验证（`git ls-files` 仅剩 `test_long2.json`） |
+| 🟠 参考帧双份状态 | 已随 🔴 修复 | ✅ 已验证（三处副本全无，20 条网格用例含 4 条专项） |
+| 🟠 缓存失效不重绘 | 已修复 | ✅ 已验证（定向 `dataChanged` + 2 条回归） |
+| 🔵 过时 docstring | 待办 | ✅ **已修复**（`timeline.py:451-461`，9/9 PASS） |
+| 🔵 死参数 `index` | 待办 | ✅ **已修复**（8 处，含连带死分支；9/9 PASS、`MAIN_DIGEST` 不变） |
+| 全量回归 | 6/6 | ✅ **9/9 PASS**（6s） |
+
+→ **本文 6 条问题清单现已全部关闭。** 剩余只有文末「仍需手动验证」那 3 项
+（右键菜单 / 外部文件拖入 / 播放时选中跟随），它们从无任何自动化覆盖，与本次评审
+的问题清单无关。
 
 ---
 
