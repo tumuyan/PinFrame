@@ -4,6 +4,7 @@ from PyQt6.QtGui import QPainter, QColor, QFont, QIcon, QFontMetrics, QBrush
 from typing import Optional
 import logging
 from ui.timeline_item_model import FrameDataRole, ReferenceRole, ThumbnailRole
+from ui.timeline_selection_style import SELECTED_BG_QCOLOR, SELECTED_FG_QCOLOR
 from utils.debug_config import grid_text_debug, grid_text_debug_lines
 
 logger = logging.getLogger(__name__)
@@ -176,12 +177,18 @@ class TimelineGridDelegate(QStyledItemDelegate):
 
         # Get text color and background based on selection state and theme
         if option.state & QStyle.StateFlag.State_Selected:
-            text_color = QColor(255, 255, 255)
-            # Selection background
-            if is_dark_theme:
-                bg_color = QColor(0, 120, 215, 200)
-            else:
-                bg_color = QColor(0, 120, 215, 220)
+            # 选中色取自 ui/timeline_selection_style.py（单一真源）：QSS 用它画本
+            # 格图标区的选中背景，这里画下面那条文字区。两边必须同一个值。
+            #
+            # 必须**不透明**：这里紧接着上面一句 `CompositionMode_Source` 把 Qt
+            # 刚画好的背景清空了，再叠半透明色就会透出控件自身的底色（网格是
+            # viewport 背景，随主题而变），于是选中色随环境漂移。原来的
+            # alpha=200/220 正是"同一帧上下两截不同色"的来源。
+            #
+            # 两个主题同一个值：本 delegate 的 `is_dark_theme` 只影响**未选中**
+            # 的文字条底色，选中态是全局高亮，不该跟着主题换色。
+            text_color = SELECTED_FG_QCOLOR
+            bg_color = SELECTED_BG_QCOLOR
         elif is_ref:
             # Reference frame highlighting
             if is_dark_theme:

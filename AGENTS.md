@@ -21,10 +21,11 @@ PinFrame (定帧) is a PyQt6 desktop application for previewing, fine-tuning, an
   `bash dev/screenshot.sh` launches the app under Xvfb and captures `dev/tmp_screenshot.png`.
 
 - **Run all automated checks (全量回归):**
-  `bash dev/run_all_checks.sh`（约 4s，退出码 0=全过 / 1=有失败 / 2=前置依赖缺失）。
-  依次跑 8 项：`check_no_duplicate_defs.py` → 语法编译 → `test_transform.py` →
+  `bash dev/run_all_checks.sh`（约 5s，退出码 0=全过 / 1=有失败 / 2=前置依赖缺失）。
+  依次跑 9 项：`check_no_duplicate_defs.py` → 语法编译 → `test_transform.py` →
   `transform_baseline.py --compare` → `verify_timeline_view_sync.py` →
-  `verify_grid_view.py` → `smoke_reorder.py` → `smoke_reference_frame.py`。
+  `verify_grid_view.py` → `smoke_reorder.py` → `smoke_reference_frame.py` →
+  `verify_selection_style.py`。
   `--verbose` 实时回显完整输出，`--fail-fast` 首败即停。
   **改动触及共享层（`core/transform.py`、`timeline_model.py`、`timeline_item_model.py`、
   `project_data.py`）或打包发布前，必须跑全量**；只动某个对话框/i18n 键时可只跑定向项。
@@ -196,6 +197,7 @@ Singleton `I18nManager` (`i18n`) loaded from `en_US.json` / `zh_CN.json`. Call `
   `dev/verify_grid_view.py` 是网格视图专用（缩略图语义与缓存、序号、插入点、参考帧/禁用态渲染），
   `dev/smoke_reorder.py` 是完整 `MainWindow` 接线链路（加载工程 → 拖拽重排 → 撤销），
   `dev/smoke_reference_frame.py` 是参考帧生命周期 + 洋葱皮抑制的 `MainWindow` 接线（见下条），
+  `dev/verify_selection_style.py` 是时间轴选中配色的跨平台一致性（见下条），
   `dev/screenshot.sh` 是人工目视检查。
   **另有三个缺口无任何自动化覆盖**：右键菜单、外部文件拖入、播放时的选中跟随。
 
@@ -209,6 +211,32 @@ Singleton `I18nManager` (`i18n`) loaded from `en_US.json` / `zh_CN.json`. Call `
   新建/关闭工程都必须**显式清除两份**（`timeline.clear()` 只清得掉模型那份）。
   写入点清单：设置/取消、删除参考帧所在帧、互斥模式下开洋葱皮、素材移除/替换、
   撤销恢复 —— 新增任何一条都要同时写三处并补进该脚本。
+
+- **时间轴"选中"配色的单一真源是 `src/ui/timeline_selection_style.py`。**
+  它同时被三种**互不相干**的机制使用，任一处不引用它就会把同一个选中帧切成
+  几种颜色：
+    - `main_window.py` 的 **QSS 字符串**（控制列表普通列、网格图标区）；
+    - `timeline_grid_delegate.py`（网格底部文字条：它先用 `CompositionMode_Source`
+      把 Qt 刚画好的背景清空，再自己填一遍）；
+    - `timeline_list.py` 的 `_DisableColumnDelegate`（"禁用"列：它会铺满整格，
+      把选中背景整块盖掉）。
+  三个必须记住的约束（违反就是 bug，且都真实踩过）：
+    - **QSS 选择器要写 `QTreeView, QListView`**。两个视图在 P1-3 已从
+      `QTreeWidget`/`QListWidget` 迁成 `QTreeView`/`QListView`。QSS 的 Type
+      Selector 只匹配"该类及其子类"，写 `QTreeWidget` 匹配的是它的**子类**，
+      反过来不成立 —— 规则一次都不会生效，选中色随即退回平台调色板（Windows 上
+      就是用户可自定义的系统强调色）。这正是"多选看不清哪帧被选中"的根因。
+    - **QSS 只认 `/* */` 注释**。`#` 在那里是 ID 选择器，写成 `# 说明` 会让 Qt
+      解析失败并**中断其后整个样式表**的解析，所有规则静默失效，而 Qt 只在
+      stderr 打一句 "Could not parse stylesheet"，GUI 程序里根本看不见。
+      所以关于 QSS 的说明一律写在 qss 字符串**外面**的 Python 注释里。
+    - **选中色必须不透明**（alpha=255）。半透明会让底下平台画好的选中色透出来，
+      混成第三种颜色。注意 `QImage` 不做预乘，只看 `getRgb()[:3]` **区分不了**
+      alpha=200 与 255，检查时必须单独查 `alpha()`。
+  另外 **QSS 里那两个颜色是占位符 `@SELECTED_BG@`/`@SELECTED_FG@`**，由
+  `apply_to_qss()` 在 `apply_theme()` 里替换。不做这步，Qt 解析失败后静默丢弃整条
+  规则，选中色又悄悄退回平台值。用占位符而不是 f-string，是因为 QSS 通篇是
+  `{}`，整段改 f-string 要转义几百处花括号，必然出错。
 - **写 Qt 事件测试时，`QMimeData` 必须挂在 event 上保持引用**（`event._keep_mime = mime`）。`QDropEvent` 只持有裸指针、不接管所有权，局部变量被 GC 后 `mimeData()` 就是悬空指针 → 进程直接 abort，且没有 Python traceback。
 - **做破坏性验证（改坏代码、确认测试变红）前，必须先清 `__pycache__`**：`find src -name __pycache__ -type d -exec rm -rf {} +`。用 `cp` 还原源文件后 Python 可能仍加载**被破坏时编译的旧字节码** —— `cp` 只更新 mtime，而 pyc 校验用 `(mtime, size)`，秒级精度下快速往返会碰撞。症状极具迷惑性：`inspect.getsource()` 显示正确源码，函数内打印的比较结果是 `False`，实际却返回 `True`。此外破坏脚本要**先断言目标字符串存在再改**，否则 `str.replace` 静默无操作会让"测试没红"被误读成"测试无效"。
 - `dev/` holds environment/screenshot/novnc helper scripts, not app code.

@@ -23,6 +23,7 @@ from ui.reference_settings import ReferenceSettingsDialog
 from ui.raster_settings import RasterizationSettingsDialog
 from ui.canvas_border_settings import CanvasBorderSettingsDialog
 from ui.utils.icon_generator import IconGenerator
+from ui.timeline_selection_style import apply_to_qss
 from i18n.manager import i18n
 from utils.debug_config import import_debug, layout_debug
 from core.history import HistoryManager
@@ -319,6 +320,22 @@ class MainWindow(QMainWindow):
         if hasattr(self, 'theme_dark_action'):
             self.theme_dark_action.setChecked(theme_name == "dark")
             self.theme_light_action.setChecked(theme_name == "light")
+        # 样式表里时间轴视图那两条规则的说明（**刻意写在 qss 字符串外面**）：
+        #
+        # 选择器必须是 `QTreeView, QListView`：QSS 的 Type Selector 只匹配"该类及
+        # 其子类"，而这两个视图是 P1-3 从 QTreeWidget/QListWidget 迁过来的，基类
+        # 就是 QTreeView/QListView。写 `QTreeWidget` 匹配的是它的**子类**，反过来
+        # 不成立，规则一次都不会生效 —— 选中色于是全交给平台调色板，Windows 上取
+        # 决于用户自定义的系统强调色，表现为"多选时看不清哪帧被选中"。
+        #
+        # `@SELECTED_BG@` 是占位符，在下面 `apply_to_qss()` 里换成
+        # `ui.timeline_selection_style.py` 的真值。网格底部文字条由 delegate 自绘，
+        # 两边必须同一个值，否则一个选中帧会被切成两种颜色。
+        #
+        # 为什么这些话不能写进 qss 字符串：QSS **只认 `/* */` 注释**，`#` 在那里
+        # 是 ID 选择器（如 `QPushButton#playBtn`）。写成 `# 注释` 会让 Qt 解析失败
+        # 并**中断整个样式表的后续解析**，后面所有规则静默失效（Qt 只在 stderr 打
+        # 一句 "Could not parse stylesheet"，GUI 程序里根本看不见）。这个坑踩过。
         if theme_name == "dark":
             qss = """
                 QMainWindow, QDialog, QMessageBox {
@@ -443,14 +460,14 @@ class MainWindow(QMainWindow):
                     border: 1px solid #454545;
                     padding: 4px;
                 }
-                QTreeWidget {
+                QTreeView, QListView {
                     background-color: #1E1E1E;
                     color: #CCCCCC;
                     border: none;
                 }
-                QTreeWidget::item:selected {
-                    background-color: #094771;
-                    color: white;
+                QTreeView::item:selected, QListView::item:selected {
+                    background-color: @SELECTED_BG@;
+                    color: @SELECTED_FG@;
                 }
                 QGroupBox {
                     border: 1px solid #454545;
@@ -464,6 +481,10 @@ class MainWindow(QMainWindow):
                     color: #007ACC;
                 }
             """
+        # 亮色主题。时间轴两条规则与暗色主题同源，说明见上面 `if` 分支的注释。
+        # 选中色与暗色主题同一个值（理由见 ui/timeline_selection_style.py）：原先
+        # 这里是 `#E5F3FF` 淡蓝底 + 黑字，在白底上对比度仅约 1.1，多选时几乎看不
+        # 出哪些行被选中，故改成实色底 + 白字（4.50）。
         else:
             qss = """
                 QMainWindow, QDialog, QMessageBox {
@@ -581,14 +602,14 @@ class MainWindow(QMainWindow):
                     border: 1px solid #CCCCCC;
                     padding: 4px;
                 }
-                QTreeWidget {
+                QTreeView, QListView {
                     background-color: white;
                     color: #333333;
                     border: 1px solid #EEEEEE;
                 }
-                QTreeWidget::item:selected {
-                    background-color: #E5F3FF;
-                    color: black;
+                QTreeView::item:selected, QListView::item:selected {
+                    background-color: @SELECTED_BG@;
+                    color: @SELECTED_FG@;
                 }
                 QGroupBox {
                     border: 1px solid #CCCCCC;
@@ -603,6 +624,12 @@ class MainWindow(QMainWindow):
                 }
             """
             
+        # 把选中色占位符替换成 ui/timeline_selection_style.py 里的值。
+        # 不做这步，QSS 里会留着字面的 `@SELECTED_BG@`，Qt 解析失败后**静默丢弃
+        # 整条规则**（只在 stderr 打一句 "Could not parse stylesheet"）—— 于是
+        # 选中色又悄悄退回平台调色板，正是本次要修的现象，而且极难察觉。
+        qss = apply_to_qss(qss)
+
         QApplication.instance().setStyleSheet(qss)
         
         # Refresh visuals (specifically for Reference Frame highlight)

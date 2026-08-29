@@ -23,9 +23,21 @@
 #    main_digest，并在跑完后校验它没被改写，否则基线会被刷新成"当前（可能已坏的）
 #    结果"，此后比对将永远通过。
 #
-# 3. 跑之前清 __pycache__。切分支 / git checkout 后，pyc 的 (mtime, size) 校验
-#    在秒级精度下可能碰撞，导致加载陈旧字节码 —— 症状极具迷惑性
-#    （inspect.getsource() 显示正确源码，行为却是旧的）。
+# 3. 跑之前【强制】清空字节码缓存，并校验确实空了。切分支 / git checkout 后，
+#    pyc 的 (mtime, size) 校验在秒级精度下可能碰撞，导致加载陈旧字节码 ——
+#    症状极具迷惑性（inspect.getsource() 显示正确源码，行为却是旧的）。
+#
+#    为什么是"删 + 校验"而不是 PYTHONDONTWRITEBYTECODE=1：后者只禁【写】不禁
+#    【读】，已存在的 pyc 照样被加载，对"陈旧字节码"这个问题几乎无收益；而且
+#    compileall（第 2 项）会无视它照样落盘。真正管用的只有删。
+#
+#    为什么必须校验而不是 `|| true` 了事：删不掉是有可能的（Windows 上 pyc 被
+#    占用时 rm 直接失败），而删不掉又静默继续 = 用旧字节码跑完整轮回归，全绿
+#    但测的不是当前代码。所以清空后逐条确认残留为空，非空就 exit 2 中止，
+#    绝不带病运行。
+#
+#    两处清理：开头一次；第 2 项 compileall 之后再一次（它会写满 src/ 与 dev/，
+#    不清掉 3~9 项读的就是它刚生成的那批）。
 #
 # 4. 第 1 项（重复定义）是**纯标准库**的结构性检查，刻意放在最前：它只要 ~0.1s，
 #    且能挡住"改了代码却没效果"这类最费解的问题 —— Python 对同名的后定义静默
@@ -90,6 +102,32 @@ fi
 echo "使用解释器: $PY  ($("$PY" -V 2>&1))"
 echo "仓库根目录: $REPO_ROOT"
 
+# ---- 字节码缓存：强制清空 + 校验确实为空 -------------------------------------
+# 只认 src/ 与 dev/：这两处是本仓库源码，也是唯一会被测试 import 的地方。
+# 刻意在同一个表达式里同时匹配 __pycache__ 目录与游离的 .pyc 文件，删除与校验
+# 复用同一套判据，避免"删的和查的不是一回事"。
+list_bytecode() {
+    find "$REPO_ROOT/src" "$REPO_ROOT/dev" \
+        \( -name __pycache__ -type d -prune -o -name '*.pyc' \) -print 2>/dev/null
+}
+
+purge_bytecode() {
+    find "$REPO_ROOT/src" "$REPO_ROOT/dev" \
+        \( -name __pycache__ -type d -prune -o -name '*.pyc' \) \
+        -exec rm -rf {} + 2>/dev/null
+
+    local left
+    left="$(list_bytecode)"
+    if [ -n "$left" ]; then
+        echo "run_all_checks: 字节码缓存未能清空，以下路径残留：" >&2
+        echo "$left" | sed 's/^/        /' >&2
+        echo "        继续跑下去会用旧字节码得到全绿的假结果，故中止。" >&2
+        echo "        Windows 上通常是文件被占用（GUI / 上轮进程未退出），先关掉再重跑。" >&2
+        return 1
+    fi
+    return 0
+}
+
 # ---- 前置依赖校验 -----------------------------------------------------------
 # 这些文件缺失会让某个脚本以莫名其妙的 assert 失败，不如在这里一次性说清楚。
 MISSING=0
@@ -101,10 +139,11 @@ require_file() {
     fi
 }
 require_file "$REPO_ROOT/dev/test_long2.json" \
-    "第 7/8 项（smoke_reorder.py、smoke_reference_frame.py）硬依赖它加载真实工程。\
+    "第 7/9 项（smoke_reorder.py、smoke_reference_frame.py）硬依赖它加载真实工程。\
  选它的理由：15 帧来自同一张源图但裁切互不相同，帧签名（crop_rect+scale+rotation+is_disabled）\
  全部唯一，105 种两两交换无一失明；旧的 test_long.json 有 1 组重复签名（第 4/15 帧），\
- 已作为死文件删除（见 dev/code_review_p1_3.md）"
+ 已作为死文件删除（见 dev/code_review_p1_3.md）。另：dev/verify_selection_style.py
+ 刻意用运行时生成的短名图片，不依赖它"
 require_file "$REPO_ROOT/dev/tmp_baseline/hashes.json" \
     "第 3 项需要它做比对；缺失时该脚本会静默新建基线并返回 0（假通过）。先跑一次 'python dev/transform_baseline.py' 生成"
 
@@ -122,8 +161,10 @@ if ! "$PY" -c "import json,sys; sys.exit(0 if json.load(open(sys.argv[1])).get('
     exit 2
 fi
 
-# ---- 清 __pycache__ ---------------------------------------------------------
-find "$REPO_ROOT/src" "$REPO_ROOT/dev" -name __pycache__ -type d -prune -exec rm -rf {} + 2>/dev/null || true
+# ---- 清 __pycache__（失败即中止，不静默继续）---------------------------------
+if ! purge_bytecode; then
+    exit 2
+fi
 
 # ---- 检查项执行框架 ---------------------------------------------------------
 BASELINE_JSON="$REPO_ROOT/dev/tmp_baseline/hashes.json"
@@ -188,14 +229,24 @@ echo "============================================================"
 FAILED=0
 ABORTED=0
 
-if [ "$ABORTED" -eq 0 ]; then run_check "1/8 重复定义（结构性）"       "$PY" dev/check_no_duplicate_defs.py          || FAILED=1; fi
-if [ "$ABORTED" -eq 0 ]; then run_check "2/8 语法编译 main.py+src"     "$PY" -m compileall -q main.py src            || FAILED=1; fi
-if [ "$ABORTED" -eq 0 ]; then run_check "3/8 几何与模型单测"           "$PY" dev/test_transform.py                   || FAILED=1; fi
-if [ "$ABORTED" -eq 0 ]; then run_check "4/8 渲染像素哈希 --compare"   "$PY" dev/transform_baseline.py --compare     || FAILED=1; fi
-if [ "$ABORTED" -eq 0 ]; then run_check "5/8 双视图同步与拖拽"         "$PY" dev/verify_timeline_view_sync.py        || FAILED=1; fi
-if [ "$ABORTED" -eq 0 ]; then run_check "6/8 网格视图"                 "$PY" dev/verify_grid_view.py                 || FAILED=1; fi
-if [ "$ABORTED" -eq 0 ]; then run_check "7/8 MainWindow 接线：重排"    "$PY" dev/smoke_reorder.py                    || FAILED=1; fi
-if [ "$ABORTED" -eq 0 ]; then run_check "8/8 MainWindow 接线：参考帧"  "$PY" dev/smoke_reference_frame.py            || FAILED=1; fi
+if [ "$ABORTED" -eq 0 ]; then run_check "1/9 重复定义（结构性）"       "$PY" dev/check_no_duplicate_defs.py          || FAILED=1; fi
+if [ "$ABORTED" -eq 0 ]; then run_check "2/9 语法编译 main.py+src"     "$PY" -m compileall -q main.py src            || FAILED=1; fi
+
+# compileall 刚把 pyc 写满了 src/ 与 dev/，3~9 项不清掉就会读这批而非源码。
+# 同样失败即中止。根目录 __pycache__（compileall 为 main.py 生成的）刻意不动：
+# 没有任何测试 import main 模块，且 find 到仓库根会一路扫进 venv/，得不偿失。
+if ! purge_bytecode; then
+    FAILED=1
+    ABORTED=1
+fi
+
+if [ "$ABORTED" -eq 0 ]; then run_check "3/9 几何与模型单测"           "$PY" dev/test_transform.py                   || FAILED=1; fi
+if [ "$ABORTED" -eq 0 ]; then run_check "4/9 渲染像素哈希 --compare"   "$PY" dev/transform_baseline.py --compare     || FAILED=1; fi
+if [ "$ABORTED" -eq 0 ]; then run_check "5/9 双视图同步与拖拽"         "$PY" dev/verify_timeline_view_sync.py        || FAILED=1; fi
+if [ "$ABORTED" -eq 0 ]; then run_check "6/9 网格视图"                 "$PY" dev/verify_grid_view.py                 || FAILED=1; fi
+if [ "$ABORTED" -eq 0 ]; then run_check "7/9 MainWindow 接线：重排"    "$PY" dev/smoke_reorder.py                    || FAILED=1; fi
+if [ "$ABORTED" -eq 0 ]; then run_check "8/9 MainWindow 接线：参考帧"  "$PY" dev/smoke_reference_frame.py            || FAILED=1; fi
+if [ "$ABORTED" -eq 0 ]; then run_check "9/9 选中配色跨平台一致"        "$PY" dev/verify_selection_style.py           || FAILED=1; fi
 
 # ---- 基线未改写校验 ---------------------------------------------------------
 BASELINE_AFTER="$("$PY" -c "import hashlib,sys; print(hashlib.md5(open(sys.argv[1],'rb').read()).hexdigest())" "$BASELINE_JSON")"
@@ -243,6 +294,15 @@ if [ "$FAILED" -ne 0 ]; then
     echo "     删除被覆盖的那些；若两处都有用，说明其中一个该改名。"
     echo "     注意 `src/ui/temp_prop.py` 是 PropertyPanel 的旧副本（无人 import），"
     echo "     它作为死文件被单独排除，不在本项检查范围内。"
+    echo "  - 若第 9 项失败（选中配色跨平台不一致）："
+    echo "     选中色由 ui/timeline_selection_style.py 单一真源提供，QSS 与两个 delegate"
+    echo "     都必须引用它。三个易踩的坑："
+    echo "       (a) QSS 选择器要写 QTreeView/QListView —— 写 QTreeWidget 匹配不到"
+    echo "           （Type Selector 只匹配该类及其子类，父子关系反过来不成立）；"
+    echo "       (b) QSS 只认 /* */ 注释，写成 '# 注释' 会让 Qt 中断其后**整个**"
+    echo "           样式表的解析，且只在 stderr 打一句警告，GUI 里完全看不见；"
+    echo "       (c) 选中色必须不透明 —— 半透明会透出底层平台绘制的颜色，"
+    echo "           而只看 RGB 三个分量区分不了 alpha=200 与 255。"
     echo "  - 若第 4 项失败（MAIN_DIGEST 变化）而你【有意为之】地改了渲染："
     echo "      确认差异符合预期后，跑 'python dev/transform_baseline.py' 刷新基线。"
     echo "  - 若某项的失败是异常而非断言（exit=134 之类）："

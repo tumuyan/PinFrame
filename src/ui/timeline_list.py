@@ -8,6 +8,7 @@ from i18n.manager import i18n
 from ui.timeline_item_model import (
     TimelineItemModel, FrameDataRole, COL_DISABLED, COL_FILENAME, COLUMN_COUNT,
 )
+from ui.timeline_selection_style import SELECTED_BG_QCOLOR
 from model.project_data import FrameData
 from typing import List, Optional
 import os
@@ -48,8 +49,20 @@ class _DisableColumnDelegate(QStyledItemDelegate):
 
         # Erase any Qt-drawn remnants inside the cell (focus rectangles, default
         # checkbox indicators, etc.). We don't know what was drawn before us,
-        # so we paint the palette base colour over the whole cell first.
-        painter.fillRect(rect, option.palette.base())
+        # so we paint the background over the whole cell first.
+        #
+        # 选中时必须铺**选中色**，不能铺 `palette.base()`：base 是本列自己的底色，
+        # 用它会在整行选中色里切出一个异色缺口 —— 而"这一行到底选没选中"靠的正是
+        # 整行颜色的连续性，缺一格就非常显眼。更要命的是 `palette.base()` 是
+        # **平台相关**的值（Fusion / Windows / macOS 各不相同，Windows 上还跟着
+        # 用户的系统主题走），这是"Windows 下多选看不清"最直接的来源。
+        #
+        # 颜色取自 ui/timeline_selection_style.py（单一真源），与 QSS 和网格
+        # delegate 共用，三者任一不同都会把选中帧切成几段不同颜色。
+        if is_selected:
+            painter.fillRect(rect, SELECTED_BG_QCOLOR)
+        else:
+            painter.fillRect(rect, option.palette.base())
 
         # Compute a square indicator area, centred both horizontally and
         # vertically in the cell. Using min(width, height) keeps the indicator
