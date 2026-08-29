@@ -93,6 +93,9 @@ class MainWindow(QMainWindow):
         self.project.bind_frames_provider(self.timeline.get_all_frames)
         self.timeline.selection_changed.connect(self.on_selection_changed)
         self.timeline.order_changed.connect(self.on_order_changed)
+        # 顺序变更**前**捕获撤销快照。顺序如今是在拖拽当场改模型的（视图只算出
+        # 目标位置后调 model.move_frames），等 order_changed 时模型已经是新顺序了。
+        self.timeline.reorder_about_to_happen.connect(self._capture_reorder_snapshot)
         self.timeline.files_dropped.connect(self.add_files)
         self.timeline.copy_properties_requested.connect(self.copy_frame_properties)
         self.timeline.paste_properties_requested.connect(self.paste_frame_properties)
@@ -694,16 +697,12 @@ class MainWindow(QMainWindow):
         self.property_panel.set_project_info(self.project.width, self.project.height)
 
         frames = snap.get("frames", [])
-        self.timeline.clear()
-        # 克隆快照中的帧对象，避免后续编辑污染历史快照
-        for frame in frames:
-            new_frame = self._clone_frame(frame)
-            # add_frame 走模型插入，视图会在 _on_frames_inserted 中自行读取所需尺寸。
-            self.timeline.add_frame(os.path.basename(new_frame.file_path), new_frame)
+        # 整体替换：一条信号，而不是 clear() + 逐帧 add_frame() 的 N+1 条。
+        # 帧对象必须先克隆，避免后续编辑污染历史快照。
+        self.timeline.set_frames([self._clone_frame(f) for f in frames])
 
-        # 帧插入时缩略图已按 file_path/crop_rect 生成并写入缓存；此处仅刷新（复用缓存），
-        # 不再 _clear_thumbnail_cache()，避免对无 crop_rect 的帧从磁盘重复加载原图。
-        self.timeline.grid_view.refresh_all_items()
+        # set_frames 发的是整体替换信号，视图已全量重取（缩略图按内容缓存、命中），
+        # 因此不再需要 grid_view.refresh_all_items()。
 
         # 参考帧与选中项恢复
         live_frames = self.timeline.get_all_frames()
@@ -2133,7 +2132,7 @@ class MainWindow(QMainWindow):
         """
         # 1. Determine Suppression State
         # Suppress if: Multiple items selected OR Playing (forward or reverse)
-        is_multi_select = len(self.timeline.selectedItems()) > 1
+        is_multi_select = len(self.timeline.get_selected_indices_from_model()) > 1
         is_playing = self.is_playing
         
         should_suppress = is_multi_select or is_playing
@@ -2226,7 +2225,7 @@ class MainWindow(QMainWindow):
         """
         # 1. Determine Suppression State
         # Suppress if: Multiple items selected OR Playing (forward or reverse)
-        is_multi_select = len(self.timeline.selectedItems()) > 1
+        is_multi_select = len(self.timeline.get_selected_indices_from_model()) > 1
         is_playing = self.is_playing
         
         should_suppress = is_multi_select or is_playing
@@ -2409,7 +2408,7 @@ class MainWindow(QMainWindow):
         """
         # 1. Determine Suppression State
         # Suppress if: Multiple items selected OR Playing (forward or reverse)
-        is_multi_select = len(self.timeline.selectedItems()) > 1
+        is_multi_select = len(self.timeline.get_selected_indices_from_model()) > 1
         is_playing = self.is_playing
         
         should_suppress = is_multi_select or is_playing
@@ -3024,32 +3023,27 @@ class MainWindow(QMainWindow):
         # Use property panel to apply scale with proper anchor support
         self.property_panel.apply_rel_scale(factor)
 
-    def on_order_changed(self):
-        # 视图拖拽调整顺序后，模型并未自动同步；这里把视图顺序同步回模型，
-        # 使保存、导出与撤销/重做都基于最新顺序。
-        try:
-            if self.timeline.get_view_mode() == "list":
-                root = self.timeline.list_view.invisibleRootItem()
-                view_order = [
-                    root.child(i).data(0, Qt.ItemDataRole.UserRole)
-                    for i in range(root.childCount())
-                ]
-            else:
-                view_order = [
-                    self.timeline.grid_view.item(i).data(Qt.ItemDataRole.UserRole)
-                    for i in range(self.timeline.grid_view.count())
-                ]
-        except Exception:
-            view_order = None
+    def _capture_reorder_snapshot(self):
+        """在顺序变更前捕获撤销快照（连 `reorder_about_to_happen`）。
 
-        if view_order is not None and view_order:
-            model_frames = self.timeline.get_all_frames()
-            if view_order != model_frames:
-                self._flush_pending_history()
-                before = self._capture_snapshot()
-                # 仅当模型顺序真的发生了变更时才落历史，避免产生无效记录
-                if self.timeline.model.set_frames_order(view_order):
-                    self.record_history(i18n.t("hist_reorder"), before=before)
+        拖拽现在是在视图算出目标位置后**立即**调 `model.move_frames` 改模型，
+        等到 `order_changed` 时模型已是新顺序，那时再 `_capture_snapshot()`
+        快照到的就是结果而非前态 —— 撤销会变成空操作。
+
+        上一次的快照若没被消费（拖拽落在原位、`move_frames` 返回 False），
+        说明是一次无效重排，直接丢弃，避免污染下一次。
+        """
+        self._pending_reorder_before = self._capture_snapshot()
+
+    def on_order_changed(self):
+        # 顺序已由 model.move_frames 改完（视图只负责算出"拖了哪几行、插到哪儿"），
+        # 这里不再做"视图 → 模型"的回写 —— 那等于顺序有两个源，是切视图后顺序
+        # 错乱的根源。快照是在 reorder_about_to_happen 时（改模型之前）捕获的。
+        before = getattr(self, '_pending_reorder_before', None)
+        self._pending_reorder_before = None
+        if before is not None:
+            self._flush_pending_history()
+            self.record_history(i18n.t("hist_reorder"), before=before)
 
         # 同步拖拽后的选中项到 Model / Canvas / PropertyPanel
         if self.timeline.get_view_mode() == "list":
@@ -3113,37 +3107,22 @@ class MainWindow(QMainWindow):
             self.record_history(i18n.t("hist_set_fps"), before=before)
 
     def update_playlist(self):
-        # Build Playlist
-        selected_items = self.timeline.selectedItems()
-        target_items = []
-        if len(selected_items) > 1:
+        """Build Playlist —— 直接向模型取帧，不经过任何视图 item。
+
+        迁移前要按视图类型分别用 `indexOfTopLevelItem` / `row()` 排序 item，再逐个
+        从 item 的 UserRole 里掏出 frame_data。播放列表与"当前是哪个视图"毫无关系，
+        绕视图这一圈只是历史包袱 —— 而且列表视图迁到 model/view 后已经没有 item 了。
+        """
+        selected_indices = self.timeline.get_selected_indices_from_model()
+        if len(selected_indices) > 1:
             # Play selected only
-            # Sort by visual order (index) to ensure correct sequence
-            current_view = self.timeline.get_current_widget()
-            if self.timeline.get_view_mode() == "list":
-                # List view uses indexOfTopLevelItem
-                target_items = sorted(selected_items, key=lambda i: self.timeline.indexOfTopLevelItem(i))
-            else:
-                # Grid view uses row
-                target_items = sorted(selected_items, key=lambda i: current_view.row(i))
+            frames = [self.timeline.get_frame_at(i) for i in selected_indices]
         else:
             # Play all
-            current_view = self.timeline.get_current_widget()
-            if self.timeline.get_view_mode() == "list":
-                # List view - get all top level items
-                root = self.timeline.list_view.invisibleRootItem()
-                target_items = [root.child(i) for i in range(root.childCount())]
-            else:
-                # Grid view
-                target_items = [current_view.item(i) for i in range(current_view.count())]
+            frames = self.timeline.get_all_frames()
 
-        # Filter disabled and store frame_data (not items) to avoid invalid references
-        self.playlist = []
-        for item in target_items:
-            # Use unified interface to extract frame data
-            data = self.timeline.extract_frame_data_from_item(item)
-            if data and not data.is_disabled:
-                self.playlist.append(data)
+        # 存 frame_data 而非视图项，避免视图重建后引用失效
+        self.playlist = [f for f in frames if f and not f.is_disabled]
 
         # Reset index if out of bounds or empty?
         if self.playlist:
@@ -3645,9 +3624,13 @@ class MainWindow(QMainWindow):
     def _reload_edited_images(self, paths):
         """定向失效并重载指定的源图路径（图片缓存、缩略图缓存、画布）。"""
         from core.image_cache import image_cache
+        from model.project_data import clear_source_image_size_cache
         abs_paths = [os.path.abspath(p) for p in paths]
         for p in abs_paths:
             image_cache.remove(p)
+            # 源图尺寸缓存与 image_cache 互不感知，必须在这里一并失效，
+            # 否则时间轴的分辨率列会一直显示改图前的尺寸
+            clear_source_image_size_cache(p)
         # 仅定向失效编辑路径的缩略图缓存并刷新时间轴（避免全量重建造成的磁盘 I/O）
         self.timeline.grid_view.invalidate_thumbnail_cache_for_paths(abs_paths)
         self.timeline.list_view.refresh_current_items()
@@ -4531,8 +4514,10 @@ class MainWindow(QMainWindow):
         indices = [i for i, f in enumerate(all_frames) if _norm(f.file_path) == old_norm]
 
         if indices:
+            from model.project_data import clear_source_image_size_cache
             for i in indices:
                 self.timeline.get_frame_at(i).file_path = new_abs
+            clear_source_image_size_cache(old_path)
             self.timeline.refresh_current_items()
             # 通知视图重绘受影响的帧（时间轴文件名会随路径更新）
             self.timeline.model.data_changed.emit(indices[0], indices[-1])
@@ -4644,21 +4629,10 @@ class MainWindow(QMainWindow):
         # Get selected indices using unified interface
         selected_indices = current_view.get_selected_indices()
 
-        # Switch view
+        # Switch view —— set_view_mode 内部已按模型恢复目标视图的选中，
+        # 不需要（也不能）在外面再用 item API 重设一遍：列表视图已经没有 item 了。
+        self.timeline.model.set_selection(selected_indices)
         self.timeline.set_view_mode(mode)
-
-        # Restore selection
-        if selected_indices:
-            if mode == "grid":
-                # Restore grid selection
-                for idx in selected_indices:
-                    if idx < self.timeline.grid_view.count():
-                        self.timeline.grid_view.item(idx).setSelected(True)
-            else:
-                # Restore list selection
-                for idx in selected_indices:
-                    if idx < self.timeline.list_view.topLevelItemCount():
-                        self.timeline.list_view.topLevelItem(idx).setSelected(True)
 
         # Save view mode preference
         self.settings.setValue("timeline_view_mode", mode)

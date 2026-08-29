@@ -8,15 +8,45 @@ from PyQt6.QtGui import QImageReader
 from core.transform import normalize_aspect_ratio
 
 
+_SOURCE_SIZE_CACHE: dict = {}
+
+
+def clear_source_image_size_cache(path: Optional[str] = None) -> None:
+    """清空源图尺寸缓存（path 为 None 时全清）。
+
+    何时需要调用：源文件在磁盘上被换掉之后 —— 外部编辑器改图、替换素材。
+    不失效的话时间轴列 6/列 7 会继续显示旧尺寸。
+
+    注意这里**不能**依赖 image_cache 的失效：`image_cache` 存的是解码后的像素，
+    与本缓存无关，两者的失效时机相同但互不感知（见 P2-7「三层缓存互不知情」）。
+    """
+    if path is None:
+        _SOURCE_SIZE_CACHE.clear()
+    else:
+        _SOURCE_SIZE_CACHE.pop(path, None)
+
+
 def source_image_size(file_path: str) -> Tuple[int, int]:
-    """零解码读取源图尺寸 (w, h)，失败返回 (0, 0)。供分辨率计算共享使用。"""
+    """零解码读取源图尺寸 (w, h)，失败返回 (0, 0)。供分辨率计算共享使用。
+
+    结果按路径缓存 —— 本函数会**打开文件并读取文件头**，是真实的文件 I/O。
+    时间轴改为 Qt model/view 之后，`data()` 在每次重绘（含滚动）时都会调它，
+    未缓存的话每屏重绘就是几十次 open/read/close。缓存放在 I/O 边界而不是
+    调用方，这样 `base_size()` 与 `effective_target_size()` 都自动受益。
+    """
     if not file_path or not os.path.exists(file_path):
         return 0, 0
+    cached = _SOURCE_SIZE_CACHE.get(file_path)
+    if cached is not None:
+        return cached
     reader = QImageReader(file_path)
     if reader.canRead():
         s = reader.size()
-        return s.width(), s.height()
-    return 0, 0
+        size = (s.width(), s.height())
+    else:
+        size = (0, 0)
+    _SOURCE_SIZE_CACHE[file_path] = size
+    return size
 
 @dataclass
 class FrameData:

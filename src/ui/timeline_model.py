@@ -11,8 +11,12 @@ class TimelineModel(QObject):
     frame_disabled_changed = pyqtSignal(int, bool)  # index, is_disabled
     frames_inserted = pyqtSignal(int, int)  # index, count
     frames_removed = pyqtSignal(int, int)  # index, count
-    frames_moved = pyqtSignal(int, int, int)  # from_index, to_index, count
-    frames_reordered = pyqtSignal()  # 顺序整体变化（反转 / 拖拽排序），无参数
+    # 顺序整体变化（反转 / 拖拽排序 / set_frames_order），无参数。
+    # 曾经还有个 `frames_moved(from, to, count)` 表示"单个移动"，但唯一的发射方
+    # `move_frame()`（单数）随第 3 片删除了 —— 所有换序都走 `move_frames()`，它发的是
+    # 本信号。留着一个没人发的信号只会误导后来者。
+    frames_reordered = pyqtSignal()
+    frames_replaced = pyqtSignal()  # 帧列表被**整体替换成另一批对象**（撤销恢复），无参数
     selection_changed = pyqtSignal()
     reference_changed = pyqtSignal(object)  # frame_data or None
 
@@ -94,20 +98,62 @@ class TimelineModel(QObject):
 
         return removed
 
-    def move_frame(self, from_index: int, to_index: int) -> bool:
-        """Move frame from one index to another"""
-        if not self._is_valid_index(from_index) or not self._is_valid_index(to_index):
+    def move_frames(self, indices: List[int], insert_index: int) -> bool:
+        """把 indices 处的帧整体移动到 insert_index 之前 —— **顺序的唯一写入入口**。
+
+        坐标系与视图 dropEvent 一致：`insert_index` 取 0..len(frames)，表示"移动前"
+        列表中这些帧应插入到的位置（插到第 insert_index 个元素之前）。
+
+        为什么放在模型里：视图曾经自己 `takeItem`/`insertItem` 搬 item，模型毫不知情，
+        之后再由 `MainWindow.on_order_changed` 把视图顺序**回写**给模型。那等于顺序有
+        两个源，是 `TimelineWidget._view_in_sync_with_model` 与"切视图后顺序错乱"那类
+        缺陷的根因。拖拽现在只负责算出 `(被拖行号, 插入点)`，顺序变更一律走这里。
+
+        返回是否真的发生了顺序变更（无效下标 / 原位放置 / 结果相同均返回 False）。
+        """
+        valid = sorted({i for i in indices if self._is_valid_index(i)})
+        if not valid:
             return False
 
-        if from_index == to_index:
+        total = len(self._frames)
+        insert_index = max(0, min(total, insert_index))
+
+        # 连续块放在自己原位的两种情形（紧邻其上 / 紧邻其下）视为无变更
+        is_contiguous = (valid[-1] - valid[0] + 1 == len(valid))
+        if is_contiguous and (insert_index == valid[0] or insert_index == valid[-1] + 1):
             return False
 
-        frame = self._frames.pop(from_index)
-        self._frames.insert(to_index, frame)
-        self.frames_moved.emit(from_index, to_index, 1)
+        moved_set = set(valid)
+        dragged = [self._frames[i] for i in valid]
+        remaining = [f for i, f in enumerate(self._frames) if i not in moved_set]
 
-        # Update selection
-        self._update_selection_after_move(from_index, to_index)
+        # 转换到"移除被拖项之后"的坐标系
+        dragged_before_count = sum(1 for i in valid if i < insert_index)
+        target = max(0, min(len(remaining), insert_index - dragged_before_count))
+
+        new_frames = remaining[:target] + dragged + remaining[target:]
+
+        # 顺序是否变化，必须按**对象身份**比较，不能用 `==`。
+        #
+        # `FrameData` 是 dataclass，`==` 是自动生成的值相等。工程里完全相同的帧
+        # 并不罕见 —— 复制帧、同一张源图切出的相同区域、批量粘贴的属性。此时任意
+        # 排列在 `==` 下都"相等"，于是拖到非相邻位置会被误判成无变化而静默忽略：
+        # 用户拖了，什么也没发生，也没有任何提示。
+        #
+        # 顺序的语义是"**哪个帧对象**在哪个位置"，不是"哪个值在哪个位置"。
+        if len(new_frames) == len(self._frames) and all(
+                a is b for a, b in zip(new_frames, self._frames)):
+            return False
+
+        self._frames = new_frames
+
+        # 被拖的帧在新列表中是连续块，占据 [target, target + len(dragged))
+        self._selected_indices = list(range(target, target + len(dragged)))
+
+        # 整体换序：索引到 item 的映射失效，视图必须按模型重建。
+        # 不能用 data_changed —— 它只按索引原地刷新文本、不重排 item（同 reverse_frames）。
+        self.frames_reordered.emit()
+        self.selection_changed.emit()
         return True
 
     def replace_frame_at(self, index: int, frame_data: FrameData) -> bool:
@@ -130,7 +176,18 @@ class TimelineModel(QObject):
             self.data_changed.emit(index, index)
 
     def clear(self):
-        """Clear all frames"""
+        """Clear all frames.
+
+        必须**先发信号再清数据**：`frames_removed` 的处理器（含 Qt 适配层的
+        `beginRemoveRows`）会同步读 `rowCount()`，若此时 `_frames` 已空，
+        Qt 会断言"要删的行数超过了实际行数"并 abort。
+
+        曾经这里不发信号，靠调用方手工 `view.clear()` 清视图 —— 那是典型的
+        "模型改了但视图得自己知道"，列表视图迁到 model/view 后就崩了。
+        """
+        count = len(self._frames)
+        if count:
+            self.frames_removed.emit(0, count)
         self._frames.clear()
         self._selected_indices.clear()
         self._reference_frame = None
@@ -203,26 +260,6 @@ class TimelineModel(QObject):
     def _is_valid_index(self, index: int) -> bool:
         """Check if index is valid"""
         return 0 <= index < len(self._frames)
-
-    def _update_selection_after_move(self, from_index: int, to_index: int):
-        """Update selection after moving a frame"""
-        new_selection = []
-        for idx in self._selected_indices:
-            if idx == from_index:
-                # Moved item
-                new_selection.append(to_index)
-            elif from_index < idx <= to_index:
-                # Items between from and to shift left
-                new_selection.append(idx - 1)
-            elif to_index <= idx < from_index:
-                # Items between to and from shift right
-                new_selection.append(idx + 1)
-            else:
-                # No change
-                new_selection.append(idx)
-
-        self._selected_indices = sorted(list(set(new_selection)))
-        self.selection_changed.emit()
 
     # Batch operations
     def reverse_frames(self, indices: Optional[List[int]] = None):
@@ -323,15 +360,47 @@ class TimelineModel(QObject):
         except ValueError:
             return None
 
+    def set_frames(self, frames: List[FrameData]) -> None:
+        """整体替换帧列表 —— **只发一条**信号，而不是逐帧通知。
+
+        用于撤销恢复这类"整个文档换成另一批帧对象"的场景。曾经那里是
+        `clear()` + 逐帧 `add_frame()`，即 1 次移除 + N 次插入共 **N+1 条**结构变更
+        通知，每条都会让视图做一次布局调整；换成整体替换后只有一条。
+
+        为什么不能复用 `data_changed`：它的语义是"内容变了、索引映射没变"，而这里
+        连帧对象都换了，**行数也可能变**。
+
+        副作用（刻意）：选中下标越界的丢弃、不在新列表里的参考帧清空。调用方随后会
+        按快照恢复这两者（见 `MainWindow._apply_snapshot_inner`）。
+        """
+        self._frames = list(frames)
+        total = len(self._frames)
+        if self._selected_indices:
+            self._selected_indices = [i for i in self._selected_indices if i < total]
+        if self._reference_frame is not None and not any(
+                f is self._reference_frame for f in self._frames):
+            self._reference_frame = None
+        self.frames_replaced.emit()
+
     def set_frames_order(self, frames: List[FrameData]) -> bool:
-        """用给定的帧顺序整体替换模型中的帧列表（用于视图拖拽排序后同步）。
+        """用给定的帧顺序整体替换模型中的帧列表。
 
         注意：传入的列表应包含当前模型中的全部帧对象（同一批对象、仅顺序不同）。
         返回是否真的发生了顺序变更（长度不符或顺序未变时返回 False）。
+
+        **当前无生产调用点**，只被 `dev/test_transform.py`（锁定 `frames_reordered`
+        的信号契约）与 `dev/verify_timeline_view_sync.py` 使用。它曾经是"视图拖拽后
+        把顺序回写模型"的入口，那条回写路径已随第 1 片删除。
+
+        注意与 `set_frames()` 的区别：本方法要求**同一批对象**且**行数不变**
+        （纯换序，发 `frames_reordered`）；`set_frames()` 是换成另一批对象、行数可变
+        （发 `frames_replaced`）。撤销恢复用的是后者。
         """
         if len(frames) != len(self._frames):
             return False
-        if frames == self._frames:
+        # 身份比较，不能用 `==` —— 理由同 move_frames：FrameData 是 dataclass，
+        # 值相等会让完全相同的帧（复制帧、同图同裁切）无论怎么重排都判为"无变化"。
+        if all(a is b for a, b in zip(frames, self._frames)):
             return False
         self._frames = list(frames)
         # 同 reverse_frames：整体换序后索引映射失效，必须让视图按模型重建，

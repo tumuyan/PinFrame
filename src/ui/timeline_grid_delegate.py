@@ -1,8 +1,9 @@
 from PyQt6.QtWidgets import QStyledItemDelegate, QStyleOptionViewItem, QStyle, QApplication
 from PyQt6.QtCore import Qt, QSize, QRectF, QPoint
-from PyQt6.QtGui import QPainter, QColor, QFont, QIcon, QFontMetrics
+from PyQt6.QtGui import QPainter, QColor, QFont, QIcon, QFontMetrics, QBrush
 from typing import Optional
 import logging
+from ui.timeline_item_model import FrameDataRole, ThumbnailRole
 from utils.debug_config import grid_text_debug, grid_text_debug_lines
 
 logger = logging.getLogger(__name__)
@@ -18,20 +19,18 @@ class TimelineGridDelegate(QStyledItemDelegate):
         self._log_printed = False  # Flag to ensure only first frame logs
 
     def paint(self, painter: QPainter, option: QStyleOptionViewItem, index):
-        """Paint item with frame number overlay"""
-        # Get widget and item first
+        """Paint item with frame number overlay.
+
+        数据全部**按 index 现取**（`FrameDataRole` / `ThumbnailRole`），视图侧不存
+        任何副本 —— 迁移前是从 `widget.itemFromIndex(index)` 拿 `QListWidgetItem`
+        再读它的 UserRole / text / font 的。
+        """
         widget = option.widget
-        if widget is None:
+        if widget is None or not index.isValid():
             super().paint(painter, option, index)
             return
 
-        item = widget.itemFromIndex(index)
-        if item is None:
-            super().paint(painter, option, index)
-            return
-
-        # Get frame data from item
-        frame_data = item.data(Qt.ItemDataRole.UserRole)
+        frame_data = index.data(FrameDataRole)
         if frame_data is None:
             super().paint(painter, option, index)
             return
@@ -39,8 +38,26 @@ class TimelineGridDelegate(QStyledItemDelegate):
         # Save painter state
         painter.save()
 
-        # Draw background and icon using Qt's default implementation
-        super().paint(painter, option, index)
+        # 用改写过的 option 走 Qt 默认绘制：只让它画**背景/选中态 + 图标**，
+        # 文本与配色完全交给本 delegate。
+        #
+        # 为什么要改写而不是直接 super().paint(painter, option, index)：
+        #  - 本 model 被列表视图共享，它在文件名列返回了参考帧的绿色 BackgroundRole
+        #    与加粗 FontRole；网格若照单全收，参考帧的**整个格子**都会变绿（原本
+        #    只有底部文字条是绿的），外观就变了。
+        #  - 缩略图走 ThumbnailRole（自定义角色），默认绘制不认识它，因此显式塞进
+        #    option.icon 让它画在与以前完全相同的位置。
+        paint_option = QStyleOptionViewItem(option)
+        paint_option.text = ""                   # 文本由 _draw_custom_text 自行绘制
+        paint_option.backgroundBrush = QBrush()  # 忽略 model 的参考帧底色
+
+        # 参考帧加粗由本 delegate 依据 frame_data 直接判定，不依赖 model 的 FontRole
+        # —— 那样就等于依赖"当前显示的是哪一列"（model 只在文件名列返回加粗）。
+        is_ref = (frame_data is getattr(widget, 'reference_frame_data', None))
+        font = index.data(Qt.ItemDataRole.FontRole)
+        paint_option.font = font if font is not None else QFont()
+        paint_option.font.setBold(is_ref)
+        super().paint(painter, paint_option, index)
 
         # Calculate icon position
         icon_size = widget.iconSize()
@@ -51,6 +68,20 @@ class TimelineGridDelegate(QStyledItemDelegate):
             icon_size.height()
         )
 
+        # 缩略图**必须自己画**，不能塞进 `option.icon` 交给 super().paint()。
+        #
+        # `QStyledItemDelegate.paint()` 内部会先调 `initStyleOption()`，而那个函数按
+        # model 的 **DecorationRole** 重新设置 `option.icon` 与 `HasDecoration` 标志。
+        # 本 model 的 DecorationRole 恒为 None（缩略图走自定义 ThumbnailRole —— 两个
+        # 视图共享同一个 model，用 DecorationRole 会让列表视图每格都冒出图标），于是
+        # 塞进 option.icon 的缩略图被直接丢弃，表现为网格一片空白。
+        # 实测：手动塞 option.icon → 红像素 0；自己 drawPixmap → 红像素 4800。
+        # 用 `toRect()`：QPainter.drawPixmap 没有 (QRectF, QPixmap) 重载，只有
+        # (QRect, QPixmap)。这里不缩放 —— 缩略图已按 iconSize 生成好。
+        thumbnail = index.data(ThumbnailRole)
+        if thumbnail is not None and not thumbnail.isNull():
+            painter.drawPixmap(icon_rect.toRect(), thumbnail)
+
         # Draw frame number overlay
         frame_number = index.row() + 1
         self._draw_frame_number(painter, icon_rect, frame_number)
@@ -60,19 +91,36 @@ class TimelineGridDelegate(QStyledItemDelegate):
             self._draw_disabled_overlay(painter, icon_rect)
 
         # Draw custom multiline text
-        self._draw_custom_text(painter, option, item, index)
+        self._draw_custom_text(painter, option, frame_data, index)
 
         # Restore painter state
         painter.restore()
 
-    def _draw_custom_text(self, painter: QPainter, option: QStyleOptionViewItem, item, index):
-        """Draw the item text (filename) with smart truncation"""
-        text = item.text()
+    @staticmethod
+    def _display_text(frame_data) -> str:
+        """网格里显示的文件名：基名 + 切片位置。
+
+        刻意**不含**参考帧前缀 —— 那是列表视图的表示法（网格用底色与加粗体现）。
+        """
+        fname = frame_data.file_path.rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
+        if frame_data.slice_pos:
+            fname += f" [{frame_data.slice_pos[0]},{frame_data.slice_pos[1]}]"
+        return fname
+
+    def _draw_custom_text(self, painter: QPainter, option: QStyleOptionViewItem,
+                          frame_data, index):
+        """Draw the item text (filename) with smart truncation.
+
+        文本直接由 frame_data 算出，不再读 `item.text()`：网格显示的是"文件名
+        (+切片位置)"，**不带**参考帧前缀（那是列表视图的表示法，靠底色与加粗体现）。
+        自己算也就不再依赖"当前显示的是 model 的哪一列"。
+        """
+        text = self._display_text(frame_data)
         if not text:
             return
 
-        # Get font from item or use default
-        font = item.font()
+        # 字体：model 在文件名列返回了参考帧的加粗 FontRole，这里以其为基准
+        font = index.data(Qt.ItemDataRole.FontRole)
         if font is None:
             font = QFont()
 
@@ -119,11 +167,12 @@ class TimelineGridDelegate(QStyledItemDelegate):
         if widget and hasattr(widget, 'is_dark_theme'):
             is_dark_theme = widget.is_dark_theme
 
-        # Check if this is a reference frame
-        is_ref = False
-        frame_data = item.data(Qt.ItemDataRole.UserRole)
-        if frame_data and hasattr(widget, 'reference_frame_data'):
-            is_ref = (frame_data is widget.reference_frame_data)
+        # Check if this is a reference frame（frame_data 由 paint() 按 index 取好传入，
+        # 不再从 item 的 UserRole 读 —— 那是第二处 item 依赖）
+        is_ref = bool(
+            frame_data is not None
+            and hasattr(widget, 'reference_frame_data')
+            and frame_data is widget.reference_frame_data)
 
         # Get text color and background based on selection state and theme
         if option.state & QStyle.StateFlag.State_Selected:

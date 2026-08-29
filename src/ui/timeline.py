@@ -1,10 +1,10 @@
-from PyQt6.QtWidgets import QStackedWidget, QListWidgetItem, QTreeWidgetItem
+from PyQt6.QtWidgets import QStackedWidget
 from PyQt6.QtCore import Qt, pyqtSignal, QTimer, QItemSelectionModel, QModelIndex
 from i18n.manager import i18n
 from ui.timeline_grid import TimelineGridWidget
 from ui.timeline_list import TimelineListView
-from ui.timeline_base_view import BaseTimelineView, TimelineViewUtils
 from ui.timeline_model import TimelineModel
+from ui.timeline_item_model import TimelineItemModel
 from model.project_data import FrameData
 from utils.debug_config import timeline_debug
 from typing import List, Optional
@@ -15,6 +15,9 @@ class TimelineWidget(QStackedWidget):
 
     selection_changed = pyqtSignal(list)
     order_changed = pyqtSignal()
+    # 顺序变更**前**发出，供 MainWindow 捕获撤销快照。
+    # 顺序现在在信号发出时还没变，等 order_changed 再捕获快照就已经是新的了。
+    reorder_about_to_happen = pyqtSignal()
     files_dropped = pyqtSignal(list, int)
     copy_properties_requested = pyqtSignal()
     paste_properties_requested = pyqtSignal()
@@ -38,10 +41,14 @@ class TimelineWidget(QStackedWidget):
         # Create data model
         self.model = TimelineModel()
 
+        # Qt 适配层 —— **两个视图共用同一个实例**。
+        # 这是它们能共享 QItemSelectionModel 的前提（P1-3 的核心收益）：
+        # 选中因此只有一份，切换视图不再需要任何同步仪式。
+        self.item_model = TimelineItemModel(self.model, self)
+
         # Connect model signals to view updates
         self.model.frames_inserted.connect(self._on_frames_inserted)
         self.model.frames_removed.connect(self._on_frames_removed)
-        self.model.frames_moved.connect(self._on_frames_moved)
         self.model.frames_reordered.connect(self._on_frames_reordered)
         self.model.data_changed.connect(self._on_data_changed)
         self.model.frame_disabled_changed.connect(self._on_frame_disabled_changed)
@@ -49,10 +56,23 @@ class TimelineWidget(QStackedWidget):
 
         # Create list view (tree widget)
         self.list_view = TimelineListView(self)
+        self.list_view.bind_model(self.model)  # 帧数据与顺序的真源
         self._connect_view_signals(self.list_view)
 
         # Create grid view
         self.grid_view = TimelineGridWidget(self)
+        self.grid_view.bind_model(self.model)
+        # **选中只有一份** —— 让网格沿用列表的选择模型。
+        #
+        # 注意：光是两个视图 `setModel()` 同一个实例，Qt 并不会共享选中 ——
+        # `QAbstractItemView.setModel()` 会给每个视图各建一个新的
+        # QItemSelectionModel。必须显式 `setSelectionModel()` 才是"选中只有一份"。
+        #
+        # 顺序有讲究：列表先构造并已绑定模型，它的 selectionModel 此时才有效。
+        # 用 `adopt_shared_selection_model` 而不是直接 `setSelectionModel`：换
+        # selectionModel 会丢弃旧模型上的连接，必须在之后重连本视图的信号，
+        # 否则点击网格里的帧不会通知到属性面板与预览区。
+        self.grid_view.adopt_shared_selection_model(self.list_view.selectionModel())
         self._connect_view_signals(self.grid_view, is_grid=True)
 
         # Add both views to stacked widget
@@ -80,6 +100,7 @@ class TimelineWidget(QStackedWidget):
         view.selection_changed.connect(self._on_view_selection_changed)
         view.selection_changed.connect(self.selection_changed)
         view.order_changed.connect(self.order_changed)
+        view.reorder_about_to_happen.connect(self.reorder_about_to_happen)
         view.files_dropped.connect(self.files_dropped)
         view.copy_properties_requested.connect(self.copy_properties_requested)
         view.paste_properties_requested.connect(self.paste_properties_requested)
@@ -105,69 +126,24 @@ class TimelineWidget(QStackedWidget):
         self.list_view.set_editors(editors)
         self.grid_view.set_editors(editors)
 
-    def _view_in_sync_with_model(self, mode) -> bool:
-        """目标视图的 item 是否与模型逐位一致（同一批 frame_data 对象、同一顺序）。
-
-        为什么需要它：`_on_data_changed` 出于性能只更新**当前活动**视图（另一个视图
-        不可见，重建缩略图是白花的磁盘 I/O），而 `refresh_current_items()` 只重画
-        **外观**、不刷新**数据**（它用的是 item 里 UserRole 挂着的旧 frame_data）。
-        于是非活动视图会停留在上一次同步时的状态：在当前视图反转顺序、拖拽排序或
-        改帧属性之后，另一个视图仍是旧顺序 / 旧值。切过去时若只调 refresh，就是把
-        陈旧数据重新画一遍，看起来"数据不一致"。
-
-        视图是只读消费者、模型才是真源，因此切换前必须校验，不一致就按模型重建。
-        """
-        total = self.model.get_frame_count()
-        if mode == "list":
-            if self.list_view.topLevelItemCount() != total:
-                return False
-            for i in range(total):
-                item = self.list_view.topLevelItem(i)
-                if item.data(0, Qt.ItemDataRole.UserRole) is not self.model.get_frame_at(i):
-                    return False
-            return True
-
-        if self.grid_view.count() != total:
-            return False
-        for i in range(total):
-            item = self.grid_view.item(i)
-            if item.data(Qt.ItemDataRole.UserRole) is not self.model.get_frame_at(i):
-                return False
-        return True
-
     def set_view_mode(self, mode):
         """Switch between list and grid view"""
         timeline_debug(f"[Timeline] Switching view mode to: {mode}")
+        # 选定的视图只需重绘**内容** —— `_on_data_changed` 出于性能刻意跳过非活动
+        # 视图，它的文本/缩略图可能已陈旧。顺序恒等于模型，无需处理。
+        #
+        # **选中不需要同步**：两个视图挂同一个适配层 model，共享同一个
+        # QItemSelectionModel —— 选中只有一份，切换视图时自动带过去。迁移前这里要
+        # 手工 `clearSelection()` + 按模型重设，还因此出过"重建非当前视图时把选中
+        # 写串了"的缺陷。
         if mode == "list":
             self.setCurrentWidget(self.list_view)
             self.current_view_mode = "list"
-            # 非活动视图可能已陈旧，先按模型校正；一致时才走廉价的就地重绘
-            if self._view_in_sync_with_model("list"):
-                self.list_view.refresh_current_items()
-            else:
-                self._rebuild_list_view()
-            # Sync selection from model to list view
-            selected_indices = self.model.get_selected_indices()
-            # Block ALL Qt signals first
-            self._block_all_signals()
-            self.list_view.clearSelection()
-            self._apply_selection_to_view(selected_indices)
-            self._unblock_all_signals()
+            self.list_view.refresh_current_items()
         elif mode == "grid":
             self.setCurrentWidget(self.grid_view)
             self.current_view_mode = "grid"
-            # 同上：陈旧则重建，否则就地重绘
-            if self._view_in_sync_with_model("grid"):
-                self.grid_view.refresh_current_items()
-            else:
-                self._rebuild_grid_view()
-            # Sync selection from model to grid view
-            selected_indices = self.model.get_selected_indices()
-            # Block ALL Qt signals first
-            self._block_all_signals()
-            self.grid_view.clearSelection()
-            self._apply_selection_to_view(selected_indices)
-            self._unblock_all_signals()
+            self.grid_view.refresh_current_items()
 
     def get_view_mode(self):
         """Return current view mode"""
@@ -204,65 +180,31 @@ class TimelineWidget(QStackedWidget):
         for i in range(count):
             frame_data = self.model.get_frame_at(index + i)
             if frame_data:
-                # Add to both views (尺寸统一由 FrameData.base_size/effective_target_size 计算)
+                # 两个视图都是 Qt model/view：适配层已把 frames_inserted 翻译成
+                # beginInsertRows，视图自动跟随。这里不再需要任何手工镜像。
                 filename = os.path.basename(frame_data.file_path)
-                self.list_view.add_frame(filename, frame_data, index=index + i)
-                self.grid_view.add_frame(filename, frame_data, index + i)
 
     def _on_frames_removed(self, index: int, count: int):
         """Handle frame removal from model"""
         timeline_debug(f"[Timeline] Frames removed at index {index}, count: {count}")
-        # Remove from both views (remove from end first)
-        for i in range(count):
-            idx_to_remove = index + (count - 1 - i)
-            if idx_to_remove < self.list_view.topLevelItemCount():
-                self.list_view.takeTopLevelItem(idx_to_remove)
-            if idx_to_remove < self.grid_view.count():
-                self.grid_view.takeItem(idx_to_remove)
-
-    def _on_frames_moved(self, from_index: int, to_index: int, count: int):
-        """Handle frame movement from model"""
-        timeline_debug(f"[Timeline] Frames moved from {from_index} to {to_index}, count: {count}")
-        # Rebuild both views
-        total_frames = self.model.get_frame_count()
-        selected_indices = self.model.get_selected_indices()
-
-        self._block_all_signals()
-        # Rebuild list view
-        self.list_view.clear()
-        for i in range(total_frames):
-            frame_data = self.model.get_frame_at(i)
-            if frame_data:
-                filename = os.path.basename(frame_data.file_path)
-                self.list_view.add_frame(filename, frame_data, index=i)
-
-        # Rebuild grid view
-        self.grid_view.clear()
-        for i in range(total_frames):
-            frame_data = self.model.get_frame_at(i)
-            if frame_data:
-                filename = os.path.basename(frame_data.file_path)
-                self.grid_view.add_frame(filename, frame_data, i)
-
-        self._apply_selection_to_view(selected_indices)
-        self._unblock_all_signals()
+        # 两个视图都由适配层 model 的 frames_removed → beginRemoveRows 自动跟随
 
     def _on_frames_reordered(self):
-        """Handle wholesale reordering (reverse / drag-drop sort).
+        """Handle wholesale reordering (reverse / drag-drop sort / set_frames_order).
 
         The frame objects themselves are unchanged — what changed is the index→item
-        mapping, so this cannot be handled by refreshing item text in place. Both views
-        must be re-checked against the model; only the out-of-sync ones get rebuilt.
-        (On drag-reorder the initiating view is already correct; rebuilding it would
-        throw away the item state it just arranged.)
+        mapping, so this cannot be handled by refreshing item text in place.
+
+        The order now lives **only** in the model (drag-drop calls
+        `model.move_frames` instead of shuffling items). Both views are Qt
+        model/view, so the adapter model's `beginResetModel` already makes them
+        re-fetch everything by row — there is nothing to re-sort here.
+
+        What remains: `beginResetModel` **clears the QItemSelectionModel**, so the
+        selection has to be re-applied from the model afterwards.
         """
         timeline_debug("[Timeline] Frames reordered")
-        self._block_all_signals()
-        if not self._view_in_sync_with_model("list"):
-            self._rebuild_list_view()
-        if not self._view_in_sync_with_model("grid"):
-            self._rebuild_grid_view()
-        self._unblock_all_signals()
+        self._restore_selection_from_model()
 
     def _on_data_changed(self, start_index: int, end_index: int):
         """Handle frame data change from model
@@ -270,45 +212,22 @@ class TimelineWidget(QStackedWidget):
         性能约定：**只更新当前活动视图**。另一个视图不可见，为它重建缩略图是白花的
         磁盘 I/O，而属性面板拖滑块时本信号会以每帧一次的频率触发。
 
-        代价是非活动视图会停留在上一次同步时的状态（顺序变了、帧属性变了它都不知道），
-        因此 `set_view_mode` 切换过去之前必须用 `_view_in_sync_with_model` 校验并按
-        需要重建。**不要**为了让本方法"看起来更正确"而改成同时更新两个视图。
+        代价是非活动视图会停留在上一次同步时的状态（**帧属性**变了它不知道），因此
+        `set_view_mode` 切换过去时要重绘一次内容。**顺序**不会陈旧 —— 顺序只能由模型
+        改（拖拽走 `model.move_frames` → `frames_reordered`），视图不持有顺序。
+
+        **不要**为了让本方法"看起来更正确"而改成同时更新两个视图。
         """
         timeline_debug(f"[Timeline] Data changed from index {start_index} to {end_index}")
         # Get selection before update
         selection_before = self.model.get_selected_indices()
 
-        # 防御：本信号的语义是"内容变了、位置没变"，下面的原地刷新不会重排 item。
-        # 若有人误用它承载顺序变更，视图会静默停留在旧顺序——宁可退化成一次重建
-        # 也不要显示错数据。O(n) 的引用比较，相对缩略图重建可以忽略。
-        if not self._view_in_sync_with_model(self.current_view_mode):
-            self.rebuild_current_view()
-            return
+        # 顺序无需校验：顺序只能由模型改（拖拽走 model.move_frames → frames_reordered），
+        # 本信号的语义就是"内容变了、位置没变"，因此下面的原地刷新是安全的。
+        # （曾经这里要靠 _view_in_sync_with_model 兜底，因为视图会自己搬 item。）
 
-        # Only update the currently active view
-        self._block_all_signals()
-        if self.current_view_mode == "list":
-            for idx in range(start_index, end_index + 1):
-                frame_data = self.model.get_frame_at(idx)
-                if frame_data:
-                    filename = os.path.basename(frame_data.file_path)
-
-                    # Update list view only
-                    if idx < self.list_view.topLevelItemCount():
-                        item = self.list_view.topLevelItem(idx)
-                        self.list_view.update_item_display(item, frame_data)
-        else:
-            # Grid mode - only update grid view
-            for idx in range(start_index, end_index + 1):
-                frame_data = self.model.get_frame_at(idx)
-                if frame_data:
-                    filename = os.path.basename(frame_data.file_path)
-
-                    # Update grid view only
-                    if idx < self.grid_view.count():
-                        self.grid_view.update_frame(idx, frame_data, filename)
-
-        self._unblock_all_signals()
+        # 两个视图都是 Qt model/view：适配层已把 dataChanged 转发给视图，
+        # 单元格文本与缩略图都是现算的，无需任何手工刷新。
 
         # Check selection after update
         selection_after = self.model.get_selected_indices()
@@ -319,17 +238,9 @@ class TimelineWidget(QStackedWidget):
     def _on_frame_disabled_changed(self, index: int, is_disabled: bool):
         """Handle frame disabled state change from model.
 
-        The delegate reads frame_data.is_disabled directly, so we only need to
-        trigger a repaint of the affected row in the current view.
+        两个视图都是 Qt model/view，适配层已对受影响的行发 `dataChanged`，
+        视图自动重绘，无需处理。
         """
-        if self.current_view_mode == "list":
-            if 0 <= index < self.list_view.topLevelItemCount():
-                item = self.list_view.topLevelItem(index)
-                self.list_view.viewport().update(self.list_view.visualItemRect(item))
-        else:
-            if 0 <= index < self.grid_view.count():
-                item = self.grid_view.item(index)
-                self.grid_view.viewport().update(self.grid_view.visualItemRect(item))
 
     def _on_model_selection_changed(self):
         """Handle selection change from model"""
@@ -378,9 +289,16 @@ class TimelineWidget(QStackedWidget):
         """Remove multiple frames at indices through model"""
         self.model.remove_frames_at(indices)
 
-    def move_frame(self, from_index: int, to_index: int):
-        """Move frame through model"""
-        self.model.move_frame(from_index, to_index)
+    # `move_frame` / `move_frames` 转发已删除 —— 视图直接调 `model.move_frames()`
+    # （顺序的唯一入口），不需要经过本类再绕一层。
+
+    def set_frames(self, frames: List[FrameData]):
+        """整体替换帧列表（撤销恢复）—— 只发一条信号，不逐帧通知。
+
+        见 `TimelineModel.set_frames` 的说明：曾经这里是 `clear()` + 逐帧
+        `add_frame()`，共 N+1 条结构变更通知。
+        """
+        self.model.set_frames(frames)
 
     def update_frame_data(self, index: int):
         """Notify model that frame data changed"""
@@ -388,9 +306,10 @@ class TimelineWidget(QStackedWidget):
 
     def clear(self):
         """Clear all data"""
-        self.model.clear()
-        self.list_view.clear()
-        self.grid_view.clear()
+        self.model.clear()  # 发 frames_removed → 适配层清行 → 两视图自动跟随
+        # 只需清缩略图缓存 —— 那属于网格视图（列表视图没有缩略图）。
+        # 迁移前两视图各有一个 clear_view()，列表那个迁到 model/view 后退化为空，已删。
+        self.grid_view.clear_view()
 
     def set_reference_frame(self, frame_data: Optional[FrameData]):
         """Set reference frame through model"""
@@ -403,12 +322,6 @@ class TimelineWidget(QStackedWidget):
     def get_reference_frame(self) -> Optional[FrameData]:
         """Get reference frame from model"""
         return self.model.get_reference_frame()
-
-    def load_frames(self, frames: List[FrameData]):
-        """Load frames into model and views"""
-        self.model.clear()
-        for frame_data in frames:
-            self.model.add_frame(frame_data)
 
     # ========== Unified interface methods (using model) ==========
     def get_selected_indices_from_model(self) -> List[int]:
@@ -423,21 +336,13 @@ class TimelineWidget(QStackedWidget):
         """Get frame data from model"""
         return self.model.get_frame_at(index)
 
-    def extract_frame_data_from_item(self, item):
-        """Extract frame data from an item (works for both QTreeWidgetItem and QListWidgetItem)"""
-        return TimelineViewUtils.extract_frame_data_from_item(item)
+    # `extract_frame_data_from_item` 已删除 —— 两个视图都不再有 item 对象，
+    # 它成了唯一还依赖 `QTreeWidgetItem` / `QListWidgetItem` 的死代码。
+    # 需要帧数据请直接用 `get_frame_data_at_index()` 或 `get_selected_frames()`。
 
-    def add_frame_to_current_view(self, filename: str, frame_data, index: int):
-        """Add frame to current view"""
-        current = self.get_current_widget()
-        if hasattr(current, 'add_frame_to_view'):
-            current.add_frame_to_view(filename, frame_data, index)
-
-    def remove_frame_from_current_view(self, index: int):
-        """Remove frame from current view"""
-        current = self.get_current_widget()
-        if hasattr(current, 'remove_frame_from_view'):
-            current.remove_frame_from_view(index)
+    # `add_frame_to_current_view` / `remove_frame_from_current_view` 已删除 ——
+    # 它们转发到视图的 add_frame_to_view/remove_frame_from_view，而那两个方法在
+    # 两视图迁到 model/view 后已退化为空（视图由模型信号自动跟随），整条链是空的。
 
     # Forward methods to current view
     def block_selection_signals(self, block: bool):
@@ -459,12 +364,7 @@ class TimelineWidget(QStackedWidget):
         self.list_view.refresh_visuals()
         self.grid_view.refresh_visuals()
 
-    def update_item_display(self, item, frame_data):
-        """Update display of a single item in current view"""
-        if self.current_view_mode == "list":
-            self.list_view.update_item_display(item, frame_data)
-        else:
-            self.grid_view.update_item_display(item, frame_data)
+    # `update_item_display` 已删除 —— 死代码，且 list 分支指向了一个已被删掉的方法。
 
     def refresh_ui_text(self):
         self.list_view.refresh_ui_text()
@@ -484,48 +384,41 @@ class TimelineWidget(QStackedWidget):
         else:
             self._rebuild_grid_view()
 
-    def _rebuild_list_view(self):
-        """Rebuild list view from model"""
-        # Store selection before clearing
+    def _restore_selection_from_model(self):
+        """按模型恢复选中 —— model reset 之后的唯一必要动作。
+
+        两个视图共享同一个 `QItemSelectionModel`（挂同一个适配层 model），因此选中
+        **只有一份**，恢复一次即可，不存在"两个视图各自记一份"的问题。
+
+        为什么必须显式恢复：`beginResetModel`/`endResetModel` 会清掉
+        `QItemSelectionModel`，而业务模型 `TimelineModel` 的选中仍然存在（它是
+        model 之外的一份状态，reset 影响不到它）。不恢复的话，反转/拖拽之后界面上
+        就什么都不选中了。
+        """
         selected_indices = set(self.model.get_selected_indices())
+        self._block_all_signals()
+        self._apply_selection_to_view(selected_indices, self.current_view_mode)
+        self._unblock_all_signals()
 
-        self.list_view.clear()
-        total_frames = self.model.get_frame_count()
+    def _rebuild_list_view(self):
+        """列表视图：model reset 之后只需恢复选中。
 
-        for i in range(total_frames):
-            frame_data = self.model.get_frame_at(i)
-            if frame_data:
-                # 尺寸统一由 FrameData.base_size/effective_target_size 计算
-                filename = os.path.basename(frame_data.file_path)
-                self.list_view.add_frame(filename, frame_data, index=i)
-
-        # Restore selection after rebuild (block signals to avoid triggering model update)
+        内容是 model 的 `data()` 现算的，不存在"重建"这回事。但
+        `beginResetModel`/`endResetModel` 会清掉 selectionModel，所以选中必须重设。
+        """
+        selected_indices = set(self.model.get_selected_indices())
         if selected_indices:
             self.list_view.blockSignals(True)
             self._apply_selection_to_view(selected_indices, "list")
             self.list_view.blockSignals(False)
 
     def _rebuild_grid_view(self):
-        """Rebuild grid view from model"""
-        # Store selection before clearing
-        selected_indices = set(self.model.get_selected_indices())
+        """网格视图：model reset 之后只需恢复选中（同列表视图）。
 
-        self.grid_view.clear()
-        total_frames = self.model.get_frame_count()
-
-        for i in range(total_frames):
-            frame_data = self.model.get_frame_at(i)
-            if frame_data:
-                filename = os.path.basename(frame_data.file_path)
-                self.grid_view.add_frame(filename, frame_data, i)
-
-        # Restore selection after rebuild (block signals to avoid triggering model update)
-        if selected_indices:
-            self.grid_view.blockSignals(True)
-            self.grid_view.block_selection_signals_internal(True)
-            self._apply_selection_to_view(selected_indices, "grid")
-            self.grid_view.blockSignals(False)
-            self.grid_view.block_selection_signals_internal(False)
+        内容由 model 的 `data()` 现算，缩略图缓存在网格视图里、与行序无关，
+        都不需要"重建"。
+        """
+        self._restore_selection_from_model()
 
     def refresh_all_grid_items(self):
         """Refresh all grid items (thumbnails and text)"""
@@ -563,7 +456,7 @@ class TimelineWidget(QStackedWidget):
             # Sync currentIndex & anchor for Shift/Ctrl range selection
             if selected_set:
                 target_idx = max(selected_set)
-                if 0 <= target_idx < self.list_view.topLevelItemCount():
+                if 0 <= target_idx < self.list_view.model().rowCount():
                     model_idx = self.list_view.model().index(target_idx, 0, QModelIndex())
                     if model_idx.isValid() and self.list_view.selectionModel():
                         self.list_view.selectionModel().setCurrentIndex(
@@ -573,19 +466,15 @@ class TimelineWidget(QStackedWidget):
                 if self.list_view.selectionModel():
                     self.list_view.selectionModel().clearCurrentIndex()
         else:
-            # Grid view: iterate through items
-            item_count = self.grid_view.count()
-            for idx in range(item_count):
-                item = self.grid_view.item(idx)
-                should_select = idx in selected_set
-                if item.isSelected() != should_select:
-                    item.setSelected(should_select)
+            # Grid view
+            self.grid_view._apply_selection_from_set(selected_set)
 
             # Sync currentIndex & anchor for Shift/Ctrl range selection
             if selected_set:
                 target_idx = max(selected_set)
-                if 0 <= target_idx < self.grid_view.count():
-                    model_idx = self.grid_view.model().index(target_idx, 0, QModelIndex())
+                if 0 <= target_idx < self.grid_view.model().rowCount():
+                    model_idx = self.grid_view.model().index(
+                        target_idx, self.grid_view.modelColumn(), QModelIndex())
                     if model_idx.isValid() and self.grid_view.selectionModel():
                         self.grid_view.selectionModel().setCurrentIndex(
                             model_idx, QItemSelectionModel.SelectionFlag.NoUpdate
@@ -627,62 +516,21 @@ class TimelineWidget(QStackedWidget):
     def setMinimumHeight(self, height):
         super().setMinimumHeight(height)
 
-    def selectedItems(self):
-        """Get selected items from current view"""
-        return self.get_current_widget().selectedItems()
-
-    def currentItem(self):
-        """Get current item from current view"""
-        return self.get_current_widget().currentItem()
-
-    def setCurrentItem(self, item):
-        """Set current item in current view"""
-        # Find the corresponding item in the current view by index
-        if isinstance(item, QTreeWidgetItem):  # QTreeWidgetItem from list view
-            index = self.list_view.indexOfTopLevelItem(item)
-            if self.current_view_mode == "list":
-                self.list_view.setCurrentItem(item)
-            elif index >= 0 and index < self.grid_view.count():
-                self.grid_view.setCurrentItem(self.grid_view.item(index))
-        elif isinstance(item, QListWidgetItem):  # QListWidgetItem from grid view
-            index = self.grid_view.row(item)
-            if self.current_view_mode == "grid":
-                self.grid_view.setCurrentItem(item)
-            elif index >= 0 and index < self.list_view.topLevelItemCount():
-                self.list_view.setCurrentItem(self.list_view.topLevelItem(index))
-        else:
-            # Fallback: try to determine by view mode
-            if self.current_view_mode == "list" and self.list_view.topLevelItemCount() > 0:
-                self.list_view.setCurrentItem(self.list_view.topLevelItem(0))
-            elif self.grid_view.count() > 0:
-                self.grid_view.setCurrentItem(self.grid_view.item(0))
-
-    def setCurrentIndex(self, index):
-        """Set current index in current view"""
-        self.get_current_widget().setCurrentIndex(index)
-
-    def topLevelItem(self, index):
-        """Get top level item from list view"""
-        return self.list_view.topLevelItem(index)
-
-    def topLevelItemCount(self):
-        """Get top level item count from list view"""
-        return self.list_view.topLevelItemCount()
-
-    def indexOfTopLevelItem(self, item):
-        """Get index of top level item from list view"""
-        return self.list_view.indexOfTopLevelItem(item)
-
-    def takeTopLevelItem(self, index):
-        """Remove frame at index using model"""
-        self.model.remove_frame_at(index)
-
-    def insertTopLevelItem(self, index, item):
-        """This method is deprecated - use model.add_frame instead"""
-        # Extract frame data from item and add to model
-        frame_data = self.list_view._extract_frame_data_from_item(item)
-        if frame_data:
-            self.model.add_frame(frame_data, index)
+    def setCurrentRow(self, row: int):
+        """Set the current row in both views (used to follow playback)."""
+        if row < 0:
+            return
+        for view in (self.list_view, self.grid_view):
+            if row >= view.model().rowCount():
+                continue
+            index = view.model().index(row, 0)
+            if not index.isValid():
+                continue
+            view.setCurrentIndex(index)
+            sel = view.selectionModel()
+            if sel is not None:
+                sel.select(index, QItemSelectionModel.SelectionFlag.ClearAndSelect
+                           | QItemSelectionModel.SelectionFlag.Rows)
 
     def count(self):
         """Get item count from model"""

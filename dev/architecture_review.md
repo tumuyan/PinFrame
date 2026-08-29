@@ -21,6 +21,7 @@
 - [P3 其余问题](#p3其余问题)
 - [最小起步建议](#最小起步建议)
 - [P0-1 实施记录](#p0-1-实施记录)
+- [P1-3 实施计划](#p1-3-实施计划)
 - [复核方法](#复核方法)
 
 ---
@@ -132,6 +133,23 @@ def resolve_frame_geometry(frame: FrameData, canvas_w: int, canvas_h: int) -> Fr
 ---
 
 ## P1-3｜`TimelineModel` 不是 `QAbstractItemModel`，两个视图是 item-based widget
+
+> **状态：未实现，且未过时（复核日期 2026-08-29，基线 `main` @ `2718d99`）。**
+> 原文事实逐条复核**全部成立**，仅行号位移（`TimelineModel` 现 `timeline_model.py:5`、
+> `_connect_view_signals` 现 `timeline.py:78`、`_on_frames_inserted` 现 `timeline.py:200`
+> 且签名不一致一字未改、`extract_frame_data_from_item` 仍 `timeline_base_view.py:97`）。
+>
+> **成本比评审时更高**，新增两处衍生债务：`_view_in_sync_with_model`
+> （`timeline.py:108-136`，存在的前提就是"视图持有数据副本会变陈旧"）与
+> `timeline_grid_delegate.py`（570 行，`:34`/`:124` 走 `item.data()`）。时间轴已达
+> **3412 行 / 7 文件**。另有两处迁移阻力需单独计价：列表 `setColumnCount(8)`
+> （`timeline_list.py:109`）意味着要做多列 model，外部文件拖入（`mimeData().hasUrls()`
+> 分支）在两视图各 3 处需统一进 model 的 `dropMimeData`。
+>
+> **前置条件部分满足**：`dev/verify_timeline_view_sync.py` 提供 4 个 offscreen 交互
+> 回归测试。但它们断言的是"视图与模型一致"——迁移后该性质由框架保证、恒真，
+> 因此迁移时需**改写**（转去断言 model 与 `QItemSelectionModel` 契约）而非直接复用。
+> 实施顺序见文末 [P1-3 实施计划](#p1-3-实施计划)。
 
 **这是时间轴全部复杂度的根因。**
 
@@ -475,6 +493,416 @@ H 镜像那行最危险：不是失效，而是**静默变成 180° 旋转**，�
 
 P0-1 的测试资产现在可以为 P1-3（`QAbstractItemModel` 迁移）提供部分回归网，但基线只
 覆盖渲染输出、不覆盖时间轴交互，动 P1-3 前仍需补交互层的验证手段。
+
+---
+
+## P1-3 实施计划
+
+> 起始日期：2026-08-29，基线 `main` @ `2718d99`。本节记录分三片推进的**计划与每片的
+> 实际偏差**（沿用 P0-1 实施记录的写法，做完一片补一片）。
+
+一次性替换 3412 行风险过高，改为三片推进。但**不能停在第 1 片** —— 半途停下会同时
+承担旧成本与新成本，正是 P1-4 批评的"有维护成本、无抽象收益"。
+
+### 第 1 片：模型成为顺序的唯一权威（原方案已废弃）
+
+> **原方案（"视图零数据副本"）已废弃，原因记录在此以免重犯。**
+>
+> 原计划让所有取数点绕开 item、按 index 直接问模型，并让 item 的 `UserRole` 只挂索引。
+> **这行不通**：item 的 `UserRole` 挂的是 `FrameData` **引用**而非副本，它承载的语义是
+> **"第 i 行是哪个帧"，即视图自己的排列顺序**。而顺序是视图的**合法状态** —— 内部拖拽
+> 直接对 item 做 `takeTopLevelItem`/`insertTopLevelItem`（`timeline_list.py:450-455`），
+> 模型并不知情，之后由 `main_window.on_order_changed`（`main_window.py:3030-3043`）把视图
+> 顺序**回写**给模型。若让 `get_frame_data_at_index()` 改走模型，读到的将永远是模型顺序，
+> 视图→模型的回写恒为空操作，**拖拽排序直接失效**。
+>
+> 教训：真正该消灭的不是"item 持有帧引用"，而是**"视图拥有 index→frame 映射"这件事
+> 本身**。这只有第 2 片能做到。
+
+修订后的第 1 片 —— 不动取数方式，改为把**顺序**的权威从视图搬到模型：
+
+- 视图的拖拽/重排不再直接搬 item，而是调 `model.move_frames(...)`；模型改完发
+  `frames_reordered`，视图按模型重建。**视图从此不再拥有顺序。**
+- 于是可删 `_view_in_sync_with_model`（`timeline.py:108-136`）—— 它防御的"视图可能陈旧"
+  这一前提不复存在；
+- 于是可删 `main_window.on_order_changed` 里的视图→模型回写（`main_window.py:3030-3052`）；
+- 顺手统一 `add_frame` 签名（list 用 `index=` 关键字、grid 用位置参数，`timeline.py:209-210`）。
+
+**代价**：拖拽后视图全量重建（缩略图重算）。可接受 —— 切换视图时本就要重建。
+**风险**：这段逻辑在 `AGENTS.md` 里记了一整页不变量，而 `verify_timeline_view_sync.py`
+只覆盖 `set_frames_order` 的**结果**、不覆盖真实拖拽路径。**因此先补测试再改。**
+
+#### 第 1 片实施结果（2026-08-29，已完成）
+
+实际改动与计划有三处偏差，都值得记下来。
+
+**1. 撤销快照的时序 —— 计划时完全没预见到。**
+
+顺序改为"拖拽当场生效"后，`MainWindow.on_order_changed` 再调 `_capture_snapshot()`
+抓到的是**新**顺序，撤销静默变成空操作（不报错、不崩溃，就是没效果）。为此新增
+`reorder_about_to_happen` 信号：视图在调 `move_frames` **之前**发出，MainWindow 连它
+捕获快照，`on_order_changed` 再落历史。
+
+`dev/smoke_reorder.py` 里留了一条反证：把该信号的处理器换成 no-op 后，拖拽就不再产生
+任何撤销记录 —— 以此证明这条接线不是多余的。
+
+教训：**任何"状态改为当场生效"的改动，都要回头检查撤销快照是在哪个时刻抓的。**
+原来的回写式流程碰巧是对的（回写发生在 `on_order_changed` 里、那时模型还没变），
+改成直接生效就把这个前提悄悄拆掉了。这类失效没有报错，只能靠断言防。
+
+**2. 视图不重建，改为按模型重排 item。**
+
+计划写的是"视图按模型重建"。实测发现 `grid.clear()` 会连带清空缩略图缓存
+（`timeline_grid.py` 覆写了 `clear()`），重建要为每一帧重新解码一次源图 —— 拖一次就
+全量重算一遍。因此新增 `sync_order_from_model()`：take 出来、按模型顺序插回，**复用
+原 item 对象**。顺带把 `AGENTS.md` 里"必须复用原 item 对象"那条不变量收拢到了一处。
+`_rebuild_*_view` 保留，作为 item 数与模型不符时的兜底。
+
+**3. `set_frames_order` 退化为仅测试使用。**
+
+生产代码里它唯一的调用点就是被删掉的那处回写。它现在是 `move_frames` 的特例（整体
+替换），保留只因 `dev/test_transform.py` 用它锁 `frames_reordered` 的信号契约。
+第 2 片收尾时应评估是否一并删除（连同依赖它的 2 个测试一起改）。
+
+#### 净效果
+
+- 删约 130 行（两处"搬 item"、视图→模型回写、`_view_in_sync_with_model`、拖拽后的
+  选中恢复样板），增约 120 行（`move_frames`、`sync_order_from_model` × 2、信号接线）。
+- **行数几乎没减，但顺序从两个源变成一个源。** 行数不是本片的指标，不变量的持有者才是。
+- 新增 10 个测试（6 个模型层 + 4 个走真实 `QDropEvent` 的拖拽路径）+ 1 个冒烟脚本。
+  拖拽路径此前**完全没有**自动化覆盖 —— 这是本片最实在的收获。
+- 回归：`verify_timeline_view_sync.py` 14/14、`test_transform.py` 37/37、
+  `transform_baseline.py --compare` 的 MAIN_DIGEST 前后一致。
+
+### 第 2 片-a：列表视图迁到 model/view（2026-08-29，已完成）
+
+**关键设计决定：`TimelineModel` 不改成 `QAbstractItemModel`，改为加一层 Qt 适配层。**
+
+原计划把 `TimelineModel` 本身改成 `QAbstractItemModel`。实际动手后否掉了：
+它是一个**一维帧列表**，而"8 列"只是列表视图的一种展示形态。把列定义塞进业务
+模型，会让导出、存档、`ProjectData` 这些与表格无关的使用方被迫理解表格坐标。
+
+改为新增 `ui/timeline_item_model.py` 的 `TimelineItemModel(QAbstractTableModel)`：
+每行回头问 `TimelineModel`，把它的语义化信号翻译成 `beginInsertRows` / `dataChanged` /
+`beginResetModel`。本类**不持有任何帧数据**（缓存一份就等于重新引入第二份状态）。
+
+**两个计划时没预见到的问题：**
+
+**1. `data()` 的高频调用暴露了一个既有的 I/O 热点。**
+
+`source_image_size()` 每次都 `QImageReader(file_path)` + `os.path.exists()` —— 是真实的
+**文件 I/O**。item-based 时每帧只在刷新时算一次并缓存到 item；迁到 model/view 后
+`data()` 在**每次重绘**（含滚动）都被调用，一屏重绘就是几十次 open/read/close。
+
+修法是把缓存加在 **I/O 边界**（`source_image_size` 本身）而不是调用方，这样
+`base_size()` 与 `effective_target_size()` 都自动受益，且不破坏"目标分辨率只有一个
+算法来源"这条不变量。失效时机：外部编辑器改图、替换素材（两处均已接上
+`clear_source_image_size_cache`）。
+
+**这条不是迁移引入的缺陷，是迁移**暴露**的既有缺陷** —— 大工程下刷新一次时间轴
+本来就要做 500 次这样的 I/O，只是不频繁所以没被察觉。**
+
+**2. `TimelineModel.clear()` 不发信号 —— 模型信号契约的缺口。**
+
+原流程靠调用方手工 `view.clear()` 清视图。列表视图变成 `QTreeView` 后没有 `clear()`
+方法，直接 `AttributeError`。修法是让 `clear()` 发 `frames_removed(0, count)`，
+且**必须先发信号再清数据**：信号处理器同步读 `rowCount()`，若那时 `_frames` 已空，
+Qt 会断言"要删的行数超过实际行数"并 abort。
+
+**顺带修掉的一个既有缺陷**：参考帧高亮原先是 `item.setText(2, prefix + text)` 加
+`text.replace(prefix, "")` 复原 —— 若文件名本身含该前缀字符串，**会被误删**。现在
+前缀由 `data()` 现算，天然幂等。冒烟里加了"连设两次同一个参考帧，前缀只出现一次"
+的断言。
+
+#### 净效果
+
+- 列表视图删约 220 行（`add_frame` 的 8 列文本填充、`update_item_display`、
+  `sync_order_from_model`、`flatten_tree`、item 兼容外壳），新增适配层约 230 行。
+- `TimelineWidget` 里"事件 → 手工镜像到两个视图"的逻辑**对列表视图全部消失**
+  （`_on_frames_inserted/removed/moved/data_changed/frame_disabled_changed`）。
+- 外部调用点（播放列表、多选判断、切换视图恢复选中）改为直接问模型，不再绕 item。
+  `update_playlist` 从 27 行（按视图类型分叉 + item 排序 + 掏 UserRole）降到 12 行。
+- 回归：`verify_timeline_view_sync.py` **15/15**（新增 `test_clear_notifies_views`）、
+  `test_transform.py` 37/37、`transform_baseline.py --compare` MAIN_DIGEST 前后一致、
+  `smoke_reorder.py` 全链路通过（新增 8 列映射 / 属性刷新 / 禁用切换 / 参考帧高亮断言）。
+- 真实 GUI 冒烟：offscreen 下渲染两种视图各抓一张位图，8 列内容与禁用图标均正常。
+
+### 第 2 片-b：网格视图迁到 model/view（2026-08-29，已完成）
+
+网格视图已迁到 `QListView`，与列表视图挂**同一个** `TimelineItemModel` 实例，因此
+两个视图共享同一个 `QItemSelectionModel` —— **选中只有一份**，P1-3 最大的一条收益
+在此兑现。
+
+**实施时偏离原计划的两处：**
+
+1. **缩略图走自定义 `ThumbnailRole`，不走 `DecorationRole`。** 原计划用
+   `DecorationRole`，但本 model 由两个视图共享，而 `DecorationRole` 会被 Qt 的默认
+   delegate 直接画出来 —— 列表视图每一格都会冒出一个缩略图图标。自定义角色只有主动
+   去读它的网格 delegate 才拿得到，列表侧完全无感。
+
+2. **缩略图留在网格视图里算，不进业务模型。** 它是网格的**展示形态**（尺寸、背景
+   模式都是网格的设置），塞进 `TimelineModel` 会污染导出与存档 —— 与"列定义不进
+   业务模型"是同一个理由。改为由网格注入 `thumbnail_for_row` 给适配层，经
+   `ThumbnailRole` 递给 delegate。
+
+#### 一个反直觉的 Qt 陷阱（差点让"共享选中"名存实亡）
+
+**两个视图 `setModel()` 同一个 model 实例，并不会共享选中。**
+`QAbstractItemView.setModel()` 会给每个视图**各建一个新的** `QItemSelectionModel`，
+必须显式 `grid_view.setSelectionModel(list_view.selectionModel())`。
+
+我一开始就漏了这句 —— 视觉上两个视图看起来都正常，但选中仍是两份，切换视图靠的还
+是旧的同步仪式。这条由 `test_both_views_share_selection_model` 直接断言对象同一性
+来守住。
+
+**配套的第二层坑**：即便共享了 selectionModel，**若选中只落在某一列上，另一个视图
+仍看不到**。两个视图显示的是不同的列（列表是序号列 0、网格是文件名列 2），
+`get_selected_indices()` 按自己的 modelColumn 过滤 `selectedIndexes()`，于是"只选中
+第 0 列"在网格眼里是空的。选中必须整行生效（`SelectionFlag.Rows`）。
+这条由 `test_selection_visible_from_both_views` 守住。
+
+#### 净效果
+
+- 网格视图删约 300 行（`add_frame` 的缩略图/文本填充、`update_frame`、
+  `sync_order_from_model`、`update_item_display` 的 item 级改写）。
+- `TimelineWidget` 里"事件 → 手工镜像到两个视图"的逻辑**全部消失**；
+  `_on_frames_reordered` 从 20 行降到 2 行（只剩"reset 会清 selectionModel，故恢复
+  选中"）；`set_view_mode` 不再需要任何选中同步。
+- 删掉最后的 item 兼容外壳 `extract_frame_data_from_item`（曾是唯一还依赖
+  `QTreeWidgetItem` / `QListWidgetItem` 的地方）。
+- 顺带修掉：`TimelineWidget.update_item_display` 是死代码，且其 list 分支指向一个
+  迁移中已删除的方法 —— 一旦有人调用就会 `AttributeError`。
+- 网格的 `_calc_insert_before` / 插入指示器等拖拽细节**保留** —— 那是"网格按行主序
+  排布"的真实业务规则，不是 item-based 的衍生成本。
+- 回归：`verify_timeline_view_sync.py` **20/20**（新增共享选中 2 条）、
+  `verify_grid_view.py` **13/13**、`test_transform.py` 37/37、
+  `transform_baseline.py --compare` MAIN_DIGEST 一致、`smoke_reorder.py` 通过。
+- 真实 GUI：两种视图各抓一张位图，缩略图、序号、选中高亮均正常。
+
+#### 破坏性验证记录（第 2 片-b）
+
+| 破坏 | 被哪个用例捕获 |
+|---|---|
+| 去掉显式 `setSelectionModel(share)` | `test_both_views_share_selection_model`、`test_selection_visible_from_both_views`、`test_rebuild_selection_list_active` |
+| 选中不带 `Rows`（只选自己那列） | `test_selection_visible_from_both_views` |
+| 不注入缩略图 provider | `verify_grid_view` 的 7 个缩略图用例 |
+| 缩略图忽略 `crop_rect` | `test_thumbnail_reflects_crop_rect` |
+| 缩略图套用 `rotation` | `test_thumbnail_ignores_frame_transform` |
+| 清除参考帧时不还原 | `test_reference_frame_highlight_toggles_off` |
+
+### 第 3 片：收尾（2026-08-29，已完成）
+
+**1. 删 `BaseTimelineView`（P1-4 一并解决）** —— `src/ui/timeline_base_view.py` 整个文件删除。
+
+它剩下的东西只有两类：11 个抽象方法在两个视图里都退化成了空实现或三行转发，以及一个
+0 调用点的便利方法 `get_selected_frame_data_list`。同文件的
+`TimelineViewUtils.extract_frame_data_from_item`（双签名 try/except 探测）也随之删除 ——
+两个视图都已没有 item 对象。连带删掉因它而存在的 `TimelineWidget` 兼容外壳。
+
+**顺带清掉的一批死代码**（都是"迁移后退化为空、但没人删"）：两视图的
+`add_frame_to_view` / `remove_frame_from_view` / `update_frame_in_view` / `refresh_view` /
+`get_selected_items` / `sync_order_from_model`；`TimelineWidget` 的 `move_frame` /
+`move_frames` / `load_frames` / `add_frame_to_current_view` / `remove_frame_from_current_view`；
+`TimelineModel.move_frame`（单数）与它的辅助方法 `_update_selection_after_move`。
+
+**还删掉一个没人发的信号**：`frames_moved(from, to, count)` 的唯一发射方就是上面那个
+`move_frame`（单数）。留着它只会误导后来者 —— 所有换序现在都走 `move_frames()`，
+发的是 `frames_reordered`。
+
+**2. P2-6 撤销恢复：整体替换，一条信号。**
+
+原计划写的是"退化为 `data_changed`"，实际**没有**用 `data_changed` —— 它的语义是
+"内容变了、行到帧的映射没变"，而撤销恢复连帧对象都换了、**行数也可能变**（撤销加帧 /
+删帧）。硬套 `data_changed` 就是又一次语义错配。
+
+改为新增 `frames_replaced` 信号 + `TimelineModel.set_frames()`：替换整个列表，只发一条。
+`_apply_snapshot_inner` 从 `clear()` + N 次 `add_frame()`（1 次移除 + N 次插入共 **N+1 条**，
+每条都让视图做一次布局调整）改成一次 `set_frames()`。实测一个 16 帧工程：17 条 → 1 条。
+`grid_view.refresh_all_items()` 也不再需要 —— 整体替换本就让视图全量重取。
+
+**3. 删拖拽不变量文档 —— 只删过时的，保留业务规则。**
+
+`AGENTS.md` 那一页里，真正该删的是 item 时代的实现约束（`takeItem` 搬 item 的顺序、
+"rebuild 必须显式传 mode 否则会写串视图"等）。但 `_calc_insert_before` 的"Y 只选行、
+X 决定前后"是网格按行主序排布的**真实业务语义**，不是衍生成本 —— 保留，并加注释说明
+别删。新增了两条迁移后的新事实：`beginResetModel` 会清掉 `QItemSelectionModel`、
+故换序后必须恢复选中；`set_frames` 只发一条信号。
+
+#### 破坏性验证（第 3 片）
+
+| 破坏 | 被哪个用例捕获 |
+|---|---|
+| `set_frames` 改回 `clear()`+逐帧 add | `test_set_frames_emits_single_signal` |
+| `set_frames` 不收敛越界选中 | `test_set_frames_drops_stale_selection_and_reference` |
+| `set_frames` 不清理失效参考帧 | `test_set_frames_drops_stale_selection_and_reference` |
+| 撤销恢复改回旧写法 | `dev/smoke_reorder.py`（新增的撤销恢复段，实测 17 条 vs 1 条） |
+
+最后一条**一开始没被捕获** —— 当时 `smoke_reorder.py` 只测了拖拽重排的撤销，那条路径
+行数不变，走不到 `set_frames` 里"行数可变"的分支。补了 `add_files` / `remove_frame`
+两个真实动作的撤销覆盖之后才抓到。
+
+#### 补测试时踩到的两个坑（值得记）
+
+- **手工 `record_history()` 不会留下历史**：它在 `before == after` 时静默跳过，随后的
+  `undo` 撤掉的是**上一条**历史，断言会被严重误导。要测撤销就得用真实动作
+  （`add_files` / `remove_frame`）。
+- **"刻意不记录历史"的测试会污染后续测试**：冒烟里那段"反证"拖拽故意不落历史，于是
+  模型状态与历史栈就此不同步；后面再做撤销，恢复的是上一节遗留的快照。看起来像撤销
+  坏了，实际是测试自身的状态污染 —— 必须在段前 `history.clear()`。
+
+### 回归网现状与缺口
+
+| 资产 | 覆盖 | 与时间轴的关系 |
+|---|---|---|
+| `dev/test_transform.py` | 37 个单测：几何语义、模型信号契约、帧克隆 | 不覆盖视图 |
+| `dev/transform_baseline.py` | 渲染像素哈希 | 不覆盖视图 |
+| `dev/verify_timeline_view_sync.py` | 23 个用例：双视图同步、共享选中、模型顺序契约、真实 `QDropEvent` 拖拽路径、`set_frames` 整体替换 | 视图层主网 |
+| `dev/smoke_reorder.py` | 完整 `MainWindow` 链路：加载工程 → 拖拽 → 撤销（含加帧/删帧）→ 列映射/参考帧/禁用 | 接线网 |
+| `dev/verify_grid_view.py` | 13 个用例：缩略图语义与缓存、序号、拖拽插入点、参考帧/禁用态渲染、列表列宽 | 网格视图专用网 |
+
+缺口：右键菜单、外部文件拖入、播放跟随仍是纯手工验证。
+
+### 补网过程中的教训（比新增的用例本身更值钱）
+
+为网格视图补网时，写出来的**前 7 个断言里至少有 4 个是假通过**。是靠破坏性验证
+（故意改坏产品代码，看测试是否变红）才逐个暴露出来的。四条反复出现的教训：
+
+**1. 断言要落在可观测行为上，不要落在你以为的实现上。**
+
+为了验证"缩略图命中缓存时不重算"，我 mock 了 `image_cache.get` 来计解码次数。
+但 `create_thumbnail` 实际用的是 `QImage(image_path)` —— 它**绕过全局图缓存**，
+于是 mock 打空了、测试却照样绿：破坏缓存后 11 个测试全过。
+
+改法：不依赖内部实现 —— 命中缓存时把**源文件从磁盘移走**，缩略图仍应照原样渲染
+（因为根本不需要读文件）。缓存一失效就会走 `os.path.exists` 失败分支、画出占位符，
+内容随之变化。同时补一个对照组（显式失效缓存后**必须**重新读盘），否则上一条可能
+因为"缩略图压根没刷新"而假通过。
+
+**2. 测试数据必须能分辨被测行为。**
+
+最初用 8×8 纯色图做缩略图夹具。纯色图裁任何区域、缩放到任何尺寸，结果像素都完全
+一样 —— 于是三个缩略图断言全是假通过。改用四象限异色 + 棋盘底纹后才有分辨力。
+
+**3. 被测性质若由缓存保证，测试必须先绕过缓存。**
+
+"缩略图不套用帧变换"这条性质，实际是由**缓存 key 不含帧变换字段**保证的。直接改
+`rotation` 再刷新，缓存命中、缩略图根本没重算 —— 哪怕真的给 `create_thumbnail` 加了
+旋转，测试也照样绿（实测：加旋转后 12/12 全过）。必须先 `_clear_thumbnail_cache()`
+才能真正验到 `create_thumbnail` 自己的行为。
+
+**4. 破坏性验证自身也需要验证。**
+
+两次"没被捕获"查下来都是我的破坏点没生效：一次把代码插进了 `if crop_rect:` 分支内
+（测试帧没有 `crop_rect`，根本没走到）；一次替换目标字符串不存在，`str.replace` 静默
+无操作。**破坏脚本必须先断言目标字符串确实存在再改**，否则"测试没红"会被误读成
+"测试无效"，方向正好相反。
+
+**5. `__pycache__` 会让破坏性验证的结果彻底失真。**
+
+用 `cp` 还原源文件后，Python 可能仍加载**被破坏时编译的旧字节码**：`cp` 只更新 mtime，
+而 pyc 校验用的是 `(mtime, size)`，秒级精度下快速往返会碰撞。症状极具迷惑性 ——
+`inspect.getsource()` 显示的是正确源码，函数内部打印参数、比较结果是 `False`，
+实际却返回 `True`。
+
+**做破坏性验证前必须先 `find src -name __pycache__ -type d -exec rm -rf {} +`。**
+
+**2026-08-29 回归：网格视图点击帧后属性面板显示未选中、预览区无反应**
+
+根因两处叠加，且**第一处才是决定性的**：
+
+**根因 1（决定性）：网格少了 `setSelectionBehavior(SelectRows)`。**
+
+两个视图共享同一个 `QItemSelectionModel`，但显示的是**不同的列**（列表是序号列 0、
+网格是文件名列 2）。列表设了 `SelectRows`，网格没设、用的是默认的 `SelectItems` ——
+于是点击网格只选中**那一列**，`selectedIndexes` 里只有列 2；而列表按列 0 去读
+`selectedRows()` 就认为"什么都没选"。两个视图对"选中了什么"看法完全相反。
+
+**根因 2（次要）：网格的 `selectionChanged` 连在了 `setSelectionModel()` 之前。**
+
+换 selectionModel 会**丢弃旧模型上的所有连接**，于是网格从此不再发通知；只有列表
+在发，而它算出的是空 —— 空 frames 一路传到属性面板与预览区，表现为"点了没反应"。
+（`model` 那边反而是对的，因为 `_on_view_selection_changed` 用的是当前视图的选中，
+所以看起来"选中生效了"，只是下游没收到通知 —— 非常容易误判。）
+
+修法：补 `SelectRows`；并把共享 selectionModel 的动作收进
+`TimelineGridWidget.adopt_shared_selection_model()`，在 `setSelectionModel()` **之后**
+重连信号。
+
+**关于根因 2 的诚实说明**：破坏验证显示，**单独撤掉重连并不会让测试变红** —— 因为
+列表的连接已经能覆盖共享 selectionModel 上的所有变化。所以根因 2 属于**健壮性改进**
+而非必需修复：它让网格不必依赖"列表存在且已连接"这个隐式前提。实测两个视图都连接
+时 `selection_changed` 仍只触发一次（第二次被 `_on_view_selection_changed` 的
+"选中未变则短路"吸收），无重复通知、无副作用。
+
+**为什么又是 25 个测试全绿**：所有选中用例都用 `_apply_selection_to_view` 或
+`model.set_selection`，**绕过了真实鼠标路径**。这与此前拖拽那次（`test_*_drag_starts_drag`
+补的就是 `startDrag` 这一环）是同一类盲区：**用高层 API 驱动测试，就测不到"用户
+实际操作的那条路径"**。已补 `test_click_grid_row_notifies_downstream` 与
+`test_both_views_agree_on_clicked_row`。
+
+### 迁移引入的回归（用户报告）
+
+**2026-08-29 回归：列表视图多选拖拽失效**
+
+列表视图迁移后多选拖拽失效 —— 拖不动，手势被当成**扩展选区**。查下来是**两个**
+独立缺陷，且第二个只有在修完第一个之后才暴露：
+
+**回归 1：`TimelineItemModel.flags()` 漏了 `ItemIsDragEnabled`。**
+
+`view.setDragEnabled(True)` **并不足以**启动拖拽：`QAbstractItemView.mouseMoveEvent`
+还会再查一次 **model 的 flags**。缺这个位，view 就进入 `DragSelectingState`，把手势
+解释成扩展选区。迁移前 `QTreeWidget` 用内建 model，`flags()` 默认带这个位，所以从未
+暴露；换成适配层后 flags 由我们自己写 —— 漏了就翻车。
+
+**回归 2：`move_frames` 用 `==` 判"顺序有无变化"，应为对象身份比较。**
+
+`FrameData` 是 dataclass，`==` 是自动生成的值相等。工程里完全相同的帧很常见（复制帧、
+同一张源图切出的相同区域），此时任意排列在 `==` 下都相等 → 拖到非相邻位置被判成
+"无变化"而静默忽略。**用户拖了，什么也没发生，没有任何提示。**
+
+**2026-08-29 回归：网格视图加载工程后一片空白**
+
+根因不是列表视图的 delegate 缩略图问题（已单独修），也不是网格布局没触发 ——
+`QListView` 在 IconMode 下会自动处理布局。**真正的根因是 `TimelineItemModel.__init__`
+里一个低级的顺序错误**：先给 `self._frames = frames_model` 再调 `self.bind(frames_model)`，
+而 `bind()` 开头有"已绑定则直接返回"的防重入判断 —— 构造时传入 model 的那个实例
+**永远不会真正接线**（`_connect_frames_model()` 一次都没被调用）。
+
+后果非常隐蔽：
+- `rowCount()` 实时查模型，所以"有几行"永远对；
+- 但所有模型信号（增删帧、换序、属性改、撤销恢复）都没转发给 Qt 视图；
+- 视图只在**显式 refresh** 或 **Resize/Show** 事件时才"碰巧"重新取数 —— 也就是
+  "拖一下面板、改一下缩略图尺寸、或切一下视图"才会刷新。
+
+这正是为什么 23 个测试全绿：测试套件要么显式调了 `set_view_mode`/refresh，要么
+跑在 headless 环境下尺寸事件被触发，稀里糊涂就过了。
+
+已补两条直接定位的测试：
+- `test_adapter_model_is_wired_to_frames_model`：断言 `model.add_frame` 会触发
+  `item_model.rowsInserted`（不依赖任何视觉状态）；
+- `test_views_follow_model_without_manual_refresh`：视图已就绪后再加帧，断言
+  `visualRect(row0)` 真实有效，中间没有任何 resize/show/refresh 兜底。
+
+两个缺陷均做了破坏性验证（分别恢复 `_frames` 提前赋值、把身份比较改回 `==`），
+新测试均精确变红。
+
+### 破坏性验证记录（13 个用例，8 个有效破坏全部被捕获）
+
+| 破坏 | 被哪个用例捕获 |
+|---|---|
+| 缩略图缓存永不命中 | `test_thumbnail_cache_reused_on_refresh` |
+| 缩略图套用 `rotation` | `test_thumbnail_ignores_frame_transform` |
+| 缩略图忽略 `crop_rect` | `test_thumbnail_reflects_crop_rect` |
+| 插入点判据改为只看 Y | `test_calc_insert_before_uses_x_only` |
+| 列宽设到 `setModel()` 之前 | `test_list_column_widths_not_uniform` |
+| 清除参考帧时不还原加粗 | `test_reference_frame_highlight_toggles_off` |
+| 重排时重建 item 而非复用 | `test_reorder_preserves_thumbnail_objects` |
+| 禁用遮罩不画 | `test_disabled_state_changes_thumbnail_pixels` |
+
+另有 1 个用例（`test_disabled_state_read_from_model`）被确认是**弱断言**：它读的是
+`item.data(UserRole).is_disabled`，而那正是 `FrameData` 对象本身，只要视图持有同一个
+引用就恒真，与是否重绘无关。保留它是因为"视图持有模型对象而非副本"本身值得钉住，
+但真正的渲染验证由 `test_disabled_state_changes_thumbnail_pixels` 承担。
 
 ---
 

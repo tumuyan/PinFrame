@@ -5,3 +5,5 @@ build/
 dist/
 venv/
 dev/tmp_baseline/
+.Trash-0/
+

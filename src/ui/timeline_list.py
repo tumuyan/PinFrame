@@ -1,11 +1,13 @@
 from PyQt6.QtWidgets import (
-    QTreeWidget, QTreeWidgetItem, QAbstractItemView, QHeaderView, QMenu,
+    QTreeView, QAbstractItemView, QHeaderView, QMenu,
     QStyledItemDelegate, QStyleOptionViewItem, QStyle,
 )
 from PyQt6.QtCore import Qt, pyqtSignal, QTimer, QItemSelectionModel, QModelIndex, QMimeData, QRect
-from PyQt6.QtGui import QColor, QAction, QDrag, QPixmap, QPainter, QPen, QImageReader
+from PyQt6.QtGui import QColor, QAction, QDrag, QPixmap, QPainter, QPen
 from i18n.manager import i18n
-from ui.timeline_base_view import BaseTimelineView
+from ui.timeline_item_model import (
+    TimelineItemModel, FrameDataRole, COL_DISABLED, COL_FILENAME, COLUMN_COUNT,
+)
 from model.project_data import FrameData
 from typing import List, Optional
 import os
@@ -30,20 +32,17 @@ class _DisableColumnDelegate(QStyledItemDelegate):
 
     def paint(self, painter: QPainter, option: QStyleOptionViewItem, index):
         # Only paint column 1 (disable indicator); other columns delegate normally.
-        if index.column() != 1:
+        if index.column() != COL_DISABLED:
             super().paint(painter, option, index)
             return
 
         painter.save()
         painter.setRenderHint(QPainter.RenderHint.Antialiasing)
         rect = option.rect
-        # 读取模型真源：frame_data 存于 column 0 的 UserRole（list item 建立时写入），
-        # 不再依赖 CheckStateRole 这一 UI 副本，避免多源不一致。
-        # 注意：本 delegate 绘制的是 column 1，而 frame_data 只挂在 column 0 的
-        # UserRole 上，因此必须通过 siblingAtColumn(0) 取到 column 0 的 index 再读数据，
-        # 直接读 index（column 1）的 UserRole 会拿到空值导致禁用勾选永远不显示。
-        src_index = index.siblingAtColumn(0)
-        frame_data = src_index.data(Qt.ItemDataRole.UserRole) if src_index.isValid() else None
+        # 每一列都能直接取到本行的 FrameData（FrameDataRole），不必再绕
+        # siblingAtColumn(0) —— 当初 frame_data 只挂在列 0 上，忘了绕一次
+        # 就永远读到空值、禁用勾选不显示。
+        frame_data = index.data(FrameDataRole)
         is_disabled = bool(getattr(frame_data, 'is_disabled', False)) if frame_data else False
         is_selected = bool(option.state & QStyle.StateFlag.State_Selected)
 
@@ -81,11 +80,19 @@ class _DisableColumnDelegate(QStyledItemDelegate):
         painter.restore()
 
 
-class TimelineListView(QTreeWidget, BaseTimelineView):
-    """List view for timeline (original implementation)"""
+class TimelineListView(QTreeView):
+    """时间轴的列表视图（表格形态，8 列）。
+
+    已迁到 Qt model/view：挂 `TimelineItemModel`，单元格内容由 model 的 `data()`
+    现算，本视图**不持有任何帧数据或顺序** —— 那些都在 `TimelineModel` 里。
+    迁移前它是 `QTreeWidget`，帧数据挂在 `QTreeWidgetItem` 的 `UserRole` 上。
+    """
 
     selection_changed = pyqtSignal(list)
     order_changed = pyqtSignal()
+    # 顺序变更前发出（拖拽已算出目标位置、尚未调用 model.move_frames）。
+    # 撤销快照必须在改模型之前捕获，否则快照到的就是新顺序。
+    reorder_about_to_happen = pyqtSignal()
     files_dropped = pyqtSignal(list, int)
     copy_properties_requested = pyqtSignal()
     paste_properties_requested = pyqtSignal()
@@ -106,22 +113,96 @@ class TimelineListView(QTreeWidget, BaseTimelineView):
         super().__init__(parent)
 
         self._editors = []
-        self.setColumnCount(8)
-        self.setHeaderLabels([
-            i18n.t("col_index"),
-            i18n.t("col_disabled_header"),
-            i18n.t("col_filename"),
-            i18n.t("col_scale"),
-            i18n.t("col_position"),
-            i18n.t("col_crop_origin"),
-            i18n.t("col_crop_res"),
-            i18n.t("col_scaled_res")
-        ])
+        # 帧数据与顺序的唯一真源（TimelineModel）。由 TimelineWidget 注入
+        # （依赖注入，避免 ui 层之间互相硬引用）。视图不再拥有顺序，
+        # 拖拽只算出"拖了哪几行、插到哪儿"。
+        self._model = None
+        # Qt 适配层，包装 _model 供本视图消费
+        self._item_model = TimelineItemModel(None, self)
 
         header = self.header()
         header.setStretchLastSection(False)
         header.setMinimumSectionSize(0)
         header.setDefaultAlignment(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignVCenter)
+
+        self.setDragDropMode(QAbstractItemView.DragDropMode.DragDrop)
+        self.setAcceptDrops(True)
+        self.setDragEnabled(True)
+        self.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+        self.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.setDefaultDropAction(Qt.DropAction.MoveAction)
+        self.setRootIsDecorated(False)
+        self.setUniformRowHeights(True)
+        self.setAlternatingRowColors(False)
+
+        self.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.customContextMenuRequested.connect(self.show_context_menu)
+
+        self._selection_debounce_timer = QTimer(self)
+        self._selection_debounce_timer.setSingleShot(True)
+        self._selection_debounce_timer.setInterval(50)
+        self._selection_debounce_timer.timeout.connect(self._emit_selection_changed)
+
+        self._selection_blocked = False
+
+        self.reference_frame_data = None
+        self.is_dark_theme = True
+        self.setMinimumHeight(120)
+
+        self._dragged_rows = []  # 拖拽中的行号（selectionModel 在拖拽期间不可靠）
+
+        # Disable-column rendering (column 1):
+        #   - state is read directly from frame_data.is_disabled (model 真源，
+        #     经 FrameDataRole 现取)，视图侧不存任何 CheckStateRole 副本，
+        #   - model 的 flags() 刻意不给 ItemIsUserCheckable（Qt 自带的复选框
+        #     指示器会画一个我们不想要的 'v'），
+        #   - column 1 的视觉完全归 _DisableColumnDelegate：启用画空心方框，
+        #     禁用画红叉，
+        #   - clicks on column 1 are intercepted in mousePressEvent() to toggle
+        #     the state via TimelineModel.set_frame_disabled() and emit
+        #     disabled_state_changed (for undo history).
+        self.setItemDelegateForColumn(COL_DISABLED, _DisableColumnDelegate(self))
+
+    def get_selected_indices(self) -> List[int]:
+        """Get indices of selected rows"""
+        return sorted({idx.row() for idx in self.selectionModel().selectedRows()}
+                      if self.selectionModel() else [])
+
+    def get_selected_frames(self) -> List[FrameData]:
+        """选中行的帧数据（按行号升序）。"""
+        model = self._get_model()
+        if model is None:
+            return []
+        return [model.get_frame_at(i) for i in self.get_selected_indices()
+                if model.get_frame_at(i) is not None]
+
+    def bind_model(self, model):
+        """注入帧数据与顺序的唯一真源（由 TimelineWidget 调用）。
+
+        注入后视图不再拥有顺序 —— 拖拽只负责算出"拖了哪几行、插到哪儿"，
+        顺序变更一律经 `model.move_frames`，视图随模型信号更新。
+        """
+        self._model = model
+        # 与网格视图共用**同一个**适配层实例（由 TimelineWidget 创建），于是两个视图
+        # 共享同一个 QItemSelectionModel —— 这才是 P1-3 想要的"选中只有一份"。
+        shared = getattr(self.parent(), 'item_model', None)
+        if shared is not None and shared is not self._item_model:
+            self._item_model = shared
+        self._item_model.bind(model)
+        self.setModel(self._item_model)
+        # 必须在 setModel 之后：QHeaderView 会在 setModel 时按新模型的列数重建
+        # section 状态，之前设的 resizeMode / 列宽全部作废（表现为 8 列等宽 100px）。
+        self._setup_columns()
+        self.selectionModel().selectionChanged.connect(self.on_selection_changed)
+
+    def _setup_columns(self):
+        """列宽与缩放策略。
+
+        只能在 `setModel()` **之后**调用 —— 见 `bind_model` 里的注释。
+        """
+        header = self.header()
+        header.setStretchLastSection(False)
+        header.setMinimumSectionSize(0)
 
         # Column 0: Index
         header.setSectionResizeMode(0, QHeaderView.ResizeMode.Interactive)
@@ -146,86 +227,25 @@ class TimelineListView(QTreeWidget, BaseTimelineView):
         # Column 2: Filename - STRETCH
         header.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
 
-        self.setDragDropMode(QAbstractItemView.DragDropMode.DragDrop)
-        self.setAcceptDrops(True)
-        self.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
-        self.setDefaultDropAction(Qt.DropAction.MoveAction)
-        self.setRootIsDecorated(False)
-        self.setUniformRowHeights(True)
-
-        self.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
-        self.customContextMenuRequested.connect(self.show_context_menu)
-
-        self._selection_debounce_timer = QTimer(self)
-        self._selection_debounce_timer.setSingleShot(True)
-        self._selection_debounce_timer.setInterval(50)
-        self._selection_debounce_timer.timeout.connect(self._emit_selection_changed)
-
-        self._selection_blocked = False
-
-        self.itemSelectionChanged.connect(self.on_selection_changed)
-
-        self.reference_frame_data = None
-        self.is_dark_theme = True
-        self.setMinimumHeight(120)
-
-        # Disable-column rendering (column 1):
-        #   - state is read directly from frame_data.is_disabled (stored in
-        #     column 0's UserRole) — the model is the single source of truth,
-        #     no CheckStateRole copy is kept on the item,
-        #   - items do NOT carry Qt.ItemFlag.ItemIsUserCheckable (Qt's built-in
-        #     checkbox indicator would draw a 'v' tick we don't want),
-        #   - column 1's visuals are owned by _DisableColumnDelegate, which
-        #     paints a soft empty box for enabled rows and a red 'x' for
-        #     disabled rows,
-        #   - clicks on column 1 are intercepted in mousePressEvent() to toggle
-        #     the state via TimelineModel.set_frame_disabled() and emit
-        #     disabled_state_changed (for undo history).
-        self.setItemDelegateForColumn(1, _DisableColumnDelegate(self))
-
-    # BaseTimelineView abstract methods implementation
-    def get_selected_indices(self) -> List[int]:
-        """Get indices of selected items"""
-        selected_items = self.selectedItems()
-        return [self.indexOfTopLevelItem(item) for item in selected_items]
-
-    def get_selected_items(self):
-        """Get selected items"""
-        return self.selectedItems()
+    def _get_model(self):
+        """取模型真源；未显式注入时回退到 parent（TimelineWidget.model）。"""
+        if self._model is not None:
+            return self._model
+        return getattr(self.parent(), 'model', None)
 
     def get_frame_data_at_index(self, index: int) -> Optional[FrameData]:
         """Get frame data at specified index"""
-        if 0 <= index < self.topLevelItemCount():
-            item = self.topLevelItem(index)
-            return item.data(0, Qt.ItemDataRole.UserRole)
-        return None
+        model = self._get_model()
+        return model.get_frame_at(index) if model is not None else None
 
-    def add_frame_to_view(self, filename: str, frame_data: FrameData, index: int):
-        """Add a frame to view at specified index"""
-        self.add_frame(filename, frame_data, index=index)
-
-    def remove_frame_from_view(self, index: int):
-        """Remove frame from view at specified index"""
-        if 0 <= index < self.topLevelItemCount():
-            self.takeTopLevelItem(index)
-
-    def update_frame_in_view(self, index: int, frame_data: FrameData, filename: str):
-        """Update frame in view at specified index"""
-        if 0 <= index < self.topLevelItemCount():
-            item = self.topLevelItem(index)
-            self.update_item_display(item, frame_data)
-
-    def refresh_view(self):
-        """Refresh the entire view"""
-        self.refresh_current_items()
-
-    def clear_view(self):
-        """Clear all items from view"""
-        self.clear()
+    # 增删帧不需要视图做任何事 —— 模型发出的 frames_inserted / frames_removed
+    # 会由适配层翻译成 beginInsertRows / beginRemoveRows，视图自动跟随。
+    # 迁移前这里有 add_frame_to_view / remove_frame_from_view / update_frame_in_view
+    # 三个方法，迁到 model/view 后全部退化为空，已删除。
 
     def get_item_count(self) -> int:
-        """Get total number of items in view"""
-        return self.topLevelItemCount()
+        """Get total number of rows in view"""
+        return self._item_model.rowCount()
 
     def block_selection_signals(self, block: bool):
         """Block or unblock selection change signals (auto-emit on unblock)"""
@@ -234,19 +254,22 @@ class TimelineListView(QTreeWidget, BaseTimelineView):
             self._emit_selection_changed()
 
     def block_selection_signals_internal(self, block: bool):
-        """Block or unblock selection change signals AND Qt's itemSelectionChanged"""
+        """Block or unblock selection change signals AND Qt's selectionChanged"""
         self._selection_blocked = block
+        sel_model = self.selectionModel()
+        if sel_model is None:
+            return
         if block:
             try:
-                self.itemSelectionChanged.disconnect(self.on_selection_changed)
+                sel_model.selectionChanged.disconnect(self.on_selection_changed)
             except TypeError:
                 # Already disconnected or never connected
                 pass
         else:
-            self.itemSelectionChanged.connect(self.on_selection_changed)
+            sel_model.selectionChanged.connect(self.on_selection_changed)
 
     def select_all_optimized(self):
-        """Select all items efficiently"""
+        """Select all rows efficiently"""
         self._selection_blocked = True
         self.selectAll()
         self._selection_blocked = False
@@ -256,57 +279,41 @@ class TimelineListView(QTreeWidget, BaseTimelineView):
         """Emit selection changed signal"""
         if self._selection_blocked:
             return
-
-        selected_items = self.selectedItems()
-        frames = [item.data(0, Qt.ItemDataRole.UserRole) for item in selected_items]
-        self.selection_changed.emit(frames)
+        self.selection_changed.emit(self.get_selected_frames())
 
     def _apply_selection_from_set(self, selected_indices_set: set):
-        """Apply selection from a set of indices (O(n) complexity)"""
-        root = self.invisibleRootItem()
-        for i in range(root.childCount()):
-            item = root.child(i)
-            should_select = i in selected_indices_set
-            if item.isSelected() != should_select:
-                item.setSelected(should_select)
+        """Apply selection from a set of indices.
+
+        只改动需要变更的行 —— 整表重设会打断用户按住 Ctrl 的连续多选
+        （`selectionChanged` 每次都会触发防抖定时器 → 连锁刷新属性面板）。
+        """
+        sel_model = self.selectionModel()
+        if sel_model is None:
+            return
+        current = set(self.get_selected_indices())
+        if current == selected_indices_set:
+            return
+        was_blocked = self._selection_blocked
+        self._selection_blocked = True
+        for row in current - selected_indices_set:
+            sel_model.select(self._item_model.index(row, 0),
+                             QItemSelectionModel.SelectionFlag.Deselect
+                             | QItemSelectionModel.SelectionFlag.Rows)
+        for row in selected_indices_set - current:
+            sel_model.select(self._item_model.index(row, 0),
+                             QItemSelectionModel.SelectionFlag.Select
+                             | QItemSelectionModel.SelectionFlag.Rows)
+        self._selection_blocked = was_blocked
 
     def set_theme_mode(self, is_dark: bool):
         """Set theme mode (dark/light)"""
         self.is_dark_theme = is_dark
-        self.refresh_visuals()
+        self._item_model.set_theme_mode(is_dark)
 
     def set_visual_reference_frame(self, frame_data: Optional[FrameData]):
         """Set visual reference frame for highlighting"""
         self.reference_frame_data = frame_data
-
-        root = self.invisibleRootItem()
-        for i in range(root.childCount()):
-            item = root.child(i)
-            data = item.data(0, Qt.ItemDataRole.UserRole)
-
-            is_ref = (data is frame_data)
-
-            if is_ref:
-                font = item.font(2)
-                font.setBold(True)
-                item.setFont(2, font)
-
-                if hasattr(self, 'is_dark_theme') and not self.is_dark_theme:
-                    color = QColor(200, 230, 200)
-                    color.setAlpha(255)
-                else:
-                    color = QColor(30, 80, 40)
-                    color.setAlpha(200)
-
-                item.setBackground(2, color)
-                if i18n.t("label_ref_prefix") not in item.text(2):
-                    item.setText(2, f"{i18n.t('label_ref_prefix')}{item.text(2)}")
-            else:
-                font = item.font(2)
-                font.setBold(False)
-                item.setFont(2, font)
-                item.setBackground(2, QColor(0, 0, 0, 0))
-                item.setText(2, item.text(2).replace(i18n.t("label_ref_prefix"), ""))
+        self._item_model.set_reference_frame(frame_data)
 
     def refresh_visuals(self):
         """Refresh visual elements (reference highlighting, etc.)"""
@@ -321,12 +328,11 @@ class TimelineListView(QTreeWidget, BaseTimelineView):
         self._selection_debounce_timer.start()
 
     def startDrag(self, supportedActions):
-        selected_items = self.selectedItems()
-        if not selected_items:
+        rows = self.get_selected_indices()
+        if not rows:
             return
-        # 严格按当前行号升序排列被拖拽的项目，避免受用户选择顺序影响
-        sorted_items = sorted(selected_items, key=lambda item: self.indexOfTopLevelItem(item))
-        self._dragged_items = sorted_items
+        # 拖拽期间 selectionModel 会被 Qt 改动，行号必须先存下来
+        self._dragged_rows = rows
 
         drag = QDrag(self)
         mime_data = QMimeData()
@@ -339,7 +345,7 @@ class TimelineListView(QTreeWidget, BaseTimelineView):
         drag.setPixmap(pixmap)
 
         drag.exec(Qt.DropAction.MoveAction)
-        self._dragged_items = []
+        self._dragged_rows = []
 
     def dragEnterEvent(self, event):
         if event.mimeData().hasUrls():
@@ -354,16 +360,14 @@ class TimelineListView(QTreeWidget, BaseTimelineView):
             event.accept()
         elif event.mimeData().hasFormat("application/x-pinframe-internal-reorder"):
             drop_pos = event.position().toPoint()
-            drop_item = self.itemAt(drop_pos)
-            if drop_item:
-                drop_index = self.indexOfTopLevelItem(drop_item)
-                item_rect = self.visualItemRect(drop_item)
-                if drop_pos.y() < item_rect.center().y():
-                    self._drag_insert_position = (drop_index, True) # before
-                else:
-                    self._drag_insert_position = (drop_index, False) # after
+            drop_row = self.indexAt(drop_pos).row()
+            if drop_row >= 0:
+                rect = self.visualRect(self._item_model.index(drop_row, 0))
+                # 落在行的上半 → 插到它前面；下半 → 插到它后面
+                before = drop_pos.y() < rect.center().y()
+                self._drag_insert_position = (drop_row, before)
             else:
-                self._drag_insert_position = (self.topLevelItemCount(), False)
+                self._drag_insert_position = (self._item_model.rowCount(), False)
             event.acceptProposedAction()
         else:
             super().dragMoveEvent(event)
@@ -379,34 +383,24 @@ class TimelineListView(QTreeWidget, BaseTimelineView):
                 links.append(url.toLocalFile())
 
             final_index = -1
-            item = self.itemAt(event.position().toPoint())
+            drop_row = self.indexAt(event.position().toPoint()).row()
             drop_pos = self.dropIndicatorPosition()
 
-            if item:
-                index = self.indexOfTopLevelItem(item)
+            if drop_row >= 0:
                 if drop_pos == QAbstractItemView.DropIndicatorPosition.AboveItem:
-                    final_index = index
+                    final_index = drop_row
                 elif drop_pos == QAbstractItemView.DropIndicatorPosition.BelowItem:
-                    final_index = index + 1
+                    final_index = drop_row + 1
                 elif drop_pos == QAbstractItemView.DropIndicatorPosition.OnItem:
-                    final_index = index + 1
+                    final_index = drop_row + 1
                 elif drop_pos == QAbstractItemView.DropIndicatorPosition.OnViewport:
                     final_index = -1
 
             event.accept()
             self.files_dropped.emit(links, final_index)
         elif event.mimeData().hasFormat("application/x-pinframe-internal-reorder"):
-            # 内部重排：完全受控，保证原有先后顺序且拖拽后恢复高亮
-            dragged_items = getattr(self, '_dragged_items', [])
-            if not dragged_items:
-                selected_items = self.selectedItems()
-                if not selected_items:
-                    self._drag_insert_position = None
-                    event.ignore()
-                    return
-                dragged_items = sorted(selected_items, key=lambda item: self.indexOfTopLevelItem(item))
-
-            selected_indices = [self.indexOfTopLevelItem(it) for it in dragged_items if self.indexOfTopLevelItem(it) >= 0]
+            # 内部重排：完全受控，保证原有先后顺序
+            selected_indices = sorted(getattr(self, '_dragged_rows', None) or self.get_selected_indices())
             if not selected_indices:
                 self._drag_insert_position = None
                 event.ignore()
@@ -417,87 +411,48 @@ class TimelineListView(QTreeWidget, BaseTimelineView):
                 index, before = self._drag_insert_position
                 insert_index = index if before else index + 1
             else:
-                item = self.itemAt(event.position().toPoint())
+                drop_row = self.indexAt(event.position().toPoint()).row()
                 drop_pos = self.dropIndicatorPosition()
-                if item:
-                    index = self.indexOfTopLevelItem(item)
+                if drop_row >= 0:
                     if drop_pos == QAbstractItemView.DropIndicatorPosition.AboveItem:
-                        insert_index = index
+                        insert_index = drop_row
                     else:
-                        insert_index = index + 1
+                        insert_index = drop_row + 1
                 else:
-                    insert_index = self.topLevelItemCount()
+                    insert_index = self._item_model.rowCount()
 
-            # 检查连续块放置在原位的情况
-            is_contiguous = (selected_indices[-1] - selected_indices[0] + 1 == len(selected_indices))
-            if is_contiguous:
-                if insert_index == selected_indices[0] or insert_index == selected_indices[-1] + 1:
-                    self._drag_insert_position = None
-                    event.ignore()
-                    return
+            # 顺序变更交给模型 —— 视图不再自己 takeTopLevelItem/insertTopLevelItem 搬 item。
+            #
+            # 曾经视图直接改 item 顺序、模型毫不知情，之后再由 MainWindow.on_order_changed
+            # 把视图顺序**回写**给模型，等于顺序有两个源：这正是"切视图后顺序错乱"以及
+            # 需要 _view_in_sync_with_model 兜底的根因。
+            #
+            # 坐标系转换（insert_index → 移除被拖项之后的下标）、原位判据、选中跟随
+            # 全部在 model.move_frames 内部；成功时它发 frames_reordered，视图按模型重建。
+            self._drag_insert_position = None
+            model = self._get_model()
+            if model is None:
+                event.ignore()
+                return
 
-            # 按照从前到后收集被拖拽项
-            # 在排除被拖拽项后的剩余列表中的插入位置
-            dragged_before_count = sum(1 for idx in selected_indices if idx < insert_index)
-            remaining_count = self.topLevelItemCount() - len(selected_indices)
-            target_pos = max(0, min(remaining_count, insert_index - dragged_before_count))
-
-            # 严格按照行号降序 takeTopLevelItem
-            taken_items = []
-            for it in reversed(dragged_items):
-                r = self.indexOfTopLevelItem(it)
-                if r >= 0:
-                    taken_items.append(self.takeTopLevelItem(r))
-            taken_items.reverse()  # 恢复为升序
-
-            # 在 target_pos 插入
-            for i, it in enumerate(taken_items):
-                self.insertTopLevelItem(target_pos + i, it)
+            # 快照必须在改模型之前捕获（MainWindow 连这个信号做撤销记录）
+            self.reorder_about_to_happen.emit()
+            if not model.move_frames(selected_indices, insert_index):
+                event.ignore()
+                return
 
             event.accept()
-
-            # 恢复选中状态与 currentIndex / anchor
-            self.block_selection_signals_internal(True)
-            self.clearSelection()
-            for it in taken_items:
-                it.setSelected(True)
-            if taken_items:
-                last_item = taken_items[-1]
-                last_idx = self.indexOfTopLevelItem(last_item)
-                if last_idx >= 0 and self.selectionModel():
-                    model_idx = self.model().index(last_idx, 0, QModelIndex())
-                    if model_idx.isValid():
-                        self.selectionModel().setCurrentIndex(model_idx, QItemSelectionModel.SelectionFlag.NoUpdate)
-            self.block_selection_signals_internal(False)
-
-            self._drag_insert_position = None
             self.order_changed.emit()
         else:
             super().dropEvent(event)
-            self.flatten_tree()
             self.order_changed.emit()
-
-    def flatten_tree(self):
-        root = self.invisibleRootItem()
-        top_count = root.childCount()
-        items_to_move = []
-
-        for i in range(top_count):
-            parent = root.child(i)
-            if parent.childCount() > 0:
-                children = parent.takeChildren()
-                items_to_move.append((parent, children))
-
-        for parent, children in items_to_move:
-            parent_idx = self.indexOfTopLevelItem(parent)
-            for offset, child in enumerate(children):
-                self.insertTopLevelItem(parent_idx + 1 + offset, child)
 
     def show_context_menu(self, position):
         menu = QMenu()
 
-        selected_items = self.selectedItems()
-        has_selection = bool(selected_items)
+        # 扁平列表（rootIsDecorated=False、且 model 无层级），不存在"折叠的子项"
+        selected_count = len(self.get_selected_indices())
+        has_selection = selected_count > 0
 
         copy_action = QAction(i18n.t("action_copy_props"), self)
         copy_action.triggered.connect(self.copy_properties_requested.emit)
@@ -528,7 +483,7 @@ class TimelineListView(QTreeWidget, BaseTimelineView):
 
         reverse_action = QAction(i18n.t("action_reverse_order"), self)
         reverse_action.triggered.connect(self.reverse_order_requested.emit)
-        reverse_action.setEnabled(len(selected_items) > 1)
+        reverse_action.setEnabled(selected_count > 1)
 
         int_action = QAction(i18n.t("action_integerize"), self)
         int_action.triggered.connect(self.integerize_offset_requested.emit)
@@ -536,7 +491,7 @@ class TimelineListView(QTreeWidget, BaseTimelineView):
 
         smooth_action = QAction(i18n.t("action_smooth_params"), self)
         smooth_action.triggered.connect(self.smooth_params_requested.emit)
-        smooth_action.setEnabled(len(selected_items) > 1)
+        smooth_action.setEnabled(selected_count > 1)
 
         menu.addAction(copy_action)
         menu.addAction(paste_action)
@@ -551,7 +506,7 @@ class TimelineListView(QTreeWidget, BaseTimelineView):
 
         ref_action = QAction(i18n.t("action_set_reference"), self)
         ref_action.triggered.connect(self.set_reference_requested.emit)
-        ref_action.setEnabled(len(selected_items) == 1)
+        ref_action.setEnabled(selected_count == 1)
 
         clear_ref_action = QAction(i18n.t("action_clear_reference"), self)
         clear_ref_action.triggered.connect(self.clear_reference_requested.emit)
@@ -598,115 +553,36 @@ class TimelineListView(QTreeWidget, BaseTimelineView):
         """
         if event.button() == Qt.MouseButton.LeftButton:
             pos = event.position().toPoint()
-            item = self.itemAt(pos)
-            if item is not None:
-                x_start = self.columnViewportPosition(1)
-                w = self.columnWidth(1)
+            index = self.indexAt(pos)
+            if index.isValid():
+                x_start = self.columnViewportPosition(COL_DISABLED)
+                w = self.columnWidth(COL_DISABLED)
                 if x_start <= pos.x() < x_start + w:
-                    rect = self.visualItemRect(item)
-                    frame_data = item.data(0, Qt.ItemDataRole.UserRole)
+                    frame_data = index.data(FrameDataRole)
                     if frame_data:
-                        idx = self.indexOfTopLevelItem(item)
-                        model = getattr(self.parent(), 'model', None)
+                        idx = index.row()
+                        model = self._get_model()
                         new_is_disabled = not frame_data.is_disabled
                         if model is not None and model.set_frame_disabled(idx, new_is_disabled):
-                            # Model 已改真源并触发刷新；仅转发信号供 MainWindow 记录 undo。
-                            self.viewport().update(rect)
+                            # Model 已改真源并触发 dataChanged，视图自动重绘；
+                            # 仅转发信号供 MainWindow 记录 undo。
                             self.disabled_state_changed.emit(frame_data, new_is_disabled)
                         event.accept()
                         return
         super().mousePressEvent(event)
 
-    def add_frame(self, filename, frame_data, index=None):
-        # If index is specified, create item first, then insert it at position
-        if index is not None:
-            item = QTreeWidgetItem()
-            self.insertTopLevelItem(index, item)
-        else:
-            item = QTreeWidgetItem(self)
-
-        item.setData(0, Qt.ItemDataRole.UserRole, frame_data)
-
-        # Defensive: explicitly remove any Qt.ItemFlag.ItemIsUserCheckable /
-        # ItemIsTristate so Qt's built-in checkbox indicator never paints.
-        # Without this, a stale flag left over by older code paths could draw
-        # the unwanted 'v' tick on top of our custom 'x'.
-        flags = item.flags()
-        flags &= ~Qt.ItemFlag.ItemIsUserCheckable
-        flags &= ~Qt.ItemFlag.ItemIsAutoTristate
-        item.setFlags(flags)
-
-        # 禁用状态不再以 CheckStateRole 保存副本；_DisableColumnDelegate 直接读
-        # column 0 的 UserRole 中 frame_data.is_disabled（模型真源）。无需在插入时
-        # 同步任何 UI 角色，frame_data 引用始终与模型保持一致。
-
-        # Now set the text
-        item.setText(0, str(self.indexOfTopLevelItem(item) + 1))
-        item.setText(1, "")
-        item.setText(2, filename)
-
-        self.update_item_display(item, frame_data)
-
-    def update_item_display(self, item, frame_data):
-        fname = os.path.basename(frame_data.file_path)
-        if frame_data.slice_pos:
-            fname += f" [{frame_data.slice_pos[0]},{frame_data.slice_pos[1]}]"
-        item.setText(2, fname)
-
-        item.setText(3, f"{frame_data.scale:.4f}")
-        item.setTextAlignment(3, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-
-        px, py = frame_data.position
-        pos_str = f"{int(px):>4d} , {int(py):>4d}"
-        item.setText(4, pos_str)
-        item.setTextAlignment(4, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-
-        # Column 5: Crop origin (cx, cy); empty if no crop
-        if frame_data.crop_rect:
-            cx, cy, cw, ch = frame_data.crop_rect
-            crop_origin_str = f"{cx:>4d} , {cy:>4d}"
-        else:
-            crop_origin_str = ""
-        item.setText(5, crop_origin_str)
-        item.setTextAlignment(5, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-
-        # Column 6: Crop resolution. If cropped, show cw x ch; otherwise show
-        # source resolution in parentheses (zero-decode via FrameData.base_size()).
-        if frame_data.crop_rect:
-            _, _, cw, ch = frame_data.crop_rect
-            crop_res_str = f"{cw} x {ch}"
-        else:
-            sw, sh = frame_data.base_size()
-            crop_res_str = f"({sw} x {sh})" if sw > 0 else "(? x ?)"
-        item.setText(6, crop_res_str)
-        item.setTextAlignment(6, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-
-        # Column 7: Scaled resolution = effective target size (含 aspect_ratio 失真)
-        # 与属性面板"目标分辨率"共用 FrameData.effective_target_size() 单一算法来源
-        tw, th = frame_data.effective_target_size()
-        scaled_res_str = f"{tw} x {th}" if tw > 0 else "? x ?"
-        item.setText(7, scaled_res_str)
-        item.setTextAlignment(7, Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-
     def refresh_ui_text(self):
-        self.setHeaderLabels([
-            i18n.t("col_index"),
-            i18n.t("col_disabled_header"),
-            i18n.t("col_filename"),
-            i18n.t("col_scale"),
-            i18n.t("col_position"),
-            i18n.t("col_crop_origin"),
-            i18n.t("col_crop_res"),
-            i18n.t("col_scaled_res")
-        ])
-        # 列7 tooltip: 与属性面板"目标分辨率"同源 (含比例失真)
-        self.setHeaderToolTip(7, i18n.t("col_scaled_res_tip"))
-        self.refresh_current_items()
+        """语言切换：表头文案由 model 的 headerData() 现取，只需让表头重画。"""
+        self._item_model.headerDataChanged.emit(
+            Qt.Orientation.Horizontal, 0, COLUMN_COUNT - 1)
 
     def refresh_current_items(self):
-        root = self.invisibleRootItem()
-        for i in range(root.childCount()):
-            item = root.child(i)
-            item.setText(0, str(i + 1))
-            frame_data = item.data(0, Qt.ItemDataRole.UserRole)
-            self.update_item_display(item, frame_data)
+        """强制重绘可见单元格。
+
+        内容由 model 现算，平时靠 `dataChanged` 驱动；这里补的是"非活动视图"那一半
+        —— `_on_data_changed` 出于性能刻意跳过它，切过来时它的缓存渲染还是旧的。
+
+        迁移前这里要遍历所有 item 重算 8 列文本（含读源图尺寸的磁盘 I/O）；现在
+        model 只服务可见行，且源图尺寸带缓存。
+        """
+        self.viewport().update()

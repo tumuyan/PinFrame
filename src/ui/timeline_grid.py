@@ -1,18 +1,31 @@
-from PyQt6.QtWidgets import QListWidget, QListWidgetItem, QAbstractItemView, QMenu
+from PyQt6.QtWidgets import QListView, QAbstractItemView, QMenu
 from PyQt6.QtCore import Qt, pyqtSignal, QSize, QTimer, QPoint, QRectF, QItemSelectionModel, QModelIndex, QMimeData
 from PyQt6.QtGui import QColor, QImage, QPixmap, QPainter, QBrush, QPen, QFont, QIcon, QAction, QDrag
 from i18n.manager import i18n
-from ui.timeline_base_view import BaseTimelineView
 from ui.timeline_grid_delegate import TimelineGridDelegate
+from ui.timeline_item_model import COL_FILENAME, TimelineItemModel, ThumbnailRole
 from model.project_data import FrameData
 from typing import List, Optional
 import os
 
-class TimelineGridWidget(QListWidget, BaseTimelineView):
-    """Grid view for timeline with thumbnail display"""
+
+class TimelineGridWidget(QListView):
+    """时间轴的网格视图（缩略图形态）。
+
+    已迁到 Qt model/view：与列表视图挂**同一个** `TimelineItemModel` 实例，因此两
+    个视图天然共享 `QItemSelectionModel`（P1-3 最大的一条收益）。本视图**不持有
+    帧数据或顺序** —— 那些都在 `TimelineModel` 里。
+
+    缩略图仍由本视图计算与缓存（它是网格的展示形态：尺寸、背景模式都是网格的设置），
+    通过 `TimelineItemModel.set_thumbnail_provider` 注入、经 `ThumbnailRole` 递给
+    delegate。迁移前它是 `QListWidget`，帧数据挂在 `QListWidgetItem` 的 UserRole 上。
+    """
 
     selection_changed = pyqtSignal(list)
     order_changed = pyqtSignal()
+    # 顺序变更前发出（拖拽已算出目标位置、尚未调用 model.move_frames）。
+    # 撤销快照必须在改模型之前捕获，否则快照到的就是新顺序。
+    reorder_about_to_happen = pyqtSignal()
     files_dropped = pyqtSignal(list, int)
     copy_properties_requested = pyqtSignal()
     paste_properties_requested = pyqtSignal()
@@ -41,15 +54,25 @@ class TimelineGridWidget(QListWidget, BaseTimelineView):
         self.background_mode = "checkerboard"  # black, white, gray, checkerboard, green
         self._editors = []
 
+        # 帧数据与顺序的唯一真源。由 TimelineWidget 注入（依赖注入，避免 ui 层之间
+        # 互相硬引用）。视图不再拥有顺序，拖拽只算出"拖了哪几行、插到哪儿"。
+        self._model = None
+
         # Widget settings
-        self.setViewMode(QListWidget.ViewMode.IconMode)
-        self.setResizeMode(QListWidget.ResizeMode.Adjust)
-        self.setMovement(QListWidget.Movement.Snap)
+        self.setViewMode(QListView.ViewMode.IconMode)
+        self.setResizeMode(QListView.ResizeMode.Adjust)
+        self.setMovement(QListView.Movement.Snap)
         self.setDragDropMode(QAbstractItemView.DragDropMode.DragDrop)
         self.setAcceptDrops(True)
+        self.setDragEnabled(True)
         self.setDefaultDropAction(Qt.DropAction.MoveAction)  # Enable internal move for drag&drop
         self.setDropIndicatorShown(True)  # Show drop indicator during drag
         self.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+        # 必须与列表视图一致：两者共享同一个 QItemSelectionModel，若这里是默认的
+        # SelectItems，点击就只选中**自己那一列**（网格是文件名列 2），而列表按列 0
+        # 去读 `selectedRows()` 就会认为"什么都没选" —— 表现为"点了帧，属性面板
+        # 显示未选中、预览区没反应"。
+        self.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.setUniformItemSizes(True)
         self.setSpacing(4)
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
@@ -66,7 +89,6 @@ class TimelineGridWidget(QListWidget, BaseTimelineView):
         self._selection_debounce_timer.timeout.connect(self._emit_selection_changed)
 
         self._selection_blocked = False
-        self.itemSelectionChanged.connect(self.on_selection_changed)
 
         self.reference_frame_data = None
         self.is_dark_theme = True
@@ -74,12 +96,13 @@ class TimelineGridWidget(QListWidget, BaseTimelineView):
         # Drag position tracking
         self._drag_insert_position = None  # (index, before) - where before is True if inserting before the item
         self._is_dragging = False
+        self._dragged_rows = []  # 拖拽中的行号（selectionModel 在拖拽期间不可靠）
 
         # Set custom delegate for drawing frame numbers
         self.setItemDelegate(TimelineGridDelegate(self))
 
         # Thumbnail cache to avoid recreating the same thumbnail repeatedly
-        self._thumbnail_cache = {}  # key: (file_path, crop_rect, index), value: QPixmap
+        self._thumbnail_cache = {}  # key: (file_path, crop_rect, ...), value: QPixmap
 
         # Set item size based on thumbnail dimensions
         self.update_item_size()
@@ -167,16 +190,19 @@ class TimelineGridWidget(QListWidget, BaseTimelineView):
             self._emit_selection_changed()
 
     def block_selection_signals_internal(self, block: bool):
-        """Block or unblock selection change signals AND Qt's itemSelectionChanged"""
+        """Block or unblock selection change signals AND Qt's selectionChanged"""
         self._selection_blocked = block
+        sel = self.selectionModel()
+        if sel is None:
+            return
         if block:
             try:
-                self.itemSelectionChanged.disconnect(self.on_selection_changed)
+                sel.selectionChanged.disconnect(self.on_selection_changed)
             except TypeError:
                 # Already disconnected or never connected
                 pass
         else:
-            self.itemSelectionChanged.connect(self.on_selection_changed)
+            sel.selectionChanged.connect(self.on_selection_changed)
 
     def select_all_optimized(self):
         """Select all items efficiently"""
@@ -185,61 +211,121 @@ class TimelineGridWidget(QListWidget, BaseTimelineView):
         self._selection_blocked = False
         self._emit_selection_changed()
 
-    # BaseTimelineView abstract methods implementation
     def get_selected_indices(self) -> List[int]:
-        """Get indices of selected items"""
-        selected_items = self.selectedItems()
-        return [self.row(item) for item in selected_items]
+        """Get indices of selected rows"""
+        sel = self.selectionModel()
+        if sel is None:
+            return []
+        return sorted({idx.row() for idx in sel.selectedIndexes()
+                       if idx.column() == self.modelColumn()})
 
-    def get_selected_items(self):
-        """Get selected items"""
-        return self.selectedItems()
+    def get_selected_frames(self) -> List[FrameData]:
+        """选中行的帧数据（按行号升序）。"""
+        model = self._get_model()
+        if model is None:
+            return []
+        return [model.get_frame_at(i) for i in self.get_selected_indices()
+                if model.get_frame_at(i) is not None]
+
+    def bind_model(self, model):
+        """注入帧数据与顺序的唯一真源，并挂上共享的 Qt 适配层（由 TimelineWidget 调用）。
+
+        注入后视图不再拥有顺序 —— 拖拽只负责算出"拖了哪几行、插到哪儿"，顺序变更
+        一律经 `model.move_frames`，视图随模型信号更新。
+        """
+        self._model = model
+        # 与列表视图共用**同一个**适配层实例（由 TimelineWidget 创建），于是两个视图
+        # 共享同一个 QItemSelectionModel —— 这才是 P1-3 想要的"选中只有一份"。
+        self._item_model = getattr(self.parent(), 'item_model', None)
+        if self._item_model is None:  # 单独构造本视图时的兜底
+            self._item_model = TimelineItemModel(model, self)
+        self.setModel(self._item_model)
+        # 网格展示的是文件名那一列（决定悬浮提示等由 model 提供的角色）
+        self.setModelColumn(COL_FILENAME)
+        # 缩略图仍由本视图算（尺寸/背景模式都是网格的设置），注入给 model 转发
+        self._item_model.set_thumbnail_provider(self.thumbnail_for_row)
+        self.selectionModel().selectionChanged.connect(self.on_selection_changed)
+
+    def adopt_shared_selection_model(self, selection_model):
+        """改用共享的选择模型（由 TimelineWidget 调用）。
+
+        **必须在 `setSelectionModel()` 之后重新连接信号** —— 换 selectionModel
+        会丢弃旧模型上的所有连接，`bind_model` 里连上的那个随之失效：本视图从此
+        不再发出 `selection_changed`，点击帧时下游（属性面板、预览区）收不到通知，
+        表现为"点了没反应"。
+
+        迁移前两个视图各有独立的 selectionModel、各自连接；共享之后这里的重连是必需的。
+        """
+        self.setSelectionModel(selection_model)
+        try:
+            selection_model.selectionChanged.disconnect(self.on_selection_changed)
+        except (TypeError, RuntimeError):
+            pass  # 未曾连接，或已被 disconnect
+        selection_model.selectionChanged.connect(self.on_selection_changed)
+
+    def thumbnail_for_row(self, row: int, frame_data: FrameData) -> Optional[QPixmap]:
+        """`ThumbnailRole` 的提供者：把本视图的缩略图缓存交给 delegate。"""
+        if frame_data is None:
+            return None
+        return self.create_thumbnail(frame_data.file_path, frame_data, row)
+
+    def _get_model(self):
+        """取模型真源；未显式注入时回退到 parent（TimelineWidget.model）。"""
+        if self._model is not None:
+            return self._model
+        return getattr(self.parent(), 'model', None)
 
     def get_frame_data_at_index(self, index: int) -> Optional[FrameData]:
         """Get frame data at specified index"""
-        if 0 <= index < self.count():
-            item = self.item(index)
-            return item.data(Qt.ItemDataRole.UserRole)
-        return None
+        model = self._get_model()
+        return model.get_frame_at(index) if model is not None else None
 
-    def add_frame_to_view(self, filename: str, frame_data: FrameData, index: int):
-        """Add a frame to the view at specified index"""
-        self.add_frame(filename, frame_data, index)
-
-    def remove_frame_from_view(self, index: int):
-        """Remove frame from view at specified index"""
-        if 0 <= index < self.count():
-            self.takeItem(index)
-
-    def update_frame_in_view(self, index: int, frame_data: FrameData, filename: str):
-        """Update frame in view at specified index"""
-        self.update_frame(index, frame_data, filename)
-
-    def refresh_view(self):
-        """Refresh the entire view"""
-        self.refresh_all_items()
+    # 增删帧不需要视图做任何事 —— 模型发出的 frames_inserted / frames_removed
+    # 会由适配层翻译成 beginInsertRows / beginRemoveRows，视图自动跟随。
+    # 迁移前这里有 add_frame_to_view / remove_frame_from_view / update_frame_in_view
+    # 三个方法，迁到 model/view 后全部退化为空，已删除。
 
     def clear_view(self):
-        """Clear all items from view"""
+        """清空缩略图缓存；行由模型的 `clear()` 驱动移除。"""
         self._clear_thumbnail_cache()
-        self.clear()
-
-    def clear(self):
-        """Override QListWidget.clear() to also clear thumbnail cache"""
-        self._clear_thumbnail_cache()
-        super().clear()
 
     def get_item_count(self) -> int:
-        """Get total number of items in view"""
-        return self.count()
+        """Get total number of rows in view"""
+        return self.model().rowCount() if self.model() is not None else 0
 
     def _emit_selection_changed(self):
         if self._selection_blocked:
             return
+        self.selection_changed.emit(self.get_selected_frames())
 
-        selected_items = self.selectedItems()
-        frames = [item.data(Qt.ItemDataRole.UserRole) for item in selected_items]
-        self.selection_changed.emit(frames)
+    def _apply_selection_from_set(self, selected_indices_set: set):
+        """Apply selection from a set of row indices.
+
+        只改动需要变更的行 —— 整表重设会打断用户按住 Ctrl 的连续多选
+        （`selectionChanged` 每次都会触发防抖定时器 → 连锁刷新属性面板）。
+        """
+        sel = self.selectionModel()
+        if sel is None:
+            return
+        current = set(self.get_selected_indices())
+        if current == selected_indices_set:
+            return
+        col = self.modelColumn()
+        # 必须带 `Rows`：本视图与列表视图共享同一个 QItemSelectionModel，但显示的是
+        # **不同的列**（网格是文件名列、列表是序号列）。若只选中自己那一列，另一个
+        # 视图按自己的列过滤 `selectedIndexes()` 就会什么都看不到 —— 选中在它眼里
+        # 是空的。带上 Rows 让选中整行生效，两视图才能一致。
+        was_blocked = self._selection_blocked
+        self._selection_blocked = True
+        for row in current - selected_indices_set:
+            sel.select(self.model().index(row, col),
+                       QItemSelectionModel.SelectionFlag.Deselect
+                       | QItemSelectionModel.SelectionFlag.Rows)
+        for row in selected_indices_set - current:
+            sel.select(self.model().index(row, col),
+                       QItemSelectionModel.SelectionFlag.Select
+                       | QItemSelectionModel.SelectionFlag.Rows)
+        self._selection_blocked = was_blocked
     
     def create_thumbnail(self, image_path, frame_data, index):
         """Create thumbnail with overlay information (with caching)"""
@@ -340,73 +426,33 @@ class TimelineGridWidget(QListWidget, BaseTimelineView):
             painter.setPen(QColor(255, 255, 255))
             painter.drawText(text_bg_rect.toRect(), Qt.AlignmentFlag.AlignCenter, str(index + 1))
     
-    def add_frame(self, filename, frame_data, index):
-        """Add a frame to the grid"""
-        item = QListWidgetItem()
-        item.setData(Qt.ItemDataRole.UserRole, frame_data)
-        
-        # Create thumbnail
-        thumbnail = self.create_thumbnail(frame_data.file_path, frame_data, index)
-        item.setIcon(QIcon(thumbnail))
-        
-        # Set tooltip and display text
-        fname = os.path.basename(filename)
-        if frame_data.slice_pos:
-            fname += f" [{frame_data.slice_pos[0]},{frame_data.slice_pos[1]}]"
-        
-        item.setText(fname)
-        item.setToolTip(fname)
-        
-        # Reference frame highlighting
-        is_ref = (frame_data is self.reference_frame_data)
-        if is_ref:
-            font = item.font()
-            font.setBold(True)
-            item.setFont(font)
-
-        # Insert item at specified index
-        self.insertItem(index, item)
-    
-    def update_frame(self, index, frame_data, filename):
-        """Update frame at index"""
-        if index < 0 or index >= self.count():
-            return
-
-        item = self.item(index)
-        item.setData(Qt.ItemDataRole.UserRole, frame_data)
-
-        # Recreate thumbnail
-        thumbnail = self.create_thumbnail(frame_data.file_path, frame_data, index)
-        item.setIcon(QIcon(thumbnail))
-
-        # Update text
-        fname = os.path.basename(filename)
-        if frame_data.slice_pos:
-            fname += f" [{frame_data.slice_pos[0]},{frame_data.slice_pos[1]}]"
-
-        item.setText(fname)
-        item.setToolTip(fname)
-    
     def refresh_all_items(self):
-        """Refresh all items (thumbnails and text)"""
+        """让所有行重取缩略图与文本（model 的 `data()` 是现算的）。"""
         # Reset log flag for delegate to allow logging first frame info
         delegate = self.itemDelegate()
         if hasattr(delegate, 'reset_log_flag'):
             delegate.reset_log_flag()
 
-        for i in range(self.count()):
-            item = self.item(i)
-            frame_data = item.data(Qt.ItemDataRole.UserRole)
+        self._notify_rows_changed()
 
-            # Recreate thumbnail
-            thumbnail = self.create_thumbnail(frame_data.file_path, frame_data, i)
-            item.setIcon(QIcon(thumbnail))
-
-            # Update reference highlighting
-            is_ref = (frame_data is self.reference_frame_data)
-            font = item.font()
-            font.setBold(is_ref)
-            item.setFont(font)
+    def _notify_rows_changed(self, start: int = None, end: int = None):
+        """通知视图重取指定范围的单元格数据（缩略图、文本、加粗都是现算的）。"""
+        item_model = self.model()
+        if item_model is None:
+            return
+        total = item_model.rowCount()
+        if total == 0:
+            return
+        if start is None:
+            start, end = 0, total - 1
+        if end is None:
+            end = start
+        end = min(end, total - 1)
+        if start > end:
+            return
+        col = self.modelColumn()
+        item_model.dataChanged.emit(
+            item_model.index(start, col), item_model.index(end, col), [])
 
     def refresh_item_numbers(self):
         """Refresh only the item numbers (index) without regenerating thumbnails"""
@@ -431,7 +477,7 @@ class TimelineGridWidget(QListWidget, BaseTimelineView):
         """Determine if a drop at drop_pos should insert before the target item.
 
         In a grid (row-major layout) the Y coordinate only selects which row the
-        pointer is over (handled implicitly by itemAt). Within that row the
+        pointer is over (handled implicitly by `indexAt`). Within that row the
         before/after decision depends solely on the X coordinate: left half of
         the cell => insert before, right half => insert after.
         """
@@ -443,12 +489,11 @@ class TimelineGridWidget(QListWidget, BaseTimelineView):
         else:
             # Internal drag: calculate and show insert position
             drop_pos = event.position().toPoint()
-            drop_item = self.itemAt(drop_pos)
+            drop_index = self.indexAt(drop_pos).row()
 
-            if drop_item:
-                drop_index = self.row(drop_item)
+            if drop_index >= 0:
                 # Calculate if we're dropping before or after the target item
-                item_rect = self.visualItemRect(drop_item)
+                item_rect = self.visualRect(self.model().index(drop_index, self.modelColumn()))
                 item_center = item_rect.center()
 
                 before = self._calc_insert_before(drop_pos, item_center)
@@ -458,7 +503,7 @@ class TimelineGridWidget(QListWidget, BaseTimelineView):
                     self._drag_insert_position = (drop_index, False)  # Insert after
             else:
                 # Drop at the end
-                self._drag_insert_position = (self.count(), False)
+                self._drag_insert_position = (self.get_item_count(), False)
 
             # Trigger repaint to show insert indicator
             self.viewport().update()
@@ -485,10 +530,10 @@ class TimelineGridWidget(QListWidget, BaseTimelineView):
             target_index = index if before else index + 1
 
             # Don't draw blue box if inserting at the end (after last item)
-            if target_index < self.count():
-                item = self.item(target_index)
-                if item:
-                    rect = self.visualItemRect(item)
+            if target_index < self.get_item_count():
+                index = self.model().index(target_index, self.modelColumn())
+                if index.isValid():
+                    rect = self.visualRect(index)
 
                     # Draw insertion indicator on viewport
                     painter = QPainter(self.viewport())
@@ -510,26 +555,15 @@ class TimelineGridWidget(QListWidget, BaseTimelineView):
                 links.append(url.toLocalFile())
 
             # Calculate insertion index
-            item = self.itemAt(event.position().toPoint())
-            if item:
-                final_index = self.row(item) + 1
-            else:
-                final_index = -1
+            drop_row = self.indexAt(event.position().toPoint()).row()
+            final_index = drop_row + 1 if drop_row >= 0 else -1
 
             event.accept()
             self.files_dropped.emit(links, final_index)
         else:
-            # 内部重排：完全受控，保证原有先后顺序且绝不丢帧、拖拽后恢复高亮
-            dragged_items = getattr(self, '_dragged_items', [])
-            if not dragged_items:
-                selected_items = self.selectedItems()
-                if not selected_items:
-                    self._clear_drag_state()
-                    event.ignore()
-                    return
-                dragged_items = sorted(selected_items, key=lambda item: self.row(item))
-
-            selected_indices = [self.row(it) for it in dragged_items if self.row(it) >= 0]
+            # 内部重排：完全受控，保证原有先后顺序且绝不丢帧
+            selected_indices = sorted(getattr(self, '_dragged_rows', None)
+                                      or self.get_selected_indices())
             if not selected_indices:
                 self._clear_drag_state()
                 event.ignore()
@@ -543,84 +577,51 @@ class TimelineGridWidget(QListWidget, BaseTimelineView):
             else:
                 # Fallback: recalculate if position not tracked
                 drop_pos = event.position().toPoint()
-                drop_item = self.itemAt(drop_pos)
-                if drop_item:
-                    drop_index = self.row(drop_item)
-                    item_rect = self.visualItemRect(drop_item)
+                drop_index = self.indexAt(drop_pos).row()
+                if drop_index >= 0:
+                    item_rect = self.visualRect(
+                        self.model().index(drop_index, self.modelColumn()))
                     item_center = item_rect.center()
                     if self._calc_insert_before(drop_pos, item_center):
                         insert_index = drop_index
                     else:
                         insert_index = drop_index + 1
                 else:
-                    insert_index = self.count()
+                    insert_index = self.get_item_count()
 
-            # Check if drop would result in identical order
-            is_contiguous = (selected_indices[-1] - selected_indices[0] + 1 == len(selected_indices))
-            if is_contiguous:
-                if insert_index == selected_indices[0] or insert_index == selected_indices[-1] + 1:
-                    self._clear_drag_state()
-                    event.ignore()
-                    return
+            # 顺序变更交给模型 —— 视图不再自己 takeItem/insertItem 搬 item。
+            # 坐标系转换、原位判据、选中跟随都在 model.move_frames 内部（同列表视图，
+            # 见那里的注释：视图自行搬 item 会让顺序有两个源）。
+            model = self._get_model()
+            if model is None:
+                self._clear_drag_state()
+                event.ignore()
+                return
 
-            # Calculate adjusted insert index after removal
-            dragged_before_count = sum(1 for idx in selected_indices if idx < insert_index)
-            remaining_count = self.count() - len(selected_indices)
-            adjusted_insert_index = max(0, min(remaining_count, insert_index - dragged_before_count))
-
-            # Remove items from current positions in strict descending row order,
-            # reusing the original QListWidgetItem objects (consistent with the
-            # List view's takeTopLevelItem/insertTopLevelItem approach) so that
-            # any extra item state (flags, sizeHint, custom roles, external
-            # references) is preserved.
-            taken_items = []
-            for item in reversed(dragged_items):
-                r = self.row(item)
-                if r >= 0:
-                    taken_items.append(self.takeItem(r))
-            taken_items.reverse()  # restore ascending row order
-
-            # Insert items at new position, reusing the original objects
-            new_items = []
-            for i, item in enumerate(taken_items):
-                self.insertItem(adjusted_insert_index + i, item)
-                new_items.append(item)
+            # 快照必须在改模型之前捕获（MainWindow 连这个信号做撤销记录）
+            self.reorder_about_to_happen.emit()
+            if not model.move_frames(selected_indices, insert_index):
+                self._clear_drag_state()
+                event.ignore()
+                return
 
             event.accept()
-
-            # Restore selection to newly inserted items and update currentIndex/anchor
-            self.block_selection_signals_internal(True)
-            self.clearSelection()
-            for it in new_items:
-                it.setSelected(True)
-            if new_items:
-                last_item = new_items[-1]
-                model_idx = self.model().index(self.row(last_item), 0, QModelIndex())
-                if model_idx.isValid() and self.selectionModel():
-                    self.selectionModel().setCurrentIndex(model_idx, QItemSelectionModel.SelectionFlag.NoUpdate)
-            self.block_selection_signals_internal(False)
-
-            # Clear drag state
             self._clear_drag_state()
-
-            # Update item numbers after drag is complete
-            self.refresh_item_numbers()
             self.order_changed.emit()
 
     def _clear_drag_state(self):
         """Clear drag state"""
         self._is_dragging = False
         self._drag_insert_position = None
-        self._dragged_items = []
+        self._dragged_rows = []
         self.viewport().update()
 
     def startDrag(self, supportedActions):
-        selected_items = self.selectedItems()
-        if not selected_items:
+        rows = self.get_selected_indices()
+        if not rows:
             return
-        # 严格按当前行号升序排列被拖拽的项目，避免受用户选择顺序影响
-        sorted_items = sorted(selected_items, key=lambda item: self.row(item))
-        self._dragged_items = sorted_items
+        # 拖拽期间 selectionModel 会被 Qt 改动，行号必须先存下来
+        self._dragged_rows = rows
         self._is_dragging = True
 
         drag = QDrag(self)
@@ -628,16 +629,15 @@ class TimelineGridWidget(QListWidget, BaseTimelineView):
         mime_data.setData("application/x-pinframe-internal-reorder", b"reorder")
         drag.setMimeData(mime_data)
 
-        if sorted_items:
-            icon = sorted_items[0].icon()
-            if not icon.isNull():
-                pixmap = icon.pixmap(QSize(self.thumbnail_width, self.thumbnail_height))
-                if not pixmap.isNull():
-                    drag.setPixmap(pixmap)
+        if rows:
+            # 拖拽反馈图标：直接问 model 要缩略图，不再经过 item
+            frame = self._get_model().get_frame_at(rows[0])
+            pixmap = self.thumbnail_for_row(rows[0], frame)
+            if pixmap is not None and not pixmap.isNull():
+                drag.setPixmap(pixmap)
 
         # 执行拖拽（关键：不调用 super().startDrag，杜绝 Qt 内部二次删除导致帧消失）
         drag.exec(Qt.DropAction.MoveAction)
-        self._dragged_items = []
         self._clear_drag_state()
     
     def wheelEvent(self, event):
@@ -666,8 +666,8 @@ class TimelineGridWidget(QListWidget, BaseTimelineView):
     def show_context_menu(self, position):
         menu = QMenu()
 
-        selected_items = self.selectedItems()
-        has_selection = bool(selected_items)
+        selected_count = len(self.get_selected_indices())
+        has_selection = selected_count > 0
 
         copy_action = QAction(i18n.t("action_copy_props"), self)
         copy_action.triggered.connect(self.copy_properties_requested.emit)
@@ -698,7 +698,7 @@ class TimelineGridWidget(QListWidget, BaseTimelineView):
 
         reverse_action = QAction(i18n.t("action_reverse_order"), self)
         reverse_action.triggered.connect(self.reverse_order_requested.emit)
-        reverse_action.setEnabled(len(selected_items) > 1)
+        reverse_action.setEnabled(selected_count > 1)
 
         int_action = QAction(i18n.t("action_integerize"), self)
         int_action.triggered.connect(self.integerize_offset_requested.emit)
@@ -706,7 +706,7 @@ class TimelineGridWidget(QListWidget, BaseTimelineView):
 
         smooth_action = QAction(i18n.t("action_smooth_params"), self)
         smooth_action.triggered.connect(self.smooth_params_requested.emit)
-        smooth_action.setEnabled(len(selected_items) > 1)
+        smooth_action.setEnabled(selected_count > 1)
 
         menu.addAction(copy_action)
         menu.addAction(paste_action)
@@ -721,7 +721,7 @@ class TimelineGridWidget(QListWidget, BaseTimelineView):
 
         ref_action = QAction(i18n.t("action_set_reference"), self)
         ref_action.triggered.connect(self.set_reference_requested.emit)
-        ref_action.setEnabled(len(selected_items) == 1)
+        ref_action.setEnabled(selected_count == 1)
 
         clear_ref_action = QAction(i18n.t("action_clear_reference"), self)
         clear_ref_action.triggered.connect(self.clear_reference_requested.emit)
@@ -759,18 +759,12 @@ class TimelineGridWidget(QListWidget, BaseTimelineView):
     def refresh_current_items(self):
         self.refresh_all_items()
 
-    def update_item_display(self, item, frame_data):
-        """Update display of a single item (refreshes thumbnail and text)"""
-        if item is None:
-            return
+    def update_item_display(self, index, frame_data=None):
+        """让指定行重取缩略图与文本（model 的 `data()` 是现算的）。
 
-        index = self.row(item)
-        thumbnail = self.create_thumbnail(frame_data.file_path, frame_data, index)
-        item.setIcon(QIcon(thumbnail))
-
-        fname = os.path.basename(frame_data.file_path)
-        if frame_data.slice_pos:
-            fname += f" [{frame_data.slice_pos[0]},{frame_data.slice_pos[1]}]"
-
-        item.setText(fname)
-        item.setToolTip(fname)
+        迁移前这里直接改 item 的 icon/text；现在只需发 `dataChanged`，delegate 会
+        重新向 model 取数。缩略图缓存在本视图里、按内容而非位置做 key，因此无需
+        在这里显式失效 —— 除非源图真的换了（那时走
+        `invalidate_thumbnail_cache_for_paths`）。
+        """
+        self._notify_rows_changed(index, index)

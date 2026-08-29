@@ -20,12 +20,35 @@ PinFrame (定帧) is a PyQt6 desktop application for previewing, fine-tuning, an
 - **Screenshot for visual verification (headless):**
   `bash dev/screenshot.sh` launches the app under Xvfb and captures `dev/tmp_screenshot.png`.
 
+- **Run all automated checks (全量回归):**
+  `bash dev/run_all_checks.sh`（约 2s，退出码 0=全过 / 1=有失败 / 2=前置依赖缺失）。
+  依次跑：语法编译 → `test_transform.py` → `transform_baseline.py --compare` →
+  `verify_timeline_view_sync.py` → `verify_grid_view.py` → `smoke_reorder.py`。
+  `--verbose` 实时回显完整输出，`--fail-fast` 首败即停。
+  **改动触及共享层（`core/transform.py`、`timeline_model.py`、`timeline_item_model.py`、
+  `project_data.py`）或打包发布前，必须跑全量**；只动某个对话框/i18n 键时可只跑定向项。
+
 - **Run a single test script:**
   `python dev/test_transform.py`（37 个 `core.transform` + 时间轴模型信号契约单测，纯 assert，无需 pytest）；
   `python dev/transform_baseline.py [--compare]`（所有渲染路径的像素哈希回归）。
-  这是唯一的自动化测试；其余功能靠手动验证。
+  **脚本全绿 ≠ 全覆盖**：右键菜单、外部文件拖入、播放时的选中跟随这三项没有任何
+  自动化覆盖，只能手动验证。
+
+- **像素基线的正确用法（`transform_baseline.py`）:**
+  `dev/tmp_baseline/` 在 `.gitignore` 中，**基线不入库**。所以 `--compare` 比的是
+  "与本机上一次运行"，不是"与团队基线"。流程：改动**前**跑一次不带 `--compare` 的
+  存基线，改动**后** `--compare` 看 `MAIN_DIGEST` 是否变化。
+  陷阱：若 `dev/tmp_baseline/hashes.json` 缺失，`--compare` 会**跳过比对、静默建一条
+  新基线并返回 0（假通过）**。`dev/run_all_checks.sh` 会前置校验它存在且含
+  `main_digest`，并在跑完后校验它未被改写。
 
 - **Linting:** No linter/CI configured. Use `python -m py_compile <file>` to sanity-check syntax.
+
+- **做破坏性验证前必须清 `__pycache__`:**
+  `find src dev -name __pycache__ -type d -exec rm -rf {} +`。
+  pyc 校验用 `(mtime, size)`，秒级精度下切分支/快速往返会碰撞，导致加载**陈旧字节码**
+  —— 症状极具迷惑性（`inspect.getsource()` 显示正确源码，行为却是旧的）。
+  `run_all_checks.sh` 已在开头代劳。
 
 ## Architecture
 
@@ -66,28 +89,62 @@ Two dataclasses form the entire project state:
 
 ```powershell
 python dev/test_transform.py                  # 37 个单测，快，解释"为什么"
-python dev/transform_baseline.py              # 记录所有渲染路径的像素哈希
+python dev/transform_baseline.py              # 记录所有渲染路径的像素哈希（改动前跑）
 python dev/transform_baseline.py --compare    # 改动后：MAIN_DIGEST 必须不变
 ```
+
+基线存在 `dev/tmp_baseline/`（**`.gitignore` 中，不入库**），故 `--compare` 比的是"与本机上一次运行"。若 `hashes.json` 缺失，它会**跳过比对、静默建新基线并返回 0** —— 假通过。
 
 `transform_baseline.py` 用一个夹具工程（旋转、镜像、裁切、失真、奇偶源图尺寸）跑 PNG 序列/精灵表/GIF 导出、canvas 普通与栅格化两条路径、属性面板单选与多选预览，再对输出取哈希。其 `EDGE` 组把 `aspect_ratio == 0` **隔离到子进程**——归一之前该用例会 abort 整个进程（PyQt6 把 `paintEvent` 内未捕获异常升级为 `abort()`，实测退出码 `0xC0000409`）。
 
 ### Timeline — design (`src/ui/timeline*.py`)
 The timeline is a **model/view system**: `TimelineModel` owns the frame list and is the sole authority over frame state; `TimelineWidget` (a `QStackedWidget`) hosts two read-only views — `TimelineListView` (tree) and `TimelineGridWidget` (thumbnails) — that share `BaseTimelineView` + `TimelineViewUtils` + a delegate. Every mutation broadcasts a `pyqtSignal` (`selection_changed`, `order_changed`, `files_dropped`, `duplicate_requested`, `reverse_order_requested`, `set_reference_requested`, ...) that `MainWindow` connects to actions.
 
-**Design tenet — one fact, one truth, one write-path, read-only views.** Any per-frame state is *business data owned by the model*, never copied into a view's item roles. The model is the single write-path and broadcasts change via a signal; list & grid views are read-only consumers that render straight from the model and repaint on that signal. This keeps both views always consistent and makes any new batch/conditional operation just a loop over the model. Concretely, this philosophy shapes every sub-feature:
+> **两个视图都已迁到 Qt model/view（P1-3，见 `dev/architecture_review.md` 的
+> 「P1-3 实施计划」）。** 第 1 片（顺序归模型）、第 2 片-a（列表）、第 2 片-b（网格）
+> 均已完成，仅剩第 3 片收尾。下面几条已按新状态改写；下文其余旧描述以本节为准。
+>
+> **`TimelineListView`（`QTreeView`）与 `TimelineGridWidget`（`QListView`）挂同一个
+> `TimelineItemModel` 实例**（`ui/timeline_item_model.py`），并**共享同一个
+> `QItemSelectionModel`**。两者都**不持有帧数据或顺序** —— 内容由 model 的 `data()`
+> 现算，帧经 `FrameDataRole`（任意列都能取到本行的 `FrameData`）交给 delegate。
+>
+> `TimelineModel` **刻意不是** `QAbstractItemModel`：它是一维帧列表，"8 列"与"缩略图"
+> 都只是某种视图的展示形态，把列定义 / 缩略图塞进业务模型会污染导出与存档。适配层
+> 负责把 `TimelineModel` 的语义化信号翻译成 `beginInsertRows` / `dataChanged` /
+> `beginResetModel`。
+>
+> 两个必须记住的 Qt 事实（都踩过）：
+> - **`setModel()` 同一个实例并不会共享选中** —— `QAbstractItemView.setModel()`
+>   会给每个视图各建一个新的 `QItemSelectionModel`。必须显式
+>   `grid_view.setSelectionModel(list_view.selectionModel())`。
+> - **选中必须整行生效**（`SelectionFlag.Rows`）。两个视图显示不同列（列表是序号
+>   列 0、网格是文件名列 2），只选中某一列的话，另一个视图按自己的 modelColumn
+>   过滤 `selectedIndexes()` 就什么都看不到。
+>
+> 后果：`TimelineWidget` 里"事件 → 手工镜像到两个视图"的逻辑**全部消失**；
+> `topLevelItem()` / `selectedItems()` / `setCurrentItem()` /
+> `extract_frame_data_from_item()` 等 item 兼容外壳已删除。外部代码请直接问模型，
+> 或按行操作（`TimelineWidget.setCurrentRow`）。
+
+**Design tenet — one fact, one truth, one write-path, read-only views.** Any per-frame state is *business data owned by the model*, never copied into the view. The model is the single write-path and broadcasts change via a signal; list & grid views are read-only consumers that render straight from the model and repaint on that signal. This keeps both views always consistent and makes any new batch/conditional operation just a loop over the model. Concretely, this philosophy shapes every sub-feature:
 
 - **Selection source of truth** — selected indices are read from the model via `get_selected_indices_from_model()`, never from the view (the old `get_selected_indices_from_current_view` name was misleading and renamed).
-- **Disabled state** — `FrameData.is_disabled` is the truth; the only write-path is `TimelineModel.set_frame_disabled(index, is_disabled)`, which broadcasts `frame_disabled_changed(index, bool)`; views repaint on that signal (`TimelineWidget._on_frame_disabled_changed` → per-row `viewport().update()`). Because rendering reads the truth, the list delegate fetches `frame_data` from column-0 `UserRole` (via `index.siblingAtColumn(0)`) and reads `.is_disabled` — no `CheckStateRole` copy is ever written.
-- **Signal semantics — the model broadcasts frame-change signals with distinct meanings; views pick "repaint in place" vs "rebuild" accordingly. Never conflate them:**
-  - `frames_inserted` / `frames_removed` / `frames_moved` — set add/remove, or a single-item move.
-  - `data_changed(start, end)` — **content changed only; the index→item mapping is unchanged.** Views refresh text/thumbnail in place (and, for performance, only the *active* view — the inactive one is re-synced on `set_view_mode` switch). **Never use it to carry a reorder**: the view refreshes text by index and does not re-sort items, so after a reorder the UI keeps showing the *old* order while the model (save/export) is already correct. (`TimelineModel.reverse_frames` / `set_frames_order` must emit `frames_reordered`, not `data_changed`.)
-  - `frames_reordered` — **a wholesale reorder** (reverse / drag-sort / `set_frames_order`): the index→item mapping is invalidated, so views must rebuild from the model. `_on_frames_reordered` rebuilds only the view that is actually out of sync (so the drag-origin view, already correct, isn't needlessly rebuilt — rebuilding it would also discard the item state it just arranged).
-- **Internal drag-reorder** — the views take over reordering entirely (they never let Qt delete/move items, to avoid frame loss) and restore selection from the model afterwards. Invariants to preserve:
-  - **Insert before/after**: decided by `_calc_insert_before(drop_pos, item_center)` in `timeline_grid.py` (Grid is row-major — Y only picks the row via `itemAt`; X alone decides before/after). `dragMoveEvent` (preview) and `dropEvent` fallback (landing) must call the SAME method so the blue insert indicator matches the final drop. Never reintroduce separate `and`/`or` logic.
-  - **Item reuse**: both views `takeItem`/`takeTopLevelItem` then re-`insertItem` the *original* item objects (Grid copies from List's pattern). Do NOT rebuild `QListWidgetItem` (drops flags/sizeHint/custom roles and breaks external references).
-  - **State lifecycle**: `startDrag` sets `self._dragged_items`; `_clear_drag_state()` resets `_is_dragging`, `_drag_insert_position`, and `_dragged_items`. Selection is restored onto the re-inserted items after drop.
-  - **Rebuild restores selection on the correct view** — `_rebuild_list_view` / `_rebuild_grid_view` rebuild the *inactive* view; when restoring selection they must call `_apply_selection_to_view(indices, mode)` with an explicit `mode` (`"list"` / `"grid"`). Never rely on `current_view_mode` there — a rebuild of the list while in grid mode would write the selection into the grid, clobbering the just-dragged selection. (This was the root cause of "after a multi-select drag, the selected frames are no longer the dragged ones".)
+- **Disabled state** — `FrameData.is_disabled` is the truth; the only write-path is `TimelineModel.set_frame_disabled(index, is_disabled)`, which broadcasts `frame_disabled_changed(index, bool)`; the adapter model turns that into `dataChanged` for the affected row, and both views repaint automatically (`TimelineWidget._on_frame_disabled_changed` is now a no-op). Because rendering reads the truth, the list delegate fetches `frame_data` via `FrameDataRole` from **its own** index — **not** `index.siblingAtColumn(0).data(UserRole)`; that form was only needed while frames hung off column 0's `UserRole`, and forgetting the sibling hop silently made the disable marker never draw. No `CheckStateRole` copy is ever written.
+- **Signal semantics — the model broadcasts frame-change signals with distinct meanings; the adapter model translates each into the matching Qt notification. Never conflate them:**
+  - `frames_inserted` / `frames_removed` — set add/remove.
+  - **`TimelineModel.clear()` 必须发 `frames_removed(0, 旧行数)`，且先发信号再清数据。** 信号处理器会同步读 `rowCount()`（Qt 适配层的 `beginRemoveRows` 就是），那时若 `_frames` 已空，Qt 断言"要删的行数超过实际行数"并 abort 进程。视图迁到 model/view 后，发信号是视图跟着清空的**唯一**途径（`QTreeView` 没有 `clear()`）。
+  - `data_changed(start, end)` — **content changed only; the row→frame mapping is unchanged.** Views repaint those rows (and, for performance, only the *active* view — the inactive one is refreshed on `set_view_mode` switch). **Never use it to carry a reorder**: the view repaints by index and does not re-fetch a new order. (`reverse_frames` / `set_frames_order` must emit `frames_reordered`.)
+  - **`frames_reordered()`** — 换序（同一批对象，行数不变）：reverse / drag-sort / `set_frames_order`。
+  - **`frames_replaced()`** — 换成**另一批对象**（撤销恢复），行数也可变。`data_changed` 不能用于此：它的语义是"内容变了、映射没变"，而这里连对象都换了、行数也可能变。
+    两者对视图的处理相同，都是 `beginResetModel` → 视图全量重取。
+  - **`set_frames()` 只发一条信号。** 撤销恢复曾经是 `clear()` + 逐帧 `add_frame()`，即 1 次移除 + N 次插入共 **N+1 条**，每条都让视图做一次布局调整。
+- **顺序只存在一份：模型。** `TimelineModel.move_frames(indices, insert_index)` 是顺序的唯一写入入口（坐标系、原位判据、选中跟随都在里面，最后发 `frames_reordered`）。**视图不再拥有顺序**：`dropEvent` 只算出"拖了哪几行、插到哪儿"然后交给模型。曾经视图自己改顺序、再由 `MainWindow.on_order_changed` 回写模型 —— 那等于顺序有两个源，是"切视图后顺序错乱"的根因，已被删除。
+  - **撤销快照必须在改模型之前捕获**。顺序改为当场生效后，等到 `order_changed` 时模型已是新顺序，那时再 `_capture_snapshot()` 快照到的就是结果而非前态，撤销会变成空操作。为此视图在调 `move_frames` 前发 `reorder_about_to_happen`，`MainWindow` 连它捕获快照，`on_order_changed` 再落历史。
+  - **Insert before/after**: decided by `_calc_insert_before(drop_pos, item_center)` in `timeline_grid.py` (Grid is row-major — Y only picks the row via `indexAt`; X alone decides before/after). `dragMoveEvent` (preview) and `dropEvent` fallback (landing) must call the SAME method so the blue insert indicator matches the final drop. Never reintroduce separate `and`/`or` logic.
+  - **State lifecycle**: `startDrag` records the dragged **row numbers** (`self._dragged_rows`) — the `selectionModel` gets mutated by Qt during a drag, so rows must be captured up front; `_clear_drag_state()` resets `_is_dragging`, `_drag_insert_position`, and `_dragged_rows`. Selection follows the model (`move_frames` sets it), so nothing needs restoring by hand after drop.
+  - **`_calc_insert_before` / 插入指示器是业务规则，别删。** "Y 只决定落在哪一行、X 单独决定前/后"是网格按行主序排布的真实语义，不是 item-based 的衍生成本。
+  - **换序之后必须恢复选中**：`beginResetModel` 会清掉 `QItemSelectionModel`，而业务模型的选中不受影响，两者就此不同步。`TimelineWidget._restore_selection_from_model()` 干这件事 —— 两个视图共享同一个 selectionModel，因此只需恢复一次。
 
 ### Panels, dialogs, and settings (`src/ui/`)
 - `PropertyPanel`: per-frame transform controls (scale, position, rotation, anchor mode, repeat-move timer). Emits `frame_data_changed`/`relative_move_requested`/`custom_anchor_changed`.
@@ -101,10 +158,23 @@ Singleton `I18nManager` (`i18n`) loaded from `en_US.json` / `zh_CN.json`. Call `
 ### Conventions & gotchas
 - Imports are `src`-relative (no `src.` prefix). Run anything with the repo root as CWD.
 - **时间轴缩略图刻意不套用帧变换**：`TimelineGridWidget.create_thumbnail` 只做 `crop_rect` 裁切 + `KeepAspectRatio` 缩放，不含旋转/镜像/缩放/偏移。这是有意设计（缩略图展示素材本身的样子，而非合成后的帧），**不要**把它接到 `core/transform.py`。
+- **两个视图共享 selectionModel 时，两者的 `SelectionBehavior` 必须一致（都用 `SelectRows`）。** 它们显示的是**不同的列**（列表是序号列 0、网格是文件名列 2）。若只有一方是 `SelectItems`，点击就只选中自己那一列，另一方按自己的列去读 `selectedRows()` 就认为"什么都没选" —— 两个视图对"选中了什么"看法完全相反。表现为"点了帧，属性面板显示未选中"。
+- **换 `selectionModel` 会丢弃旧模型上的所有连接。** 用 `setSelectionModel(shared)` 共享选中之后，必须**重新**连接 `selectionChanged` —— 之前在 `bind_model` 里连上的那个已经失效了。见 `TimelineGridWidget.adopt_shared_selection_model()`。
+- **`TimelineItemModel.__init__` 不要给 `_frames` 赋值，交给 `bind()`。** 曾经写成先赋值再调 `bind()`，而 `bind()` 开头有"已绑定则直接返回"的防重入判断 —— 于是构造时传入 model 的实例**永远不接线**（`_connect_frames_model()` 一次都没被调用）。症状极具迷惑性：`rowCount()` 实时查模型所以"行数"永远对，但所有模型信号都不转发给视图，视图只在显式 refresh 或 Resize/Show 时才"碰巧"刷新（表现为"加载工程后时间轴空白，拖一下面板才出来"）。这类故障**测不出来**——除非断言信号被转发，或断言 `visualRect(row0)` 在无任何 resize 的情况下有效。
+- **`TimelineItemModel.flags()` 必须给出 `ItemIsDragEnabled`。** `view.setDragEnabled(True)` 并不足以启动拖拽 —— `QAbstractItemView.mouseMoveEvent` 还会再查一次 **model 的 flags**，缺这个位 view 就进入 `DragSelectingState`，把手势当成**扩展选区**（表现为"多选后拖不动，一拖选区反而乱变"）。迁移前 `QTreeWidget` 的内建 model 默认带这个位，所以从未暴露。刻意**不给** `ItemIsUserCheckable`（Qt 自带的复选框指示器会画一个我们不想要的 'v'）。
+- **判断"顺序是否变化"必须按对象身份，不能用 `==`。** `FrameData` 是 dataclass，`==` 是值相等；工程里完全相同的帧很常见（复制帧、同一张源图切出的相同区域），此时任意排列都"相等"，会被误判成无变化而静默忽略。顺序的语义是"**哪个帧对象**在哪个位置"。
+- **`source_image_size()`（`model/project_data.py`）有路径缓存，改磁盘上的源图后必须失效。** 它每次调用都是真实的文件 I/O（`QImageReader` 开文件读头），而时间轴的分辨率列在**每次重绘**都会调它。缓存加在 I/O 边界，因此 `base_size()` 与 `effective_target_size()` 都自动受益。失效时机：外部编辑器改图（`_reload_edited_images`）、替换素材（`_replace_asset`）—— 两处均已调 `clear_source_image_size_cache()`。**新增任何"换掉源文件"的路径都要补上这一句**，它不与 `image_cache` 的失效联动。
 - **`project.frames` 已是绑定活跃数据源的属性，恒为实时值**（见上方 Data model）。不要再写 `self.project.frames = self.timeline.get_all_frames()`——绑定后赋值会抛 `RuntimeError`。
 - Image loading = `image_cache.get(...)`（注意用 `from core.image_cache import ...`，不要带 `src.` 前缀）。帧变换语义统一在 `core/transform.py`，canvas 与 exporter 共用；两者只在像素化方式上不同。
 - `src/core/version.py` is auto-generated — never commit hand edits.
-- `dev/test_transform.py` is the only automated test suite (37 pure-assert unit tests for `core.transform` + the timeline-model signal contract); everything else is verified via `dev/transform_baseline.py` (pixel regression), `dev/verify_timeline_view_sync.py` (offscreen Qt — timeline list/grid view sync + drag-selection; catches the "order/selection desync after switching views" regressions), and `dev/screenshot.sh` (manual visual check).
+- 自动化验证的统一入口是 `bash dev/run_all_checks.sh`（见 Common Commands，6 项约 2s）。
+  各脚本分工：`dev/test_transform.py` 是纯 assert 单测（37 个，`core.transform` 几何语义 + 时间轴模型信号契约），
+  `dev/transform_baseline.py` 是像素哈希回归，`dev/verify_timeline_view_sync.py` 是时间轴列表/网格视图同步 + 拖拽 + 模型 `move_frames` 顺序契约（含真实 `QDropEvent` 路径，offscreen Qt），
+  `dev/verify_grid_view.py` 是网格视图专用（缩略图语义与缓存、序号、插入点、参考帧/禁用态渲染），
+  `dev/smoke_reorder.py` 是完整 `MainWindow` 接线链路（加载工程 → 拖拽重排 → 撤销），`dev/screenshot.sh` 是人工目视检查。
+  **另有三个缺口无任何自动化覆盖**：右键菜单、外部文件拖入、播放时的选中跟随。
+- **写 Qt 事件测试时，`QMimeData` 必须挂在 event 上保持引用**（`event._keep_mime = mime`）。`QDropEvent` 只持有裸指针、不接管所有权，局部变量被 GC 后 `mimeData()` 就是悬空指针 → 进程直接 abort，且没有 Python traceback。
+- **做破坏性验证（改坏代码、确认测试变红）前，必须先清 `__pycache__`**：`find src -name __pycache__ -type d -exec rm -rf {} +`。用 `cp` 还原源文件后 Python 可能仍加载**被破坏时编译的旧字节码** —— `cp` 只更新 mtime，而 pyc 校验用 `(mtime, size)`，秒级精度下快速往返会碰撞。症状极具迷惑性：`inspect.getsource()` 显示正确源码，函数内打印的比较结果是 `False`，实际却返回 `True`。此外破坏脚本要**先断言目标字符串存在再改**，否则 `str.replace` 静默无操作会让"测试没红"被误读成"测试无效"。
 - `dev/` holds environment/screenshot/novnc helper scripts, not app code.
 
 ### Debug logging framework (use this instead of print)
