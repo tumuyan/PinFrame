@@ -9,19 +9,59 @@ $:
         CNB_WELCOME_CMD: echo "Welcome to oracle in cnb";code-server --install-extension ms-python.python --install-extension ms-python.debugpy; ./dev/setup.sh;cd dev;./install_fonts.sh;./novnc_install.sh;./novnc_start.sh
         PYTHONUNBUFFERED: "1"
 
-# main:
-#   tag_push:
-#     - name: 生成 Code Wiki
-#       stages:
-#         - name: 生成 Code Wiki 文档
-#           timeout: 4h
-#           image: cnbcool/codewiki:latest
-#           settings:
-#             # git_doc_dir: /${CNB_BUILD_WORKSPACE}/${CNB_REPO_SLUG}/codewiki
-#             # use_codebuddy: 0
-#             # llm_model_name: 'deepseek-v4-pro'
-#             # knowledge_enabled: true
-#             # knowledge_embedding_model: hunyuan
-#             # knowledge_chunk_size: 1500
-#             # knowledge_chunk_overlap: 0
-#             git_doc_dir: /data/codewiki/${CNB_REPO_SLUG}
+# ---------------------------------------------------------------------------
+# 自动测试：任何分支的 push 都跑一遍全量回归（dev/run_all_checks.sh）
+# ---------------------------------------------------------------------------
+# 环境搭建脚本：dev/setup_ci.sh（幂等，重复执行会复用已有 venv）
+#   - 装 PyQt6 需要的 Qt 系统库，清单在 dev/qt_deps.txt，与 dev/setup.sh 共用同一份
+#   - 建 venv → 装 requirements.txt → 自检 offscreen 平台可用
+#   - 生成像素基线（基线不入库，全新容器必须有这一步，见脚本头注释里的语义说明）
+#
+# 两个别踩的点：
+#   1. 测试脚本全部走 QT_QPA_PLATFORM=offscreen，不需要 Xvfb / noVNC / 中文字体 ——
+#      noVNC 那套是给人工作验收用的（见上面 CNB_WELCOME_CMD），CI 里装纯属浪费。
+#   2. 系统包名别在这里内联，改 dev/qt_deps.txt，否则本机与 CI 会悄悄漂移。
+#
+# 本地复现 CI：bash dev/setup_ci.sh && bash dev/run_all_checks.sh --verbose
+"**":
+  push:
+    - name: 自动测试
+      runner:
+        cpus: 4
+      docker:
+        image: python:3.12-slim
+        volumes:
+          # 节点级缓存：pip 下载缓存跨构建复用；copy-on-write 允许并发构建各写各的副本
+          - /root/.cache/pip:copy-on-write
+      env:
+        PIP_CACHE_DIR: /root/.cache/pip
+        PIP_DISABLE_PIP_VERSION_CHECK: "1"
+        PYTHONUNBUFFERED: "1"
+      stages:
+        - name: 搭建环境
+          # 声明 timeout 会把"无输出超时"一并从默认 10 分钟抬到 30 分钟（超时策略文档），
+          # 冷缓存下 apt/pip 下载不至于被误杀。
+          timeout: 30m
+          script: bash dev/setup_ci.sh
+        - name: 全量回归
+          # --verbose：实时回显每个脚本的完整输出。不加的话失败时只能看到截取的片段，
+          # 而 Qt 会把 paintEvent 里的异常升级成 abort()（退出码 134，没有 Python 回溯）。
+          timeout: 30m
+          script: bash dev/run_all_checks.sh --verbose
+
+main:
+  tag_push:
+    - name: 生成 Code Wiki
+      stages:
+        - name: 生成 Code Wiki 文档
+          timeout: 4h
+          image: cnbcool/codewiki:latest
+          settings:
+            # git_doc_dir: /${CNB_BUILD_WORKSPACE}/${CNB_REPO_SLUG}/codewiki
+            # use_codebuddy: 0
+            # llm_model_name: 'deepseek-v4-pro'
+            # knowledge_enabled: true
+            # knowledge_embedding_model: hunyuan
+            # knowledge_chunk_size: 1500
+            # knowledge_chunk_overlap: 0
+            git_doc_dir: /data/codewiki/${CNB_REPO_SLUG}

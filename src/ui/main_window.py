@@ -2104,79 +2104,6 @@ class MainWindow(QMainWindow):
 
     # --- Onion Skin & Reference Logic ---
         
-    def configure_reference_settings(self):
-        dlg = ReferenceSettingsDialog(self, self.ref_opacity, self.ref_layer, self.ref_show_on_playback)
-        if dlg.exec():
-            settings = dlg.get_settings()
-            self.ref_opacity = settings["opacity"]
-            self.ref_layer = settings["layer"]
-            self.ref_show_on_playback = settings["show_on_playback"]
-            
-            # Save settings
-            self.settings.setValue("ref_opacity", self.ref_opacity)
-            self.settings.setValue("ref_layer", self.ref_layer)
-            self.settings.setValue("ref_show_on_playback", self.ref_show_on_playback)
-            
-            # Apply to canvas
-            self.canvas.ref_opacity = self.ref_opacity
-            self.canvas.ref_layer = self.ref_layer
-            self.canvas.ref_show_on_playback = self.ref_show_on_playback
-            self.canvas.update()
-            
-            self.update_onion_state()
-
-    def update_onion_state(self):
-        """
-        Centralized logic for Onion Skin visibility.
-        Handles Enable/Disable, Suppression (Multi-select/Playback), and Mutual Exclusion.
-        """
-        # 1. Determine Suppression State
-        # Suppress if: Multiple items selected OR Playing (forward or reverse)
-        is_multi_select = len(self.timeline.get_selected_indices_from_model()) > 1
-        is_playing = self.is_playing
-        
-        should_suppress = is_multi_select or is_playing
-        
-        if self.onion_enabled:
-            if should_suppress:
-                if not self.onion_suppressed:
-                    self.onion_suppressed = True
-                    # Visual Feedback: Yellow/Warning Icon
-                    onion_icon = QIcon()
-                    onion_icon.addPixmap(IconGenerator.onion_skin_icon(QColor(255, 204, 0)).pixmap(32, 32), QIcon.Mode.Normal, QIcon.State.On) # Yellow for suppressed
-                    self.onion_toolbar_action.setIcon(onion_icon)
-                    self.onion_toolbar_action.setToolTip(i18n.t("toolbar_onion_on") + " (Suppressed)")
-                    
-                    # Canvas: Hide onion skin
-                    self.canvas.set_onion_skins([])
-            else:
-                if self.onion_suppressed:
-                    self.onion_suppressed = False
-                    # Normal ON Icon
-                    onion_icon = QIcon()
-                    onion_icon.addPixmap(IconGenerator.onion_skin_icon(QColor(150, 150, 150)).pixmap(32, 32), QIcon.Mode.Normal, QIcon.State.Off)
-                    onion_icon.addPixmap(IconGenerator.onion_skin_icon(QColor(0, 122, 204)).pixmap(32, 32), QIcon.Mode.Normal, QIcon.State.On)
-                    self.onion_toolbar_action.setIcon(onion_icon)
-                    self.onion_toolbar_action.setToolTip(i18n.t("toolbar_onion_on"))
-
-                # Check Mutual Exclusion (only when not suppressed and enabled)
-                if self.onion_ref_exclusive and self.reference_frame:
-                    if not self.onion_suppressed: # Only turn off if we would otherwise be showing it
-                         self.toggle_onion_skin(False)
-                         return
-
-                # Calculate and set onion skins
-                self.calculate_onion_skins()
-        else:
-            self.onion_suppressed = False
-            # Normal OFF Icon behavior
-            onion_icon = QIcon()
-            onion_icon.addPixmap(IconGenerator.onion_skin_icon(QColor(150, 150, 150)).pixmap(32, 32), QIcon.Mode.Normal, QIcon.State.Off)
-            onion_icon.addPixmap(IconGenerator.onion_skin_icon(QColor(0, 122, 204)).pixmap(32, 32), QIcon.Mode.Normal, QIcon.State.On)
-            self.onion_toolbar_action.setIcon(onion_icon)
-            self.onion_toolbar_action.setToolTip(i18n.t("toolbar_onion_off"))
-            self.canvas.set_onion_skins([])
-        
     def toggle_onion_skin(self, checked):
         # Update both actions
         self.onion_action.setChecked(checked)
@@ -2204,77 +2131,6 @@ class MainWindow(QMainWindow):
             self.ref_opacity = settings["opacity"]
             self.ref_layer = settings["layer"]
             self.ref_show_on_playback = settings["show_on_playback"]
-            
-            # Save settings
-            self.settings.setValue("ref_opacity", self.ref_opacity)
-            self.settings.setValue("ref_layer", self.ref_layer)
-            self.settings.setValue("ref_show_on_playback", self.ref_show_on_playback)
-            
-            # Apply to canvas
-            self.canvas.ref_opacity = self.ref_opacity
-            self.canvas.ref_layer = self.ref_layer
-            self.canvas.ref_show_on_playback = self.ref_show_on_playback
-            self.canvas.update()
-            
-            self.update_onion_state()
-
-    def update_onion_state(self):
-        """
-        Centralized logic for Onion Skin visibility.
-        Handles Enable/Disable, Suppression (Multi-select/Playback), and Mutual Exclusion.
-        """
-        # 1. Determine Suppression State
-        # Suppress if: Multiple items selected OR Playing (forward or reverse)
-        is_multi_select = len(self.timeline.get_selected_indices_from_model()) > 1
-        is_playing = self.is_playing
-        
-        should_suppress = is_multi_select or is_playing
-        
-        if self.onion_enabled:
-            if should_suppress:
-                self.onion_suppressed = True
-                # Visual Feedback: Yellow/Warning Icon
-                onion_icon = QIcon()
-                onion_icon.addPixmap(IconGenerator.onion_skin_icon(QColor(255, 204, 0)).pixmap(32, 32), QIcon.Mode.Normal, QIcon.State.On) # Yellow for suppressed
-                self.onion_toolbar_action.setIcon(onion_icon)
-                self.onion_toolbar_action.setToolTip(i18n.t("toolbar_onion_on") + " (Suppressed)")
-                
-                # Canvas: Hide onion skin
-                self.canvas.set_onion_skins([])
-            else:
-                self.onion_suppressed = False
-                # Normal ON Icon
-                onion_icon = QIcon()
-                onion_icon.addPixmap(IconGenerator.onion_skin_icon(QColor(150, 150, 150)).pixmap(32, 32), QIcon.Mode.Normal, QIcon.State.Off)
-                onion_icon.addPixmap(IconGenerator.onion_skin_icon(QColor(0, 122, 204)).pixmap(32, 32), QIcon.Mode.Normal, QIcon.State.On)
-                self.onion_toolbar_action.setIcon(onion_icon)
-                self.onion_toolbar_action.setToolTip(i18n.t("toolbar_onion_on"))
-                
-                # Check Mutual Exclusion (only when not suppressed and enabled)
-                if self.onion_ref_exclusive and self.reference_frame:
-                    if not self.onion_suppressed: # Only turn off if we would otherwise be showing it
-                         self.toggle_onion_skin(False)
-                         return
-
-                # Calculate and set onion skins
-                self.calculate_onion_skins()
-        else:
-            self.onion_suppressed = False
-            # Normal OFF Icon behavior
-            onion_icon = QIcon()
-            onion_icon.addPixmap(IconGenerator.onion_skin_icon(QColor(150, 150, 150)).pixmap(32, 32), QIcon.Mode.Normal, QIcon.State.Off)
-            onion_icon.addPixmap(IconGenerator.onion_skin_icon(QColor(0, 122, 204)).pixmap(32, 32), QIcon.Mode.Normal, QIcon.State.On)
-            self.onion_toolbar_action.setIcon(onion_icon)
-            self.onion_toolbar_action.setToolTip(i18n.t("toolbar_onion_off"))
-            self.canvas.set_onion_skins([])
-
-    def configure_reference_settings(self):
-        dlg = ReferenceSettingsDialog(self, self.ref_opacity, self.ref_layer, self.ref_show_on_playback)
-        if dlg.exec():
-            settings = dlg.get_settings()
-            self.ref_opacity = settings["opacity"]
-            self.ref_layer = settings["layer"]
-            self.ref_show_on_playback = settings["show_on_playback"]
 
             # Save settings
             self.settings.setValue("ref_opacity", self.ref_opacity)
@@ -2288,7 +2144,6 @@ class MainWindow(QMainWindow):
             self.canvas.update()
 
             self.update_onion_state()
-
 
     def configure_rasterization_settings(self):
         """Open rasterization settings dialog."""
@@ -2524,6 +2379,11 @@ class MainWindow(QMainWindow):
         
     def clear_reference_frame(self, update=True):
         self.reference_frame = None
+        # 菜单文案必须在这里回退：本方法有多条调用路径（右键菜单、互斥模式开洋葱
+        # 皮、删除参考帧所在帧），其中大多数**不会**伴随选中变化，指望
+        # `on_selection_changed` 顺带把文案改回来是靠不住的 —— 于是清除之后菜单
+        # 仍显示"取消参考帧"，点它只会再次清除一次。
+        self._update_ref_action_text()
         if update:
             self.update_reference_view()
             self.timeline.get_current_widget().viewport().update()

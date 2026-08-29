@@ -27,6 +27,11 @@
 #    在秒级精度下可能碰撞，导致加载陈旧字节码 —— 症状极具迷惑性
 #    （inspect.getsource() 显示正确源码，行为却是旧的）。
 #
+# 4. 第 1 项（重复定义）是**纯标准库**的结构性检查，刻意放在最前：它只要 ~0.1s，
+#    且能挡住"改了代码却没效果"这类最费解的问题 —— Python 对同名的后定义静默
+#    覆盖先定义，前者从此是死代码。`MainWindow` 曾经躺着 5 份这样的死代码
+#    （configure_reference_settings ×3、update_onion_state ×3）。
+#
 # ---------------------------------------------------------------------------
 # 关于第 3 项的基线语义（重要）
 # ---------------------------------------------------------------------------
@@ -96,7 +101,7 @@ require_file() {
     fi
 }
 require_file "$REPO_ROOT/dev/test_long2.json" \
-    "第 6 项（smoke_reorder.py）硬依赖它加载真实工程。\
+    "第 7/8 项（smoke_reorder.py、smoke_reference_frame.py）硬依赖它加载真实工程。\
  选它的理由：15 帧来自同一张源图但裁切互不相同，帧签名（crop_rect+scale+rotation+is_disabled）\
  全部唯一，105 种两两交换无一失明；旧的 test_long.json 有 1 组重复签名（第 4/15 帧），\
  已作为死文件删除（见 dev/code_review_p1_3.md）"
@@ -183,12 +188,14 @@ echo "============================================================"
 FAILED=0
 ABORTED=0
 
-if [ "$ABORTED" -eq 0 ]; then run_check "1/6 语法编译 main.py+src"    "$PY" -m compileall -q main.py src            || FAILED=1; fi
-if [ "$ABORTED" -eq 0 ]; then run_check "2/6 几何与模型单测"           "$PY" dev/test_transform.py                   || FAILED=1; fi
-if [ "$ABORTED" -eq 0 ]; then run_check "3/6 渲染像素哈希 --compare"   "$PY" dev/transform_baseline.py --compare     || FAILED=1; fi
-if [ "$ABORTED" -eq 0 ]; then run_check "4/6 双视图同步与拖拽"         "$PY" dev/verify_timeline_view_sync.py        || FAILED=1; fi
-if [ "$ABORTED" -eq 0 ]; then run_check "5/6 网格视图"                 "$PY" dev/verify_grid_view.py                 || FAILED=1; fi
-if [ "$ABORTED" -eq 0 ]; then run_check "6/6 MainWindow 接线冒烟"      "$PY" dev/smoke_reorder.py                    || FAILED=1; fi
+if [ "$ABORTED" -eq 0 ]; then run_check "1/8 重复定义（结构性）"       "$PY" dev/check_no_duplicate_defs.py          || FAILED=1; fi
+if [ "$ABORTED" -eq 0 ]; then run_check "2/8 语法编译 main.py+src"     "$PY" -m compileall -q main.py src            || FAILED=1; fi
+if [ "$ABORTED" -eq 0 ]; then run_check "3/8 几何与模型单测"           "$PY" dev/test_transform.py                   || FAILED=1; fi
+if [ "$ABORTED" -eq 0 ]; then run_check "4/8 渲染像素哈希 --compare"   "$PY" dev/transform_baseline.py --compare     || FAILED=1; fi
+if [ "$ABORTED" -eq 0 ]; then run_check "5/8 双视图同步与拖拽"         "$PY" dev/verify_timeline_view_sync.py        || FAILED=1; fi
+if [ "$ABORTED" -eq 0 ]; then run_check "6/8 网格视图"                 "$PY" dev/verify_grid_view.py                 || FAILED=1; fi
+if [ "$ABORTED" -eq 0 ]; then run_check "7/8 MainWindow 接线：重排"    "$PY" dev/smoke_reorder.py                    || FAILED=1; fi
+if [ "$ABORTED" -eq 0 ]; then run_check "8/8 MainWindow 接线：参考帧"  "$PY" dev/smoke_reference_frame.py            || FAILED=1; fi
 
 # ---- 基线未改写校验 ---------------------------------------------------------
 BASELINE_AFTER="$("$PY" -c "import hashlib,sys; print(hashlib.md5(open(sys.argv[1],'rb').read()).hexdigest())" "$BASELINE_JSON")"
@@ -232,7 +239,11 @@ if [ "$FAILED" -ne 0 ]; then
     # 失败时给出针对性的排查提示
     echo ""
     echo "排查提示："
-    echo "  - 若第 3 项失败（MAIN_DIGEST 变化）而你【有意为之】地改了渲染："
+    echo "  - 若第 1 项失败（重复定义）：Python 只保留最后一个定义，前面的永不执行。"
+    echo "     删除被覆盖的那些；若两处都有用，说明其中一个该改名。"
+    echo "     注意 `src/ui/temp_prop.py` 是 PropertyPanel 的旧副本（无人 import），"
+    echo "     它作为死文件被单独排除，不在本项检查范围内。"
+    echo "  - 若第 4 项失败（MAIN_DIGEST 变化）而你【有意为之】地改了渲染："
     echo "      确认差异符合预期后，跑 'python dev/transform_baseline.py' 刷新基线。"
     echo "  - 若某项的失败是异常而非断言（exit=134 之类）："
     echo "      Qt 在 paintEvent 中的未捕获异常会升级为 abort，需看完整输出定位，"

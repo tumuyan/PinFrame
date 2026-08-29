@@ -1262,13 +1262,6 @@ class PropertyPanel(QWidget):
             painter.end()
         
         self.preview_label.setPixmap(QPixmap.fromImage(preview_img))
-    def on_repeat_clicked(self):
-        # Signaling 0,0 basically means "use whatever MainWindow has as last" 
-        # But better to stay explicit. MainWindow will handle the actual "last" storage.
-        # Actually, let's just emit a special value or let MainWindow handle it.
-        # User said "repeat上次移动的操作".
-        self.relative_move_requested.emit(99999, 99999) # Special value for repeat? 
-        # No, better: connect to a slot in MainWindow that knows the last move.
 
     def on_rev_repeat_clicked(self):
         self.relative_move_requested.emit(-99999, -99999) # Special value for rev repeat?

@@ -1,0 +1,29 @@
+# PyQt6 运行时所需的系统依赖（Debian / Ubuntu 包名）
+#
+# 这是清单的唯一来源：dev/setup.sh（云原生开发环境）与 dev/setup_ci.sh（流水线）
+# 都从这里读。别在任一处内联写包名 —— 两边漂移的后果是"本地能跑、CI 跑不了"，
+# 而且症状永远表现为 Qt 插件加载失败这类看不出根因的报错
+# （典型：`Could not load the Qt platform plugin "offscreen"`）。
+#
+# 解析规则（两份脚本共用）：一行可写多个包名，`#` 之后为注释，空行忽略。
+
+libgl1
+libegl1
+libglib2.0-0
+# PyQt6 的 Qt6DBus 会加载 libdbus-1.so.3。完整发行版镜像里它总是被别的包捎带装上，
+# 所以本地从没缺过；python:3.12-slim 里没有 —— CI 首次跑就栽在这里。
+libdbus-1-3
+libxkbcommon-x11-0
+libxcb-cursor0
+libxcb-icccm4
+libxcb-image0
+libxcb-keysyms1
+libxcb-randr0
+libxcb-render-util0
+libxcb-shape0
+libxcb-xfixes0
+libxcb-xinerama0
+libxcb-xkb1
+libfontconfig1
+libxrender1
+libxi6

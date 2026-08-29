@@ -21,9 +21,10 @@ PinFrame (定帧) is a PyQt6 desktop application for previewing, fine-tuning, an
   `bash dev/screenshot.sh` launches the app under Xvfb and captures `dev/tmp_screenshot.png`.
 
 - **Run all automated checks (全量回归):**
-  `bash dev/run_all_checks.sh`（约 2s，退出码 0=全过 / 1=有失败 / 2=前置依赖缺失）。
-  依次跑：语法编译 → `test_transform.py` → `transform_baseline.py --compare` →
-  `verify_timeline_view_sync.py` → `verify_grid_view.py` → `smoke_reorder.py`。
+  `bash dev/run_all_checks.sh`（约 4s，退出码 0=全过 / 1=有失败 / 2=前置依赖缺失）。
+  依次跑 8 项：`check_no_duplicate_defs.py` → 语法编译 → `test_transform.py` →
+  `transform_baseline.py --compare` → `verify_timeline_view_sync.py` →
+  `verify_grid_view.py` → `smoke_reorder.py` → `smoke_reference_frame.py`。
   `--verbose` 实时回显完整输出，`--fail-fast` 首败即停。
   **改动触及共享层（`core/transform.py`、`timeline_model.py`、`timeline_item_model.py`、
   `project_data.py`）或打包发布前，必须跑全量**；只动某个对话框/i18n 键时可只跑定向项。
@@ -42,7 +43,26 @@ PinFrame (定帧) is a PyQt6 desktop application for previewing, fine-tuning, an
   新基线并返回 0（假通过）**。`dev/run_all_checks.sh` 会前置校验它存在且含
   `main_digest`，并在跑完后校验它未被改写。
 
-- **Linting:** No linter/CI configured. Use `python -m py_compile <file>` to sanity-check syntax.
+- **CI（云原生构建流水线，`.cnb.yml`）:** 任何分支的 `push` 都触发「自动测试」流水线：
+  `dev/setup_ci.sh`（装环境）→ `dev/run_all_checks.sh --verbose`（全量回归），跑在
+  `python:3.12-slim` 容器里。本地复现：`bash dev/setup_ci.sh && bash dev/run_all_checks.sh --verbose`。
+  **系统依赖清单只有一份：`dev/qt_deps.txt`**，`dev/setup.sh`（云原生开发环境）与
+  `dev/setup_ci.sh` 都读它 —— 别在任一处内联写包名，否则会漂移出"本地能跑、CI 跑不了"
+  （`python:3.12-slim` 缺 `libdbus-1-3`，`import PyQt6` 直接 `ImportError`，实测踩过）。
+  CI 里不需要 Xvfb / noVNC / 中文字体：所有测试脚本都设了 `QT_QPA_PLATFORM=offscreen`；
+  noVNC 那套是给人工作验收用的。CI 的像素基线由 `setup_ci.sh` 当场生成，所以那里的
+  `--compare` 验证的是**渲染确定性**（同容器两次渲染一致），**不是**"与团队基线一致"。
+
+- **Linting:** No linter configured. Use `python -m py_compile <file>` to sanity-check syntax.
+  但**重复定义**有结构性检查：`dev/check_no_duplicate_defs.py`（AST 扫描 `main.py` +
+  `src/**` + `dev/*`，约 0.1s，纯标准库）。Python 对同名的后定义**静默覆盖**先定义、
+  不报任何错，前者从此是死代码 —— 症状是"改了这段代码却没效果"，而
+  `inspect.getsource()` 显示的正是你改的那份，极具迷惑性。`MainWindow` 真实踩过：
+  `configure_reference_settings` 定义 3 份、`update_onion_state` 定义 3 份。
+  判据：重名且**至少一个定义不带装饰器**才报错 —— 全都带装饰器视为有意的重载
+  （`@property` + setter、`@pyqtSlot` 重载、`typing.overload`），必须放行否则误报淹没。
+  已知例外：`src/ui/temp_prop.py` 是 `PropertyPanel` 的旧副本（无人 import），
+  作为死文件被单独排除，不在检查范围内。
 
 - **做破坏性验证前必须清 `__pycache__`:**
   `find src dev -name __pycache__ -type d -exec rm -rf {} +`。
@@ -169,12 +189,26 @@ Singleton `I18nManager` (`i18n`) loaded from `en_US.json` / `zh_CN.json`. Call `
 - **`project.frames` 已是绑定活跃数据源的属性，恒为实时值**（见上方 Data model）。不要再写 `self.project.frames = self.timeline.get_all_frames()`——绑定后赋值会抛 `RuntimeError`。
 - Image loading = `image_cache.get(...)`（注意用 `from core.image_cache import ...`，不要带 `src.` 前缀）。帧变换语义统一在 `core/transform.py`，canvas 与 exporter 共用；两者只在像素化方式上不同。
 - `src/core/version.py` is auto-generated — never commit hand edits.
-- 自动化验证的统一入口是 `bash dev/run_all_checks.sh`（见 Common Commands，6 项约 2s）。
-  各脚本分工：`dev/test_transform.py` 是纯 assert 单测（37 个，`core.transform` 几何语义 + 时间轴模型信号契约），
+- 自动化验证的统一入口是 `bash dev/run_all_checks.sh`（见 Common Commands，8 项约 4s）。
+  各脚本分工：`dev/check_no_duplicate_defs.py` 是重复定义的结构性检查（AST，纯标准库），
+  `dev/test_transform.py` 是纯 assert 单测（37 个，`core.transform` 几何语义 + 时间轴模型信号契约），
   `dev/transform_baseline.py` 是像素哈希回归，`dev/verify_timeline_view_sync.py` 是时间轴列表/网格视图同步 + 拖拽 + 模型 `move_frames` 顺序契约（含真实 `QDropEvent` 路径，offscreen Qt），
   `dev/verify_grid_view.py` 是网格视图专用（缩略图语义与缓存、序号、插入点、参考帧/禁用态渲染），
-  `dev/smoke_reorder.py` 是完整 `MainWindow` 接线链路（加载工程 → 拖拽重排 → 撤销），`dev/screenshot.sh` 是人工目视检查。
+  `dev/smoke_reorder.py` 是完整 `MainWindow` 接线链路（加载工程 → 拖拽重排 → 撤销），
+  `dev/smoke_reference_frame.py` 是参考帧生命周期 + 洋葱皮抑制的 `MainWindow` 接线（见下条），
+  `dev/screenshot.sh` 是人工目视检查。
   **另有三个缺口无任何自动化覆盖**：右键菜单、外部文件拖入、播放时的选中跟随。
+
+- **参考帧有**两份真源**，之间没有信号连接，每个写入点都必须记得同时写**：
+  `MainWindow.reference_frame`（画布读它）与 `TimelineModel._reference_frame`
+  （时间轴高亮读它，经 `ReferenceRole`）。业务模型的 `reference_changed` 信号
+  **无人 connect**，所以"写一处"不会自动同步另一处 —— 漏写的表现是"时间轴亮着
+  但预览没有参考帧"，或反过来。`dev/smoke_reference_frame.py` 的每条断言都同时
+  检查三处（MainWindow / canvas / 模型）来钉住这一点。
+  另外参考帧**不持久化**（`ProjectData.to_json` 里没有这个字段），所以载入工程与
+  新建/关闭工程都必须**显式清除两份**（`timeline.clear()` 只清得掉模型那份）。
+  写入点清单：设置/取消、删除参考帧所在帧、互斥模式下开洋葱皮、素材移除/替换、
+  撤销恢复 —— 新增任何一条都要同时写三处并补进该脚本。
 - **写 Qt 事件测试时，`QMimeData` 必须挂在 event 上保持引用**（`event._keep_mime = mime`）。`QDropEvent` 只持有裸指针、不接管所有权，局部变量被 GC 后 `mimeData()` 就是悬空指针 → 进程直接 abort，且没有 Python traceback。
 - **做破坏性验证（改坏代码、确认测试变红）前，必须先清 `__pycache__`**：`find src -name __pycache__ -type d -exec rm -rf {} +`。用 `cp` 还原源文件后 Python 可能仍加载**被破坏时编译的旧字节码** —— `cp` 只更新 mtime，而 pyc 校验用 `(mtime, size)`，秒级精度下快速往返会碰撞。症状极具迷惑性：`inspect.getsource()` 显示正确源码，函数内打印的比较结果是 `False`，实际却返回 `True`。此外破坏脚本要**先断言目标字符串存在再改**，否则 `str.replace` 静默无操作会让"测试没红"被误读成"测试无效"。
 - `dev/` holds environment/screenshot/novnc helper scripts, not app code.
