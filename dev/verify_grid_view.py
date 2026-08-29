@@ -644,6 +644,77 @@ def test_delegate_paints_reference_highlight():
         "（可能改回了视图的镜像属性，而那个属性已删除 → 参考帧永不显示）")
 
 
+def test_delegate_does_not_paint_display_role_text():
+    """文件名只能出现一次（底部那条），预览图中央不得再画一遍。
+
+    真实故障：delegate 先 `option.text = ""` 再 `super().paint()`，而
+    `QStyledItemDelegate.paint()` 内部会调 `initStyleOption()`，把 text 从 model 的
+    DisplayRole 重置回文件名 —— 于是默认绘制在缩略图中间又画了一条文件名，与底部
+    那条自定义文字重复。修复是跳过 `super().paint()`，直接
+    `style().drawControl(CE_ItemViewItem, ...)`。
+
+    手法：把 DisplayRole 清空后重新渲染并比对**缩略图区**。
+    为什么这是精确的探针：delegate 底部那条文字由 `FrameData` 现算，**不读**
+    DisplayRole，因此清空 DisplayRole 后唯一可能变化的只有"被默认绘制画出来的那条"。
+    """
+    import hashlib
+
+    from PyQt6.QtWidgets import QStyleOptionViewItem
+    from PyQt6.QtGui import QImage as _QImage, QPainter
+    from ui.timeline_item_model import TimelineItemModel as _M
+
+    tw = TimelineWidget()
+    tw.set_view_mode("grid")
+    _fill(tw, 1)
+    view = _grid(tw)
+    view.resize(400, 300)
+    view.show()
+    app.processEvents()
+
+    idx = view.model().index(0, view.modelColumn())
+    rect = view.visualRect(idx)
+    assert rect.width() > 0, f"row0 未排版: {rect}"
+
+    def render():
+        opt = QStyleOptionViewItem()
+        opt.rect = rect.translated(-rect.topLeft())
+        opt.widget = view
+        opt.state |= view.style().StateFlag.State_Enabled
+        img = _QImage(rect.width(), rect.height(), _QImage.Format.Format_ARGB32)
+        img.fill(0)
+        p = QPainter(img)
+        view.itemDelegate().paint(p, opt, idx)
+        p.end()
+        return img
+
+    def digest(img, y0, y1):
+        buf = bytearray()
+        for y in range(y0, y1):
+            for x in range(img.width()):
+                buf.extend(img.pixelColor(x, y).getRgb())
+        return hashlib.sha1(bytes(buf)).hexdigest()[:16]
+
+    with_display = render()
+
+    orig_data = _M.data
+
+    def no_display(self_, index, role=Qt.ItemDataRole.DisplayRole):
+        if role == Qt.ItemDataRole.DisplayRole:
+            return ""
+        return orig_data(self_, index, role)
+
+    _M.data = no_display
+    try:
+        without_display = render()
+    finally:
+        _M.data = orig_data
+
+    icon_h = view.iconSize().height()
+    assert digest(with_display, 0, icon_h) == digest(without_display, 0, icon_h), (
+        "缩略图区随 DisplayRole 变化 —— 文件名被默认绘制重复画在了预览图中央。"
+        "（delegate 若改回 super().paint()，initStyleOption 会把 option.text 重置回文件名）")
+
+
 def test_reference_role_is_not_thumbnail_role():
     """`ReferenceRole` 与 `ThumbnailRole` 不得取同一个值。
 

@@ -21,7 +21,7 @@ PinFrame (定帧) is a PyQt6 desktop application for previewing, fine-tuning, an
   `bash dev/screenshot.sh` launches the app under Xvfb and captures `dev/tmp_screenshot.png`.
 
 - **Run all automated checks (全量回归):**
-  `bash dev/run_all_checks.sh`（约 5s，退出码 0=全过 / 1=有失败 / 2=前置依赖缺失）。
+  `bash dev/run_all_checks.sh`（9 项约 6s，退出码 0=全过 / 1=有失败 / 2=前置依赖缺失）。
   依次跑 9 项：`check_no_duplicate_defs.py` → 语法编译 → `test_transform.py` →
   `transform_baseline.py --compare` → `verify_timeline_view_sync.py` →
   `verify_grid_view.py` → `smoke_reorder.py` → `smoke_reference_frame.py` →
@@ -65,11 +65,23 @@ PinFrame (定帧) is a PyQt6 desktop application for previewing, fine-tuning, an
   已知例外：`src/ui/temp_prop.py` 是 `PropertyPanel` 的旧副本（无人 import），
   作为死文件被单独排除，不在检查范围内。
 
-- **做破坏性验证前必须清 `__pycache__`:**
-  `find src dev -name __pycache__ -type d -exec rm -rf {} +`。
+- **做破坏性验证前必须清字节码缓存:**
+  ```sh
+  find src dev \( -name __pycache__ -type d -prune -o -name '*.pyc' \) -exec rm -rf {} +
+  ```
   pyc 校验用 `(mtime, size)`，秒级精度下切分支/快速往返会碰撞，导致加载**陈旧字节码**
   —— 症状极具迷惑性（`inspect.getsource()` 显示正确源码，行为却是旧的）。
-  `run_all_checks.sh` 已在开头代劳。
+  两个表达式都要有：`__pycache__` 只覆盖常规目录，游离的 `.pyc`（例如被
+  `python -m compileall` 平铺生成、或 `__pycache__` 不可写时的遗留）只有第二条能抓到。
+
+  **删不掉必须停手，不能静默继续。** 占用时 `rm` 会失败（Windows 上常见），
+  而删不掉又继续跑 = 用旧字节码跑完整轮回归，**全绿但测的不是当前代码** ——
+  这正是最难查的一类假通过。`run_all_checks.sh` 已代劳：开头一次、第 2 项
+  `compileall` 之后再一次（它会写满 `src/` 与 `dev/`），两次都是**强制清空后校验
+  残留为空**，非空则 `exit 2` 中止并列出残留路径。
+
+  不要改用 `PYTHONDONTWRITEBYTECODE=1` 来替代：它只禁【写】不禁【读】，已存在的
+  pyc 照样被加载，且 `compileall` 会无视它照样落盘。
 
 ## Architecture
 
@@ -190,7 +202,8 @@ Singleton `I18nManager` (`i18n`) loaded from `en_US.json` / `zh_CN.json`. Call `
 - **`project.frames` 已是绑定活跃数据源的属性，恒为实时值**（见上方 Data model）。不要再写 `self.project.frames = self.timeline.get_all_frames()`——绑定后赋值会抛 `RuntimeError`。
 - Image loading = `image_cache.get(...)`（注意用 `from core.image_cache import ...`，不要带 `src.` 前缀）。帧变换语义统一在 `core/transform.py`，canvas 与 exporter 共用；两者只在像素化方式上不同。
 - `src/core/version.py` is auto-generated — never commit hand edits.
-- 自动化验证的统一入口是 `bash dev/run_all_checks.sh`（见 Common Commands，8 项约 4s）。
+- 自动化验证的统一入口是 `bash dev/run_all_checks.sh`（项数与耗时见 Common Commands，
+  此处不复制数字，避免两处同时漂移）。
   各脚本分工：`dev/check_no_duplicate_defs.py` 是重复定义的结构性检查（AST，纯标准库），
   `dev/test_transform.py` 是纯 assert 单测（37 个，`core.transform` 几何语义 + 时间轴模型信号契约），
   `dev/transform_baseline.py` 是像素哈希回归，`dev/verify_timeline_view_sync.py` 是时间轴列表/网格视图同步 + 拖拽 + 模型 `move_frames` 顺序契约（含真实 `QDropEvent` 路径，offscreen Qt），

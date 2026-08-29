@@ -39,17 +39,20 @@ class TimelineGridDelegate(QStyledItemDelegate):
         # Save painter state
         painter.save()
 
-        # 用改写过的 option 走 Qt 默认绘制：只让它画**背景/选中态 + 图标**，
-        # 文本与配色完全交给本 delegate。
+        # 只让 Qt 画**背景/选中态**，文本与配色完全交给本 delegate。
         #
-        # 为什么要改写而不是直接 super().paint(painter, option, index)：
-        #  - 本 model 被列表视图共享，它在文件名列返回了参考帧的绿色 BackgroundRole
-        #    与加粗 FontRole；网格若照单全收，参考帧的**整个格子**都会变绿（原本
-        #    只有底部文字条是绿的），外观就变了。
-        #  - 缩略图走 ThumbnailRole（自定义角色），默认绘制不认识它，因此显式塞进
-        #    option.icon 让它画在与以前完全相同的位置。
+        # 这里**不能**走 `super().paint()`：QStyledItemDelegate.paint 内部会调用
+        # `initStyleOption()`，把我们清空过的 `option.text` 又从 model 的 DisplayRole
+        # 重置回文件名，于是默认绘制会在预览图中央再画一遍文件名（与底部那条自定义
+        # 文字重复）。直接调 `style.drawControl(CE_ItemViewItem, ...)` 可绕过
+        # `initStyleOption()`，同时完整保留 QSS 对 `QListView::item:selected` 的绘制。
+        #
+        # 另一处必须绕开 `initStyleOption()` 的是参考帧底色：model 在文件名列返回
+        # 绿色 BackgroundRole；网格若照单全收，参考帧的**整个格子**都会变绿（原本
+        # 只有底部文字条是绿的），外观就变了。清空 backgroundBrush 即可。
         paint_option = QStyleOptionViewItem(option)
         paint_option.text = ""                   # 文本由 _draw_custom_text 自行绘制
+        paint_option.features &= ~QStyleOptionViewItem.ViewItemFeature.HasDisplay
         paint_option.backgroundBrush = QBrush()  # 忽略 model 的参考帧底色
 
         # 参考帧加粗走 model 的 `ReferenceRole`，不读 `widget.reference_frame_data`
@@ -60,7 +63,9 @@ class TimelineGridDelegate(QStyledItemDelegate):
         font = index.data(Qt.ItemDataRole.FontRole)
         paint_option.font = font if font is not None else QFont()
         paint_option.font.setBold(is_ref)
-        super().paint(painter, paint_option, index)
+
+        widget.style().drawControl(
+            QStyle.ControlElement.CE_ItemViewItem, paint_option, painter, widget)
 
         # Calculate icon position
         icon_size = widget.iconSize()
