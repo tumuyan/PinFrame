@@ -300,6 +300,14 @@ class TimelineWidget(QStackedWidget):
         """
         self.model.set_frames(frames)
 
+    def apply_frames(self, frames: List[FrameData]) -> bool:
+        """撤销恢复的**默认**入口：能增量就增量，行数变了才整体替换。
+
+        与 `set_frames` 的区别见 `TimelineModel.apply_frames`。撤销/重做一律走
+        这里 —— 只有"确实要重建"的场景才直接调 `set_frames`。
+        """
+        return self.model.apply_frames(frames)
+
     def update_frame_data(self, index: int):
         """Notify model that frame data changed"""
         self.model.update_frame_data(index)

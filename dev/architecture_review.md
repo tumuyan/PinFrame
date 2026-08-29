@@ -4,7 +4,24 @@
 > 评审基线：`main` @ `849bd23`（feat: 支持外部图像编辑器）
 > 性质：**分析文档，未改动任何代码**。所有结论均附 `文件:行号` 证据，可按文末「复核方法」重新验证。
 
-代码规模基线（`find src -name "*.py" | xargs wc -l`）：全项目 15170 行，其中 `main_window.py` 4745 行、`property_panel.py` 1341 行、`temp_prop.py` 911 行、`canvas.py` 902 行。
+代码规模基线（`find src -name "*.py" | xargs wc -l`）：评审时（2026-08-20）全项目 15170 行，其中 `main_window.py` 4745 行、`property_panel.py` 1341 行、`temp_prop.py` 911 行、`canvas.py` 902 行。
+
+> **2026-08-29 复核（基线 `1a12dff`）：** 全项目 **15537 行**，`main_window.py` **4579**、`property_panel.py` **1320**、`temp_prop.py` 911、`canvas.py` **890**。时间轴 7 文件 3412 行 → 8 文件 **3641 行**（P1-3 迁移后净增，见文末实施计划的口径说明）。
+
+### 进度总览（2026-08-29 复核，基线 `1a12dff`）
+
+| 项 | 状态 | 说明 |
+|---|---|---|
+| P0-1 变换语义收敛 | ✅ 已完成 | 2026-08-20；实为 9 份 → 1 份 |
+| P0-2 `frames` 双源 | ✅ 已完成 | 2026-08-29，`2718d99` |
+| P1-3 双视图迁 model/view | ✅ 三片全部完成 | 2026-08-29，`2764051` 起；**信号仍声明三遍，未消除** |
+| P1-4 `BaseTimelineView` 空转 | ✅ 已解决 | 随 P1-3 第 3 片整个文件删除 |
+| P2-5 `MainWindow` 拆分 | ❌ 未动 | 4579 行 / 157 方法；函数内 import 反增至 34 处 |
+| P2-6 撤销快照 | ✅ 已完成 | 2026-08-29；走**结构共享**而非评审建议的「轻量补丁」，理由见实施记录 |
+| P2-7 三层缓存 | ⚠️ 4 点做 1 点 | 仅"缩略图 key 去 index"随迁移解决；`crop_rect` 死参数 / 按张数 FIFO / 导出无 PIL 缓存仍在 |
+| P3-8 / 9 / 10 / 11 | ❌ 全部未动 | QSettings 6 处、`version.py` 未 gitignore、1195 行死代码、导出静默吞异常 |
+
+回归基线：`bash dev/run_all_checks.sh --verbose` 实测 **9/9 PASS（约 5s）**。
 
 ---
 
@@ -22,6 +39,7 @@
 - [最小起步建议](#最小起步建议)
 - [P0-1 实施记录](#p0-1-实施记录)
 - [P1-3 实施计划](#p1-3-实施计划)
+- [P2-6 实施记录](#p2-6-实施记录)
 - [复核方法](#复核方法)
 
 ---
@@ -44,7 +62,9 @@
 
 > **状态：已完成（2026-08-20）。** 实际是 **9 份**而非 4 份，详见文末
 > [P0-1 实施记录](#p0-1-实施记录)。变换语义已收敛到 `src/core/transform.py`，
-> 像素输出经哈希验证零变化（`MAIN_DIGEST = 9eb0372879f0aea1` 前后一致）。
+> 像素输出经哈希验证零变化（`MAIN_DIGEST` 前后一致，当时为 `9eb0372879f0aea1`）。
+> 2026-08-29 复核：现行基线为 `ba2304d808c6aef3`（P0-1 之后另有渲染改动所致），
+> `--compare` 与本机上次一致。
 > 以下保留原始分析，作为改动动机的记录。
 
 **这是目前最高的风险点**，不是「代码重复」这类审美问题。
@@ -93,7 +113,7 @@ def resolve_frame_geometry(frame: FrameData, canvas_w: int, canvas_h: int) -> Fr
 
 ## P0-2｜文档状态有两个源：`ProjectData.frames` vs `TimelineModel._frames`
 
-> **状态：已完成（2026-08-21）。** `ProjectData.frames` 改为绑定活跃数据源的属性，
+> **状态：已完成（2026-08-29，提交 `2718d99`）。** `ProjectData.frames` 改为绑定活跃数据源的属性，
 > 8 处手工同步全部删除，绑定后赋值直接抛 `RuntimeError`。设计与使用须知见
 > `dev/project_frames_sync.md`（该文档已按新设计改写），回归测试见
 > `dev/test_transform.py` 的 5 项 `test_frames_*` / `test_to_json_*`。
@@ -112,7 +132,7 @@ def resolve_frame_geometry(frame: FrameData, canvas_w: int, canvas_h: int) -> Fr
 
 目标是让「忘记同步」**在类型层面不可能发生**，而不是在文档层面被警告。
 
-### 实施结果（2026-08-21）
+### 实施结果（2026-08-29）
 
 走了方案 1，但用**依赖注入**而非直接引用解决了层次问题：`ProjectData`（`model/` 层）
 不能依赖 `TimelineModel`（`ui/` 层），否则造成 model → ui 反向依赖；改为由 MainWindow
@@ -134,24 +154,27 @@ def resolve_frame_geometry(frame: FrameData, canvas_w: int, canvas_h: int) -> Fr
 
 ## P1-3｜`TimelineModel` 不是 `QAbstractItemModel`，两个视图是 item-based widget
 
-> **状态：未实现，且未过时（复核日期 2026-08-29，基线 `main` @ `2718d99`）。**
-> 原文事实逐条复核**全部成立**，仅行号位移（`TimelineModel` 现 `timeline_model.py:5`、
-> `_connect_view_signals` 现 `timeline.py:78`、`_on_frames_inserted` 现 `timeline.py:200`
-> 且签名不一致一字未改、`extract_frame_data_from_item` 仍 `timeline_base_view.py:97`）。
+> **状态：已完成（2026-08-29，`2764051` 三片一次落地 + 至 `1a12dff` 的后续修复清理）。**
+> 以下保留**原始分析**作为改动动机的记录 —— 但**正文里的 `文件:行号` 证据在迁移后
+> 已全部失效**：`timeline_base_view.py` 整个文件已删、`extract_frame_data_from_item`
+> 已不存在、两个视图已改为 `QTreeView` / `QListView`。**不要按这些旧行号去代码里找。**
 >
-> **成本比评审时更高**，新增两处衍生债务：`_view_in_sync_with_model`
-> （`timeline.py:108-136`，存在的前提就是"视图持有数据副本会变陈旧"）与
-> `timeline_grid_delegate.py`（570 行，`:34`/`:124` 走 `item.data()`）。时间轴已达
-> **3412 行 / 7 文件**。另有两处迁移阻力需单独计价：列表 `setColumnCount(8)`
-> （`timeline_list.py:109`）意味着要做多列 model，外部文件拖入（`mimeData().hasUrls()`
-> 分支）在两视图各 3 处需统一进 model 的 `dropMimeData`。
+> 2026-08-29 复核（基线 `1a12dff`）：
 >
-> **前置条件部分满足**：`dev/verify_timeline_view_sync.py` 提供 4 个 offscreen 交互
-> 回归测试。但它们断言的是"视图与模型一致"——迁移后该性质由框架保证、恒真，
-> 因此迁移时需**改写**（转去断言 model 与 `QItemSelectionModel` 契约）而非直接复用。
-> 实施顺序见文末 [P1-3 实施计划](#p1-3-实施计划)。
+> | 结论 | 内容 |
+> |---|---|
+> | 已消除 | 视图持有帧数据副本；增删移改的手工镜像；`_view_in_sync_with_model`；顺序双源（视图→模型回写）；item 兼容外壳；P1-4 的抽象空转（`BaseTimelineView` 连带 `TimelineViewUtils` 已删） |
+> | **未消除** | **信号仍声明三遍**（`pyqtSignal` 行数：`timeline.py` 20 / `timeline_list.py` 19 / `timeline_grid.py` 20，与评审时的 18 处同量级）。正文把这条列为根因，但三片都没动它 —— 迁移后这些是「视图 → MainWindow」的上行通知，与 `TimelineModel` 的下行通知不是一回事，属独立议题，未列入本次范围 |
+> | 规模 | 时间轴 3412 行/7 文件 → **3641 行/8 文件**（新增 `timeline_item_model.py` 364 行）。行数净增，口径见实施计划 |
+> | 回归 | `run_all_checks.sh` **9/9**；`verify_timeline_view_sync` **27/27**、`verify_grid_view` **20/20**、`test_transform` 37/37、`MAIN_DIGEST` 与上次一致 |
+>
+> 迁移过程中暴露并修掉的真实回归（多选拖拽失效、网格空白、点击网格属性面板无反应）
+> 及完整破坏性验证记录，见文末 [P1-3 实施计划](#p1-3-实施计划)。
 
 **这是时间轴全部复杂度的根因。**
+
+> 以下「代价是可量化的」与「建议方向」两段描述的是**迁移前**的状态；行号指向
+> `849bd23` / `2718d99` 时期的代码，现已不适用。
 
 `TimelineModel` 是普通 `QObject`（`timeline_model.py:6`）；两个视图是 `QTreeWidget` / `QListWidget`（`timeline_list.py:84`、`timeline_grid.py:11`）—— 便利控件，天然把数据存在 item 里（`UserRole` 存 `FrameData` 引用、text 存文件名）。因此「视图只读、模型唯一」这个正确的信条，**只能靠人工维持，框架完全不提供帮助**。
 
@@ -179,6 +202,14 @@ def resolve_frame_geometry(frame: FrameData, canvas_w: int, canvas_h: int) -> Fr
 
 ## P1-4｜`BaseTimelineView` 这个「统一接口」事实上是空转
 
+> **状态：已解决（2026-08-29）——`src/ui/timeline_base_view.py` 整个文件已删。**
+> 它是随 P1-3 第 3 片一并清掉的（走的是本文「若走 P1-3 方案，这个基类基本可以整体
+> 消失」那条路）。下表是删除前的调用点统计，保留作为动机记录。
+>
+> 一处例外：`get_frame_data_at_index` **没有删除**，而是从「两个视图各实现一份的抽象
+> 方法」降级为各自（及 `TimelineWidget`）的**公开取数 API**，实现直接问模型、不经
+> item。它现在是 3 处三行转发，语义上仍是重复，但属于对外接口而非抽象层空转。
+
 11 个抽象方法，两个视图都老实实现了，但调用点情况是：
 
 | 抽象方法 | 全项目调用点 |
@@ -202,12 +233,17 @@ def resolve_frame_geometry(frame: FrameData, canvas_w: int, canvas_h: int) -> Fr
 
 4745 行 / 160 个方法，同时承担：文档所有权、菜单与 QAction、存取盘、播放定时器、撤销快照、布局预设、属性剪贴板、外部编辑器调用、素材扫描。
 
+> **2026-08-29 复核：未动，且两个症状都略微恶化。** 4579 行 / 157 个方法；
+> 函数内 `import` **34 处**（评审时 32）；跨层私有访问**仍是那 2 处**，仅行号位移：
+> `main_window.py:747` → `self.timeline._apply_selection_to_view(...)`、
+> `main_window.py:3234` → `self.timeline.grid_view._clear_thumbnail_cache()`。
+
 两个可观测症状：
 
-- **32 处函数内 `import`** —— 典型的规避循环依赖信号。例如 `EditorSettingsDialog` 在 `main_window.py:19` 顶部已导入，`1726` 行又在函数体内导一遍。
+- **32 处函数内 `import`**（现 34 处）—— 典型的规避循环依赖信号。例如 `EditorSettingsDialog` 在 `main_window.py:19` 顶部已导入，函数体内又导一遍。
 - **2 处跨层访问私有成员**：
-  - `main_window.py:724` → `self.timeline._apply_selection_to_view(...)`
-  - `main_window.py:3384` → `self.timeline.grid_view._clear_thumbnail_cache()`
+  - `main_window.py:724`（现 `:747`）→ `self.timeline._apply_selection_to_view(...)`
+  - `main_window.py:3384`（现 `:3234`）→ `self.timeline.grid_view._clear_thumbnail_cache()`
 
   说明 `TimelineWidget` 的公开接口不够用，而非 MainWindow 写得随意。
 
@@ -226,9 +262,16 @@ def resolve_frame_geometry(frame: FrameData, canvas_w: int, canvas_h: int) -> Fr
 
 ## P2-6｜撤销快照是全量深拷贝 + 全量视图重建
 
-`_capture_snapshot()`（`main_window.py:654`）深拷贝**所有**帧，上限 200 条（`history.py:45`）→ 500 帧的工程约 10 万个 `FrameData` 副本常驻内存。
+> **状态：已完成（2026-08-29）。** 走的是**结构共享**而不是评审建议的「轻量补丁」，
+> 理由与实测数据见文末 [P2-6 实施记录](#p2-6-实施记录)。要点：
+> 恢复改为按帧增量（撤销一次 scale 只动 1 帧、只重绘 1 行）；快照之间按帧共享
+> 对象，一条历史的增量成本从 O(帧数) 降到 O(变更帧数)。
+> 2026-08-29 复核：未变动的另两条（P2-5 的拆分、P2-7 的缓存）与本项无关。
 
-更麻烦的是恢复路径：`_apply_snapshot_inner()`（`main_window.py:688`）为了还原会 `timeline.clear()` + 逐帧 `add_frame` + `grid_view.refresh_all_items()`。
+`_capture_snapshot()`（`main_window.py:654`，现 `:681`）深拷贝**所有**帧，上限 200 条（`history.py:45`）→ 500 帧的工程约 10 万个 `FrameData` 副本常驻内存。
+
+更麻烦的是恢复路径：`_apply_snapshot_inner()`（`main_window.py:688`，现 `:715`）为了还原会 `timeline.clear()` + 逐帧 `add_frame` + `grid_view.refresh_all_items()`。
+**此句已过时** —— 现为一次 `self.timeline.set_frames(...)`，也不再调 `refresh_all_items()`。
 
 即：**撤销一次「把 scale 从 1.0 调成 1.1」，代价是整个时间轴视图重建 O(n)**。帧多时撤销会明显卡顿，且 item 对象全部重建（P1-3 的衍生代价在此再次显现）。
 
@@ -243,11 +286,177 @@ def resolve_frame_geometry(frame: FrameData, canvas_w: int, canvas_h: int) -> Fr
 
 ---
 
+## P2-6 实施记录
+
+> 完成日期：2026-08-29。目标与本项评审建议的偏差都记在这里。
+
+### 与建议方向的偏差：走结构共享，不走补丁
+
+评审建议「纯属性变更记录 `(index, field, old, new)` 补丁」。**没有这么做**，原因是
+它会把历史栈的语义从「存状态」改成「存变化」，代价超出收益：
+
+`HistoryManager` 的状态模型是 `S0 → S1 → … → Sn`，`entries[k].before` 表示 `S(k-1)`。
+撤销/重做沿着栈**单调**移动时，补丁是安全的（当前状态一定是 `S(k)`，反向应用补丁
+即得 `S(k-1)`）。但历史菜单支持**跳到任意一条**（`jump_to`），那时当前状态未必是
+目标的前一步 —— 补丁就必须从最近的一个完整状态**重放**过来，于是要给每条记录加
+「基准 + 补丁链」，还要处理链上的结构操作。
+
+更麻烦的是脆弱性：全量快照的「应用」是**绝对恢复**，当前状态与历史栈哪怕不同步
+也能救回来；补丁的「应用」是**相对增量**，前提被打破就静默写到错误状态，不报错。
+而这类不同步是存在的（`_history_suspend` 期间的 UI 刷新、不落历史的批量修改）。
+
+最终选了**结构共享**：快照的形态完全不变（仍是完整状态，`undo`/`redo`/`jump_to`
+一行没改），只是让快照之间**按帧共享对象** —— 未变的帧在所有快照里是同一个对象，
+只有真变了的帧才克隆。内存从 O(帧数 × 历史条数) 降到 O(帧数 + 累计变更数)，
+与补丁同量级，但不引入相对增量的那套前提。
+
+### 改动的四处
+
+**1. 恢复路径按帧增量（`TimelineModel.apply_frames`）。**
+行数不变时逐帧比较，只替换真正不同的行，最后发**一条** `data_changed(最小行, 最大行)`；
+行数变了（撤销加帧/删帧）才回落 `set_frames()`。
+
+选 `data_changed` 而不是整体替换信号，语义是严丝合缝的：行数没变、「第 i 行是哪个
+帧」也没变，只是内容变了 —— 正是 `data_changed` 的定义（同一条纪律在 P1-3 第 2 片
+里已经用过一次）。
+
+收益不只是少克隆：撤销不再 `beginResetModel`，于是**选中不被清空、滚动位置不丢、
+网格布局不重算**；缩略图按内容缓存，属性变更不改 `file_path`/`crop_rect`，缓存命中，
+一次解码都不做。
+
+**2. 快照之间共享未变帧（`_capture_snapshot(reuse_from=...)`）。**
+`record_history` 与合并窗口把 `before` 传给 `after` 当基准，值相同的帧直接复用基准
+的对象、不重复克隆。
+
+**3. 历史栈消除 before/after 双份（`HistoryManager.push`）。**
+`entries[k].before` 就是 `entries[k-1].after`（状态模型保证），值相等时复用同一对象。
+这一项单独就省掉一半。
+
+**4. 默认复用基准（`_capture_snapshot` 省略 `reuse_from` 时取历史栈最新记录的 after）。**
+
+前三条把**内存**降到了 O(帧数 + 累计变更数)，但 CPU 上每次记历史仍要克隆两次全表：
+`record_history(before=X)` 的调用方是在操作前 `self._capture_snapshot()` 抓的，那时
+没有基准。让省略参数时默认以 `entries[-1].after` 为基准，就补上了这一半 —— 实测
+克隆次数从 1000/条 降到 1/条（见上表）。
+
+基准过时**不会出错**：判据是"值相同才复用"，值不同就克隆，最坏退回全量。这也是敢
+把它设成默认行为的原因。用户在历史中途（撤销过）时不给基准，避免白比一次。
+
+第 2、3 项是互相成就的：因为第 2 项让相邻快照共享了未变帧的对象，第 3 项的
+`before == entries[-1].after` 比较会大量命中 list 比较的**身份短路**，实际代价接近
+O(1) —— 若没有第 2 项，这个 O(n) 比较会把省下的克隆又赔进去。
+
+### 一个必须写下来的不变量
+
+三条改动里只有一条有静默失败模式：**`apply_frames` 必须克隆它要替换的帧**。
+若直接 `self._frames[i] = target[i]`，模型与历史快照就共享了同一个 `FrameData`，
+此后每一次原地编辑都会写进历史快照 —— 撤销/重做恢复到的是「被后续编辑改过」的值，
+**不报错、不崩溃**，只在 redo 时偶尔取到错值。
+
+`dev/verify_undo_snapshot.py` 的两条 `test_snapshot_not_polluted__{incremental,fallback}_path`
+分别钉住增量路径与回落路径 —— **两条路各测一遍是必需的**，`clone()` 只写在其中一条上
+就会漏，而漏的那条在功能测试里完全看不出来。手法是让被污染的快照再被应用一次
+（走 redo，它读的是 `after`）。破坏性验证确认：去掉任一条路径的 `clone()`，
+对应用例立刻变红。
+
+### 撤销/重做的覆盖边界（值得记住的一条事实）
+
+**设置/清除参考帧不落历史。** `set_reference_frame_from_selection` 全文没有
+`record_history`，i18n 里也没有 `hist_*_reference` 这样的 label —— 实测
+`history.count()` 在设完参考帧后仍为 0、`can_undo` 为 False。
+
+所以「撤销设置参考帧」这个操作**本身不存在**，无从覆盖。但参考帧会被快照**间接**
+还原：快照存了 `reference_frame` 路径 + 下标，撤销任意其它操作时按它恢复。
+`test_reference_frame_survives_undo` 覆盖的是这条路径。
+
+分工上：`smoke_reorder.py`（P1-3 期）已有加帧 / 删帧 / 拖拽重排的**撤销**覆盖，
+但**完全没有 redo**；`verify_undo_snapshot.py` 补的是 undo↔redo **往返**。
+两者不重复，删任何一个都会留下缺口。
+
+### 一个未修的既有缺陷（本项不改，记录在此）
+
+`MainWindow.playlist` **缓存帧对象**（`self.playlist = [f for f in frames ...]`），
+而 `update_playlist()` 只在"开始播放 / 禁用状态变化 / 播放中选中变化"时调用 ——
+**模型数据变更不刷新它**。于是播放中撤销，playlist 里是已失效的旧对象。
+
+这不是 P2-6 引入的：改动前撤销走整体替换，**全部**对象换新（实测 13/13 失效）；
+改动后撤销单帧属性只让 **1** 个失效。亦即 P2-6 顺带把它变轻了，但没消除。
+
+修法很直接（让 `frames_replaced` / `frames_reordered` / `data_changed` 在
+`is_playing` 时刷新 playlist），但会改变播放中的既有行为，超出本项范围，故只记录。
+
+### 实测数据（500 帧工程）
+
+构造 500 帧、连续记录 20 条历史（每条只改 1 帧的 scale）：
+
+| 指标 | 改动后 | 对照（全量深拷贝 + before/after 各一份） |
+|---|---|---|
+| `FrameData.clone()` 调用总数 | **520** | 20 × 2 × 500 = 20000 |
+| 历史栈内不同的帧对象数 | **520**（≈ 帧数 + 变更数） | 20000 |
+| 撤销一次单帧属性变更的克隆数 | **1** | 500 |
+| 撤销一次通知覆盖的行数 | **1**（`data_changed(0,0)`） | 500（整体重建） |
+
+第 1 条历史必然是 O(帧数)（没有基准可复用），之后每条只付变更帧的代价 ——
+520 = 500 + 20，正是 "O(帧数 + 累计变更数)"。
+
+### 破坏性验证（4 个破坏点，全部被捕获）
+
+| 破坏（P2-6 机制本身） | 被哪个用例捕获 |
+|---|---|
+| 恢复改回 `set_frames()` | `test_undo_property_change_is_incremental`、两条 `test_snapshot_not_polluted__*`、`test_undo_redo_reorder` |
+| **增量路径**不 clone | `test_snapshot_not_polluted__incremental_path`、`test_apply_frames_contract` |
+| **回落路径**不 clone | `test_snapshot_not_polluted__fallback_path` |
+| 快照退回全量克隆（去掉未变帧复用） | `test_history_cost_is_independent_of_frame_count`、`test_snapshots_share_unchanged_frames` |
+| 历史栈 before/after 不去重 | `test_snapshots_share_unchanged_frames` |
+| 禁用默认复用基准（退回全量克隆） | `test_history_cost_is_independent_of_frame_count` |
+
+**「两条路径各测一遍」是后来补的，代价是一次真实漏网。** 最初只有一条污染检测，
+且走的是增量路径；`clone()` 漏写在回落路径上时，11 个用例（当时 10 个）全绿、
+15/15 帧与历史快照共享身份，直到 code review 才被发现。
+`clone()` 分散在两条路径上，就只能测两条 —— 这是本项最贵的一条教训。
+
+补 undo/redo 覆盖时又做了 6 个破坏，同样全部被捕获：
+`redo` 返回错误快照（4 个用例变红）、撤销不恢复参考帧、`apply_frames` 不清空失效
+参考帧、适配层缓存帧对象、`add_files` 不落历史、`remove_frame` 不落历史。
+
+其中两个值得单独说，因为**第一次没被捕获**，是测试写错了而不是产品代码对：
+
+- **「适配层缓存帧对象」最初抓不到**：我把检查放在了 redo 之后，而那一刻缓存里
+  存的恰好就是期望值 —— 断言恒真。改到**每次顺序变化之后都查**才抓到。
+  教训：验证「不缓存」这类性质，必须在**被缓存的值已经过时**的时刻去查。
+- **「不清空失效参考帧」最初也抓不到**：因为唯一调用方随后一定会按快照重设参考帧。
+  这段清空是**纯防御**，去掉它最终行为不变。所以不为它写行为断言，改为钉住
+  「`apply_frames` 与 `set_frames` 副作用一致」这条契约 —— 否则两条路径分叉后，
+  将来任何只走 `apply_frames` 的新调用方都会留下指向已移除对象的参考帧。
+
+第一条同时被"污染"那条抓到，是合理的：旧代码 `set_frames([self._clone_frame(f) for f in frames])`
+自己带克隆，所以只把调用换回 `set_frames` 而**不带**克隆，就正好复现了共享对象那
+个失败模式 —— 说明这条不变量确实没有第二道防线。
+
+### 刻意未做的部分
+
+- **合并窗口本身的开合时机未动**。评审说「可以直接复用，不需要重写」，实测确实如此：
+  `edit_started` / `drag_started` / `crop_drag_started` 三个信号已经在修改**之前**
+  发出，是天然的"操作前"锚点。
+- **没有做 COW（写时克隆）**。理论上还能再省一层：让快照完全不克隆、改在"帧即将被
+  修改"时把模型里的对象换成副本。但那需要拦截全部 ~25 处就地改字段的地方
+  （`property_panel` / `canvas` / `main_window` 批量操作），漏一处就是同样的静默污染，
+  而收益只是把 O(变更数) 再降一个常数。风险与收益不匹配，不做 —— 记在这里以免
+  后来者重走一遍。
+
+---
+
 ## P2-7｜三层缓存互不知情，外加一个诱导误用的 API
 
 ```
 image_cache (QImage, 按路径)  ←→  _thumbnail_cache (QPixmap, 按 path+crop+index)  ←→  exporter (无缓存)
 ```
+
+> **2026-08-29 复核：4 点只做了 1 点。** 仅第 3 点随 P1-3 迁移顺带解决（缩略图
+> key 已不含行号，见 `timeline_grid.py:_get_cache_key`）。**第 1、2、4 点原样存在**：
+> `crop_rect` 死参数仍在 `image_cache.py:25`，`_max_size = 500` 按张数 + FIFO 仍在，
+> `exporter.py` 仍在 `compose_frame` 内每帧 `Image.open`（3 种导出模式各调一次，
+> 尚无 PIL 层缓存）。
 
 四个具体问题：
 
@@ -268,6 +477,11 @@ image_cache (QImage, 按路径)  ←→  _thumbnail_cache (QPixmap, 按 path+cro
 ## P3｜其余问题
 
 成本低，建议顺手清掉。
+
+> **2026-08-29 复核：P3 四项全部未动**（`1a12dff`）。`QSettings` 仍 6 处、无
+> `core/settings.py`；`version.py` 仍受版本控制且 `.gitignore` 未收录；
+> `temp_prop.py`(911) 与 `assemble.py`(284) 仍在；`exporter.py` 三处
+> `except Exception` 仍在，行号已漂到 `:164` / `:212` / `:248`。
 
 ### P3-8 配置持久化三套机制并存
 
@@ -483,8 +697,8 @@ H 镜像那行最危险：不是失效，而是**静默变成 180° 旋转**，�
 
 | 文件 | 作用 |
 |---|---|
-| `dev/test_transform.py` | 25 个单测，锁定几何语义（顺序、符号、镜像编码、取整约定） |
-| `dev/transform_baseline.py` | 7 条渲染路径的像素哈希回归；`--compare` 一眼看 MAIN_DIGEST |
+| `dev/test_transform.py` | 25 个单测，锁定几何语义（顺序、符号、镜像编码、取整约定）—— **2026-08-29 已增至 37 个**（后续并入模型信号契约与帧克隆） |
+| `dev/transform_baseline.py` | 7 条渲染路径的像素哈希回归；`--compare` 一眼看 MAIN_DIGEST（现行值 `ba2304d808c6aef3`） |
 
 两者分工：单测跑得快、解释"为什么"；基线证明"没变"。基线的 `EDGE` 组把
 `aspect_ratio == 0` 隔离到子进程，否则 abort 会把整个基线带走。
@@ -720,6 +934,15 @@ Qt 会断言"要删的行数超过实际行数"并 abort。
 每条都让视图做一次布局调整）改成一次 `set_frames()`。实测一个 16 帧工程：17 条 → 1 条。
 `grid_view.refresh_all_items()` 也不再需要 —— 整体替换本就让视图全量重取。
 
+> **2026-08-29 后续（P2-6 收尾，见 [P2-6 实施记录](#p2-6-实施记录)）：** 撤销恢复
+> 的默认入口改为 `apply_frames()` —— 行数不变时**逐帧比较后只替换不同的行**，发一条
+> `data_changed`，`set_frames()` 退化为"行数变了才用"的回落路径。
+>
+> 上一段"不能用 `data_changed`"的论证在当时是对的，它的前提是"撤销恢复**连帧对象都
+> 换了、行数也可能变**"。收尾时把这两种情形拆开了：行数变 → 仍走 `set_frames`（前提
+> 成立）；行数不变 → 映射没变、只有内容变了，`data_changed` 正好合用。所以这不是推翻
+> 前文的纪律，而是把纪律用在了它真正适用的那一半。
+
 **3. 删拖拽不变量文档 —— 只删过时的，保留业务规则。**
 
 `AGENTS.md` 那一页里，真正该删的是 item 时代的实现约束（`takeItem` 搬 item 的顺序、
@@ -752,13 +975,22 @@ X 决定前后"是网格按行主序排布的**真实业务语义**，不是衍�
 
 ### 回归网现状与缺口
 
+> 用例数为 2026-08-29 复核值（基线 `1a12dff`），与上文各片"净效果"里写作时的
+> 数字不同 —— 那是分三片推进过程中逐步累加的快照。
+
 | 资产 | 覆盖 | 与时间轴的关系 |
 |---|---|---|
-| `dev/test_transform.py` | 37 个单测：几何语义、模型信号契约、帧克隆 | 不覆盖视图 |
-| `dev/transform_baseline.py` | 渲染像素哈希 | 不覆盖视图 |
-| `dev/verify_timeline_view_sync.py` | 23 个用例：双视图同步、共享选中、模型顺序契约、真实 `QDropEvent` 拖拽路径、`set_frames` 整体替换 | 视图层主网 |
-| `dev/smoke_reorder.py` | 完整 `MainWindow` 链路：加载工程 → 拖拽 → 撤销（含加帧/删帧）→ 列映射/参考帧/禁用 | 接线网 |
-| `dev/verify_grid_view.py` | 13 个用例：缩略图语义与缓存、序号、拖拽插入点、参考帧/禁用态渲染、列表列宽 | 网格视图专用网 |
+| `dev/test_transform.py` | **37 个单测**：几何语义、模型信号契约、帧克隆 | 不覆盖视图 |
+| `dev/transform_baseline.py` | 渲染像素哈希（`MAIN_DIGEST` / `EDGE_DIGEST`） | 不覆盖视图 |
+| `dev/verify_timeline_view_sync.py` | **27 个用例**：双视图同步、共享选中、模型顺序契约、真实 `QDropEvent` 拖拽路径、`set_frames` 整体替换 | 视图层主网 |
+| `dev/verify_grid_view.py` | **20 个用例**：缩略图语义与缓存、序号、拖拽插入点、参考帧/禁用态渲染、列表列宽 | 网格视图专用网 |
+| `dev/smoke_reorder.py` | 完整 `MainWindow` 链路：加载工程 → 拖拽 → 撤销（含加帧/删帧）→ 列映射/参考帧/禁用（断言式，无 `test_*` 命名） | 接线网 |
+| `dev/smoke_reference_frame.py` | **9 个用例**：参考帧高亮、连设两次幂等、清除后还原 | 接线网 |
+| `dev/verify_selection_style.py` | **9 个用例**：选中配色跨平台一致、对比度下限、单一来源 | 视觉样式网 |
+| `dev/verify_undo_snapshot.py` | **11 个用例**：撤销走增量而非整体替换、行数变化回落、快照不被后续编辑污染（**增量/回落两条路径各一**）、未变帧共享、记历史的克隆成本与帧数无关、加帧/删帧/拖拽重排的撤销**重做**往返、参考帧在撤销后仍还原、`apply_frames` 契约 | 撤销快照网（P2-6） |
+
+`dev/run_all_checks.sh` 把这批资产并为 **10 项**（含 `check_no_duplicate_defs` 与
+语法编译），2026-08-29 实测 **10/10 PASS，约 5s**。
 
 缺口：右键菜单、外部文件拖入、播放跟随仍是纯手工验证。
 
@@ -908,7 +1140,11 @@ X 决定前后"是网格按行主序排布的**真实业务语义**，不是衍�
 
 ## 复核方法
 
-本文全部数字可用以下命令重新验证（repo 根目录，Git Bash）：
+本文全部数字可用以下命令重新验证（repo 根目录，Git Bash）。
+
+> **2026-08-29 注**：下列命令中标注 ⚠️ 的两条，其**预期输出已随 P1-3/P1-4 落地而
+> 改变**（不是命令失效，而是"异常值"变成了"正常值"），已在注释里写明当前预期。
+> 全量回归请直接跑 `bash dev/run_all_checks.sh --verbose`（9 项，约 5s）。
 
 ```bash
 # 代码规模
@@ -919,23 +1155,27 @@ grep -c "Handle scale and aspect_ratio" src/utils/exporter.py
 grep -n "    def " src/utils/exporter.py
 
 # P1-3 信号三处声明
+# ⚠️ 预期已变：迁移**没有**消除三处重复声明，当前约为 20 / 19 / 20（见 P1-3 状态块）
 grep -c "pyqtSignal" src/ui/timeline.py src/ui/timeline_list.py src/ui/timeline_grid.py
 
-# P1-4 抽象方法的实现数与调用点数
-for m in add_frame_to_view remove_frame_from_view update_frame_in_view \
-         refresh_view clear_view get_item_count select_all_optimized \
-         block_selection_signals get_frame_data_at_index; do
-  printf "%-28s def:%s call:%s\n" "$m" \
-    "$(grep -rl "def $m" src/ui/timeline_list.py src/ui/timeline_grid.py | wc -l)" \
-    "$(grep -rn "\.$m(" src/ | wc -l)"
-done
+# P1-4（⚠️ 已解决）：`timeline_base_view.py` 应不存在
+ls src/ui/timeline_base_view.py 2>&1            # 期望：No such file or directory
+
+# `get_frame_data_at_index` **未删除**，而是从抽象方法降级为各自的公开取数 API
+#（实现改为直接问模型，不再经 item）—— 期望 3 处定义：timeline / list / grid
+grep -rn "def get_frame_data_at_index" src/ui/ --include="*.py"
+
+# `extract_frame_data_from_item` 应只剩注释里的历史提及（期望 1 处注释，0 处代码）
+grep -rn "extract_frame_data_from_item" src/ --include="*.py"
 
 # P2-5 MainWindow 规模与函数内 import
 grep -c "    def " src/ui/main_window.py
 grep -c "^        from \|^            from \|^        import " src/ui/main_window.py
 
-# P2-7 crop_rect 死参数（应为 0 个调用点传参）
+# P2-7 crop_rect 死参数（应为 0 个调用点传参 —— 2026-08-29 复核仍为 0）
+# 但参数**本身**未删，仍在 `src/core/image_cache.py` 的 `get()` 签名上
 grep -rn "image_cache.get(" src/
+grep -n "def get" src/core/image_cache.py
 
 # P3-8 QSettings 散落点
 grep -rn "QSettings(" src/
@@ -943,12 +1183,12 @@ grep -rn "QSettings(" src/
 # P3-9 version.py 是否受版本控制
 git ls-files src/core/version.py && cat src/core/version.py
 
-# P3-10 死代码是否真无引用
-grep -rn "temp_prop\|assemble" src/ main.py PinFrame.spec
+# P3-10 死代码是否真无引用（dev/ 里应只有 check_no_duplicate_defs.py 的排除项）
+grep -rn "temp_prop\|assemble" src/ main.py PinFrame.spec dev/
 
-# P3-11 吞异常与裸 print
-grep -rn "except:" src/ --include=*.py
-grep -rn "^\s*print(" src/ --include=*.py | grep -v debug_config.py
+# P3-11 吞异常与裸 print（--include 要加引号，zsh 下未 quote 的 glob 会报 no matches）
+grep -rn "except:" src/ --include="*.py"
+grep -rn "^\s*print(" src/ --include="*.py" | grep -v debug_config.py
 
 # i18n 键一致性（应为双向空集）
 python -c "import json;a=json.load(open('src/i18n/zh_CN.json',encoding='utf-8'));b=json.load(open('src/i18n/en_US.json',encoding='utf-8'));print(len(a),len(b),set(a)-set(b),set(b)-set(a))"

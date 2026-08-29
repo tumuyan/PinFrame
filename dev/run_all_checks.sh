@@ -139,7 +139,8 @@ require_file() {
     fi
 }
 require_file "$REPO_ROOT/dev/test_long2.json" \
-    "第 7/9 项（smoke_reorder.py、smoke_reference_frame.py）硬依赖它加载真实工程。\
+    "第 7/8/10 项（smoke_reorder.py、smoke_reference_frame.py、verify_undo_snapshot.py）\
+ 硬依赖它加载真实工程。\
  选它的理由：15 帧来自同一张源图但裁切互不相同，帧签名（crop_rect+scale+rotation+is_disabled）\
  全部唯一，105 种两两交换无一失明；旧的 test_long.json 有 1 组重复签名（第 4/15 帧），\
  已作为死文件删除（见 dev/code_review_p1_3.md）。另：dev/verify_selection_style.py
@@ -229,10 +230,10 @@ echo "============================================================"
 FAILED=0
 ABORTED=0
 
-if [ "$ABORTED" -eq 0 ]; then run_check "1/9 重复定义（结构性）"       "$PY" dev/check_no_duplicate_defs.py          || FAILED=1; fi
-if [ "$ABORTED" -eq 0 ]; then run_check "2/9 语法编译 main.py+src"     "$PY" -m compileall -q main.py src            || FAILED=1; fi
+if [ "$ABORTED" -eq 0 ]; then run_check "1/10 重复定义（结构性）"      "$PY" dev/check_no_duplicate_defs.py          || FAILED=1; fi
+if [ "$ABORTED" -eq 0 ]; then run_check "2/10 语法编译 main.py+src"    "$PY" -m compileall -q main.py src            || FAILED=1; fi
 
-# compileall 刚把 pyc 写满了 src/ 与 dev/，3~9 项不清掉就会读这批而非源码。
+# compileall 刚把 pyc 写满了 src/ 与 dev/，3~10 项不清掉就会读这批而非源码。
 # 同样失败即中止。根目录 __pycache__（compileall 为 main.py 生成的）刻意不动：
 # 没有任何测试 import main 模块，且 find 到仓库根会一路扫进 venv/，得不偿失。
 if ! purge_bytecode; then
@@ -240,13 +241,14 @@ if ! purge_bytecode; then
     ABORTED=1
 fi
 
-if [ "$ABORTED" -eq 0 ]; then run_check "3/9 几何与模型单测"           "$PY" dev/test_transform.py                   || FAILED=1; fi
-if [ "$ABORTED" -eq 0 ]; then run_check "4/9 渲染像素哈希 --compare"   "$PY" dev/transform_baseline.py --compare     || FAILED=1; fi
-if [ "$ABORTED" -eq 0 ]; then run_check "5/9 双视图同步与拖拽"         "$PY" dev/verify_timeline_view_sync.py        || FAILED=1; fi
-if [ "$ABORTED" -eq 0 ]; then run_check "6/9 网格视图"                 "$PY" dev/verify_grid_view.py                 || FAILED=1; fi
-if [ "$ABORTED" -eq 0 ]; then run_check "7/9 MainWindow 接线：重排"    "$PY" dev/smoke_reorder.py                    || FAILED=1; fi
-if [ "$ABORTED" -eq 0 ]; then run_check "8/9 MainWindow 接线：参考帧"  "$PY" dev/smoke_reference_frame.py            || FAILED=1; fi
-if [ "$ABORTED" -eq 0 ]; then run_check "9/9 选中配色跨平台一致"        "$PY" dev/verify_selection_style.py           || FAILED=1; fi
+if [ "$ABORTED" -eq 0 ]; then run_check "3/10 几何与模型单测"          "$PY" dev/test_transform.py                   || FAILED=1; fi
+if [ "$ABORTED" -eq 0 ]; then run_check "4/10 渲染像素哈希 --compare"   "$PY" dev/transform_baseline.py --compare     || FAILED=1; fi
+if [ "$ABORTED" -eq 0 ]; then run_check "5/10 双视图同步与拖拽"         "$PY" dev/verify_timeline_view_sync.py        || FAILED=1; fi
+if [ "$ABORTED" -eq 0 ]; then run_check "6/10 网格视图"                 "$PY" dev/verify_grid_view.py                 || FAILED=1; fi
+if [ "$ABORTED" -eq 0 ]; then run_check "7/10 MainWindow 接线：重排"    "$PY" dev/smoke_reorder.py                    || FAILED=1; fi
+if [ "$ABORTED" -eq 0 ]; then run_check "8/10 MainWindow 接线：参考帧"  "$PY" dev/smoke_reference_frame.py            || FAILED=1; fi
+if [ "$ABORTED" -eq 0 ]; then run_check "9/10 选中配色跨平台一致"       "$PY" dev/verify_selection_style.py           || FAILED=1; fi
+if [ "$ABORTED" -eq 0 ]; then run_check "10/10 撤销快照：增量与共享"    "$PY" dev/verify_undo_snapshot.py             || FAILED=1; fi
 
 # ---- 基线未改写校验 ---------------------------------------------------------
 BASELINE_AFTER="$("$PY" -c "import hashlib,sys; print(hashlib.md5(open(sys.argv[1],'rb').read()).hexdigest())" "$BASELINE_JSON")"
@@ -303,6 +305,14 @@ if [ "$FAILED" -ne 0 ]; then
     echo "           样式表的解析，且只在 stderr 打一句警告，GUI 里完全看不见；"
     echo "       (c) 选中色必须不透明 —— 半透明会透出底层平台绘制的颜色，"
     echo "           而只看 RGB 三个分量区分不了 alpha=200 与 255。"
+    echo "  - 若第 10 项失败（撤销快照）：这三项各对应一个独立的改动点，别混着查。"
+    echo "      · '走了整体替换' → _apply_snapshot_inner 没走 apply_frames，"
+    echo "        或它的行数判断失效；"
+    echo "      · '快照被后续编辑污染' → apply_frames 漏了 clone()，模型与历史快照"
+    echo "        共享了 FrameData（不报错，只在 redo 时偶尔取到错值，最难查）；"
+    echo "      · '未变帧未共享' → _capture_snapshot 的 reuse_from 或"
+    echo "        HistoryManager.push 的 before 复用被去掉（功能正常，只是退回"
+    echo "        O(帧数×历史条数) 内存）。"
     echo "  - 若第 4 项失败（MAIN_DIGEST 变化）而你【有意为之】地改了渲染："
     echo "      确认差异符合预期后，跑 'python dev/transform_baseline.py' 刷新基线。"
     echo "  - 若某项的失败是异常而非断言（exit=134 之类）："

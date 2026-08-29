@@ -91,6 +91,18 @@ class HistoryManager:
         if not self._entries:
             # 记录真正的初始状态，供撤销到 -1 时还原
             self._initial_snapshot = before
+        elif before == self._entries[-1].after:
+            # 结构共享：本条记录的 before 就是上一条记录的 after（历史栈的状态
+            # 模型 S0→S1→… 保证二者是同一个状态）。复用同一对象，避免同一状态在
+            # 栈里存两份 —— 500 帧的工程记满 200 条历史时，这一项就省掉一半副本。
+            #
+            # 若二者不等，说明两次记录之间发生过**未被历史记录**的修改，此时不能
+            # 复用（否则撤销会跳到错误的前态），照旧存新副本 —— 与复用前行为一致。
+            #
+            # 比较是 O(n)，但由于 `MainWindow._capture_snapshot(reuse_from=...)`
+            # 让相邻快照共享未变帧对象，list 的逐元素比较会先命中身份短路，
+            # 实际代价接近 O(1)。
+            before = self._entries[-1].after
         self._entries.append(HistoryEntry(label, before, after))
         # 限制历史数量，丢弃最旧记录
         if len(self._entries) > self.max_entries:

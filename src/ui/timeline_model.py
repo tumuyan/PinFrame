@@ -382,6 +382,65 @@ class TimelineModel(QObject):
             self._reference_frame = None
         self.frames_replaced.emit()
 
+    def apply_frames(self, frames: List[FrameData]) -> bool:
+        """按内容更新模型，尽量走**增量**而非整体替换 —— 撤销恢复的专用入口。
+
+        背景：`set_frames()` 是整体替换，适配层收到 `frames_replaced` 后
+        `beginResetModel`，视图全量重取、滚动位置丢失、`QItemSelectionModel`
+        被清空（于是每次撤销都要再恢复一次选中）。而撤销一次"把 scale 从 1.0
+        调成 1.1"实际只动了 1 帧 —— 为 1 帧重建整个时间轴是纯浪费。
+
+        行数相同时改为逐帧替换，最后发**一条** `data_changed(最小行, 最大行)`：
+        选中与滚动位置都保住（这才是相对整体替换的主要收益）。行数不同才回落到
+        `set_frames()`（撤销加帧/删帧时行数确实会变）。
+
+        区间取"最小行~最大行"的**闭包**，非连续变更时中间未变的行也落在区间内 ——
+        例如只改第 0 行与第 999 行，发出的是 `data_changed(0, 999)`。
+        这是有意的权衡，不要为了"精确"把区间拆成多段：实测 Qt 视图只绘制**视口内**
+        的项（1000 帧工程、800x600 视口下，区间从 1 行放大到 1000 行，
+        `delegate.paint` 都是 22 次），多覆盖的部分不产生实际绘制开销；
+        而拆成多段意味着发多条通知，复杂度不划算。
+
+        这里用 `data_changed` 而非整体替换信号，语义是对的：行数不变、
+        "第 i 行是哪个帧"也没变，只是**内容**变了 —— 正是 `data_changed` 的定义。
+
+        返回是否走了增量路径（False 表示回落到整体替换）。
+        """
+        target = list(frames)
+        if len(target) != len(self._frames):
+            # 回落路径**同样必须克隆**：`set_frames` 是直接换列表、不克隆的，而
+            # 调用方（`_apply_snapshot_inner`）已把克隆的责任全交给本方法。
+            # 漏了这里，模型就会与历史快照共享同一批 FrameData，此后每次原地
+            # 编辑都会写进历史快照 —— 不报错、不崩溃，只是撤销恢复到的是被后续
+            # 编辑改过的值。增量路径与回落路径都必须守住这一点。
+            self.set_frames([f.clone() for f in target])
+            return False
+
+        # 先挑出真正不同的行：一次撤销常常什么都没变（例如撤销后又重做），
+        # 那时一条通知都不该发。
+        # `is not` 短路掉"同一对象"，`!=` 是 FrameData 的值比较。
+        changed = [i for i, (cur, new) in enumerate(zip(self._frames, target))
+                   if cur is not new and cur != new]
+        if not changed:
+            return True
+
+        # 克隆后再放进模型：快照里的帧对象必须只属于快照。
+        # 若这里直接存 `target[i]`，模型与历史快照就共享了同一对象，之后的每一次
+        # 原地编辑都会**改到历史快照里去**，撤销恢复到的是"被后续编辑改过"的值
+        # （静默错误，且不报错）。只克隆变化的那几帧，未变的帧保持原对象不动。
+        for i in changed:
+            self._frames[i] = target[i].clone()
+
+        # 与 set_frames 的副作用保持一致：参考帧若指向被换掉的旧对象则清空。
+        # 调用方随后会按快照重新设置参考帧（见 `_apply_snapshot_inner`）。
+        if self._reference_frame is not None and not any(
+                f is self._reference_frame for f in self._frames):
+            self._reference_frame = None
+
+        # changed 由 enumerate 生成，天然升序，故首/末即最小/最大行。
+        self.data_changed.emit(changed[0], changed[-1])
+        return True
+
     def set_frames_order(self, frames: List[FrameData]) -> bool:
         """用给定的帧顺序整体替换模型中的帧列表。
 

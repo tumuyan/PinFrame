@@ -21,11 +21,11 @@ PinFrame (定帧) is a PyQt6 desktop application for previewing, fine-tuning, an
   `bash dev/screenshot.sh` launches the app under Xvfb and captures `dev/tmp_screenshot.png`.
 
 - **Run all automated checks (全量回归):**
-  `bash dev/run_all_checks.sh`（9 项约 6s，退出码 0=全过 / 1=有失败 / 2=前置依赖缺失）。
-  依次跑 9 项：`check_no_duplicate_defs.py` → 语法编译 → `test_transform.py` →
+  `bash dev/run_all_checks.sh`（10 项约 6s，退出码 0=全过 / 1=有失败 / 2=前置依赖缺失）。
+  依次跑 10 项：`check_no_duplicate_defs.py` → 语法编译 → `test_transform.py` →
   `transform_baseline.py --compare` → `verify_timeline_view_sync.py` →
   `verify_grid_view.py` → `smoke_reorder.py` → `smoke_reference_frame.py` →
-  `verify_selection_style.py`。
+  `verify_selection_style.py` → `verify_undo_snapshot.py`。
   `--verbose` 实时回显完整输出，`--fail-fast` 首败即停。
   **改动触及共享层（`core/transform.py`、`timeline_model.py`、`timeline_item_model.py`、
   `project_data.py`）或打包发布前，必须跑全量**；只动某个对话框/i18n 键时可只跑定向项。
@@ -85,7 +85,7 @@ PinFrame (定帧) is a PyQt6 desktop application for previewing, fine-tuning, an
 
 ## Architecture
 
-PinFrame is a single-window PyQt6 app. `main.py` bootstraps `QApplication` + `MainWindow` (the central controller, ~3200 lines in `src/ui/main_window.py`). `src` is added to `sys.path` by `main.py`, so imports are relative to `src` (e.g. `from ui.main_window import MainWindow`, `from model.project_data import ...`, `from i18n.manager import i18n`).
+PinFrame is a single-window PyQt6 app. `main.py` bootstraps `QApplication` + `MainWindow` (the central controller, ~4580 lines in `src/ui/main_window.py`). `src` is added to `sys.path` by `main.py`, so imports are relative to `src` (e.g. `from ui.main_window import MainWindow`, `from model.project_data import ...`, `from i18n.manager import i18n`).
 
 ### Data model (`src/model/project_data.py`)
 Two dataclasses form the entire project state:
@@ -98,6 +98,12 @@ Two dataclasses form the entire project state:
 ### Core services (`src/core/`)
 - `transform.py`: 帧变换几何的唯一来源（见上）。Qt-free，有单测覆盖。
 - `image_cache.py`: a global singleton `ImageCache` (`image_cache`) shared across all widgets, keyed by absolute file path (the `crop_rect` argument is accepted but ignored — dead parameter), FIFO-capped at 500 *images* (not bytes). Always read images from `image_cache.get(path)` rather than `QImage(path)` directly to avoid reloading. **必须写成 `from core.image_cache import image_cache`**，不可写 `from src.core.image_cache import ...`：两种写法都能解析（仓库根在 `sys.path` 上），但会产生两个不同的模块对象、进而两个独立的单例——`canvas.py` 与 `property_panel.py` 曾经就是这样，导致内存翻倍且缓存失效被割裂。
+- `history.py`: **线性历史栈**，撤销/重做的唯一真源。改动前必读：
+  - **状态模型 `S0 → S1 → … → Sn`。** `entries[k].before` 是 `S(k-1)`、`after` 是 `Sk`，首尾相接成链；`_index` 指向当前状态（`k` = `Sk`，`-1` = 真正的初始 `S0`，由 `_initial_snapshot` 独立保存，栈被裁剪也还原得了）。
+  - **撤销/重做可重复任意次。** `undo()` / `redo()` 只移动 `_index` 并返回相邻快照，**不删改任何条目**，故可一路撤到 `-1` 再一路重做回来。
+  - **但撤销后一旦有新操作，重做分支即永久丢弃。** `push()` 第一步就是 `del self._entries[self._index + 1:]`。
+  - **这是刻意的线性语义，不是缺陷，不要"修"成分支树**（与 Photoshop / Office 一致）。
+  - 推论：`jump_to` 直接应用目标条目的 `after`、**不重放**中间步骤，因此快照必须是**完整状态**而非增量补丁。
 - `version.py`: build-time generated; holds `VERSION`, `REPO_URL`, `BUILD_DATE`. Do not edit by hand.
 
 ### Rendering (`src/core/transform.py`, `src/ui/canvas.py`, `src/utils/exporter.py`)
@@ -169,9 +175,19 @@ The timeline is a **model/view system**: `TimelineModel` owns the frame list and
   - **`TimelineModel.clear()` 必须发 `frames_removed(0, 旧行数)`，且先发信号再清数据。** 信号处理器会同步读 `rowCount()`（Qt 适配层的 `beginRemoveRows` 就是），那时若 `_frames` 已空，Qt 断言"要删的行数超过实际行数"并 abort 进程。视图迁到 model/view 后，发信号是视图跟着清空的**唯一**途径（`QTreeView` 没有 `clear()`）。
   - `data_changed(start, end)` — **content changed only; the row→frame mapping is unchanged.** Views repaint those rows (and, for performance, only the *active* view — the inactive one is refreshed on `set_view_mode` switch). **Never use it to carry a reorder**: the view repaints by index and does not re-fetch a new order. (`reverse_frames` / `set_frames_order` must emit `frames_reordered`.)
   - **`frames_reordered()`** — 换序（同一批对象，行数不变）：reverse / drag-sort / `set_frames_order`。
-  - **`frames_replaced()`** — 换成**另一批对象**（撤销恢复），行数也可变。`data_changed` 不能用于此：它的语义是"内容变了、映射没变"，而这里连对象都换了、行数也可能变。
+  - **`frames_replaced()`** — 换成**另一批对象**（行数可变的整体替换），行数也可变。`data_changed` 不能用于此：它的语义是"内容变了、映射没变"，而这里连对象都换了、行数也可能变。
     两者对视图的处理相同，都是 `beginResetModel` → 视图全量重取。
   - **`set_frames()` 只发一条信号。** 撤销恢复曾经是 `clear()` + 逐帧 `add_frame()`，即 1 次移除 + N 次插入共 **N+1 条**，每条都让视图做一次布局调整。
+  - **撤销恢复默认走 `apply_frames()`，不是 `set_frames()`。** 它先比行数：行数相同就
+    逐帧比较、只替换真正不同的行，末尾发**一条** `data_changed(最小行, 最大行)`；
+    行数不同（撤销加帧/删帧）才回落 `set_frames()`。于是"撤销一次 scale"只重绘那一行，
+    选中不被清空、滚动位置不丢、缩略图按内容缓存全部命中。
+    **两条路径都必须 `clone()`，一处都不能少** —— 增量路径克隆变化的那几帧，回落路径
+    整体克隆（因为 `set_frames` 是"直接换列表、不克隆"）。漏掉任意一条，模型就会与
+    历史快照共享 `FrameData`，此后每次原地编辑都写进历史快照，撤销恢复到的是被后续
+    编辑改过的值：**不报错、不崩溃**，只在 redo 时偶尔取到错值。
+    实测踩过：只有增量路径写了 clone，10 个用例全绿、15/15 帧共享身份。
+    `dev/verify_undo_snapshot.py` 的两条 `test_snapshot_not_polluted__*` 分别钉住这两条路。
 - **顺序只存在一份：模型。** `TimelineModel.move_frames(indices, insert_index)` 是顺序的唯一写入入口（坐标系、原位判据、选中跟随都在里面，最后发 `frames_reordered`）。**视图不再拥有顺序**：`dropEvent` 只算出"拖了哪几行、插到哪儿"然后交给模型。曾经视图自己改顺序、再由 `MainWindow.on_order_changed` 回写模型 —— 那等于顺序有两个源，是"切视图后顺序错乱"的根因，已被删除。
   - **撤销快照必须在改模型之前捕获**。顺序改为当场生效后，等到 `order_changed` 时模型已是新顺序，那时再 `_capture_snapshot()` 快照到的就是结果而非前态，撤销会变成空操作。为此视图在调 `move_frames` 前发 `reorder_about_to_happen`，`MainWindow` 连它捕获快照，`on_order_changed` 再落历史。
   - **Insert before/after**: decided by `_calc_insert_before(drop_pos, item_center)` in `timeline_grid.py` (Grid is row-major — Y only picks the row via `indexAt`; X alone decides before/after). `dragMoveEvent` (preview) and `dropEvent` fallback (landing) must call the SAME method so the blue insert indicator matches the final drop. Never reintroduce separate `and`/`or` logic.
@@ -211,6 +227,8 @@ Singleton `I18nManager` (`i18n`) loaded from `en_US.json` / `zh_CN.json`. Call `
   `dev/smoke_reorder.py` 是完整 `MainWindow` 接线链路（加载工程 → 拖拽重排 → 撤销），
   `dev/smoke_reference_frame.py` 是参考帧生命周期 + 洋葱皮抑制的 `MainWindow` 接线（见下条），
   `dev/verify_selection_style.py` 是时间轴选中配色的跨平台一致性（见下条），
+  `dev/verify_undo_snapshot.py` 是撤销快照（恢复走增量而非整体替换、快照之间按帧
+  共享对象、历史快照不被后续编辑污染 —— 增量/回落两条路径各测一遍），
   `dev/screenshot.sh` 是人工目视检查。
   **另有三个缺口无任何自动化覆盖**：右键菜单、外部文件拖入、播放时的选中跟随。
 

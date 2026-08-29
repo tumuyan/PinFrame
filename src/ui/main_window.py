@@ -28,6 +28,12 @@ from i18n.manager import i18n
 from utils.debug_config import import_debug, layout_debug
 from core.history import HistoryManager
 
+# 哨兵：区分"没传这个参数"与"显式传了 None"。
+# `_capture_snapshot(reuse_from=None)` 的 None 表示"不用任何复用基准"（全量克隆），
+# 而省略参数表示"用默认基准"。用 None 兼任二者会把这两种意图混为一谈。
+_UNSET = object()
+
+
 class MainWindow(QMainWindow):
     def __init__(self):
         QApplication.setAttribute(Qt.ApplicationAttribute.AA_DontShowIconsInMenus, True)
@@ -678,10 +684,34 @@ class MainWindow(QMainWindow):
         """
         return f.clone()
 
-    def _capture_snapshot(self):
-        """抓取当前项目状态的深拷贝快照（帧数据与画布设置）。"""
+    def _capture_snapshot(self, reuse_from=_UNSET):
+        """抓取当前项目状态的快照（帧数据与画布设置）。
+
+        `reuse_from` 是复用基准：内容未变的帧**直接复用它的对象**，只克隆真正变了
+        的那些。省略时取 `_history_reuse_base()`（历史栈最新那条记录的 after）。
+
+        为什么要复用：这是 P2-6「每条历史都深拷贝全部帧」的解法。撤销一次
+        "把 scale 从 1.0 调成 1.1"只有 1 帧变了，但若每次都全量克隆，500 帧的
+        工程每记一条历史就要克隆 1000 个 `FrameData`。复用之后，一条历史的
+        **增量成本 = 变化的帧数**，未变的帧在整个历史栈里只有一份。
+
+        安全性：被复用的对象只被快照持有，模型里的活对象是另一个（`get_all_frames()`
+        返回的是模型当前对象），后续原地编辑改的是活对象，动不到快照里的副本。
+        而**变化**的帧必须克隆 —— 那正是"旧值要被固化下来"的部分。
+
+        配套地，`HistoryManager.push` 会让新记录的 `before` 复用上一条的 `after`，
+        于是 `before`/`after` 两份也不再重复存储。
+        """
+        if reuse_from is _UNSET:
+            reuse_from = self._history_reuse_base()
         live_frames = self.timeline.get_all_frames()
-        # 记录参考帧在 frames 中的下标，供撤销/重做时按下标精确定位恢复
+        # 记录参考帧在 frames 中的下标，供撤销/重做时按下标精确定位恢复。
+        #
+        # 刻意按 `MainWindow.reference_frame` 找，而**不用**模型的
+        # `get_reference_index()`：这两份状态并不总是同步的 ——
+        # `clear_reference_frame(update=False)` 只清 MainWindow 这一份、不写业务
+        # 模型。而快照恢复走的是"按下标 + 按路径"双重匹配（`_apply_snapshot_inner`），
+        # 无论哪一份是准的都能兜住，故这里保持原有口径不动。
         ref_index = None
         if self.reference_frame is not None:
             for i, f in enumerate(live_frames):
@@ -689,6 +719,35 @@ class MainWindow(QMainWindow):
                     ref_index = i
                     break
         selected_indices = self.timeline.get_selected_indices_from_model()
+
+        prev_frames = reuse_from.get("frames") if reuse_from else None
+        frames = []
+        for i, f in enumerate(live_frames):
+            if prev_frames is not None and i < len(prev_frames) and f == prev_frames[i]:
+                frames.append(prev_frames[i])
+            else:
+                frames.append(self._clone_frame(f))
+
+        return self._snapshot_dict(frames, ref_index, selected_indices)
+
+    def _history_reuse_base(self):
+        """默认的复用基准：历史栈里**最新**那条记录的 after。
+
+        只有在栈停在最新一条时才用它 —— 用户撤销过之后（`index` 不在末尾），
+        当前状态与 `entries[-1].after` 之间隔着已回退的改动，拿它当基准只会让
+        逐帧比较全部判为不同、白白多一次遍历，故直接返回 None。
+
+        基准过时**不会出错**：复用判据是"值相同才复用"，值不同就克隆，最坏只是
+        退回全量克隆。这也是敢把它设成默认行为的原因。
+        """
+        h = self.history
+        entries = h.entries
+        if entries and h.index == len(entries) - 1:
+            return entries[-1].after
+        return None
+
+    def _snapshot_dict(self, frames, ref_index, selected_indices):
+        """快照的标量部分（画布设置 + 参考帧/选中定位），与帧列表拼成完整快照。"""
         return {
             "fps": self.project.fps,
             "width": self.project.width,
@@ -698,7 +757,7 @@ class MainWindow(QMainWindow):
             "reference_frame": self.reference_frame.file_path if self.reference_frame else None,
             "reference_frame_index": ref_index,
             "selected_indices": list(selected_indices),
-            "frames": [self._clone_frame(f) for f in live_frames],
+            "frames": frames,
         }
 
     def _apply_snapshot(self, snap):
@@ -724,14 +783,17 @@ class MainWindow(QMainWindow):
         self.property_panel.set_project_info(self.project.width, self.project.height)
 
         frames = snap.get("frames", [])
-        # 整体替换：一条信号，而不是 clear() + 逐帧 add_frame() 的 N+1 条。
-        # 帧对象必须先克隆，避免后续编辑污染历史快照。
-        self.timeline.set_frames([self._clone_frame(f) for f in frames])
-
-        # set_frames 发的是整体替换信号，视图已全量重取（缩略图按内容缓存、命中），
-        # 因此不再需要 grid_view.refresh_all_items()。
+        # 尽量增量：行数不变时 `apply_frames` 只替换真正不同的帧，发一条
+        # data_changed —— 视图重绘受影响的行即可，选中、滚动位置、网格布局都不丢。
+        # 行数变了（撤销加帧/删帧）才回落到整体替换，那本来就必须重建。
+        #
+        # 注意这里**不**再逐帧 clone：克隆的责任已交给 `apply_frames`，它会在**两条
+        # 路径上都克隆** —— 增量路径克隆变化的那几帧，回落路径（行数变了）整体克隆。
+        # 两条路都必须克隆，否则模型会与历史快照共享 FrameData（见 `TimelineModel`）。
+        self.timeline.apply_frames(frames)
 
         # 参考帧与选中项恢复
+        # 必须在 apply_frames **之后**取：它替换过的行已经是新的帧对象了。
         live_frames = self.timeline.get_all_frames()
 
         raw_selected_indices = snap.get("selected_indices", [])
@@ -821,7 +883,7 @@ class MainWindow(QMainWindow):
         label = getattr(self, '_history_merge_label', None)
         before = self._history_merge_before
         self._history_merge_before = None
-        after = self._capture_snapshot()
+        after = self._capture_snapshot(reuse_from=before)
         if label is None or before == after:
             return
         self.history.push(label, before, after)
@@ -841,7 +903,10 @@ class MainWindow(QMainWindow):
         if before is None:
             before = self._capture_snapshot()
         if after is None:
-            after = self._capture_snapshot()
+            # 以 before 为基准复用未变帧：这次操作通常只影响少数几帧，
+            # 其余帧在两份快照里共享同一对象（省掉一批克隆，也让历史栈里
+            # 前后两条记录的帧对象能对上，见 HistoryManager.push 的复用逻辑）。
+            after = self._capture_snapshot(reuse_from=before)
         # 跳过无实际变化的记录
         if before == after:
             return
