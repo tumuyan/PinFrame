@@ -9,7 +9,7 @@
 
   2. 多选拖拽后切视图，选中项不是被拖拽的帧。
      根因：`_rebuild_list_view` / `_rebuild_grid_view` 在恢复选中时调用
-     `_apply_selection_to_view(indices)` 却**没有显式指定目标视图**，于是依赖
+     `apply_selection_to_view(indices)` 却**没有显式指定目标视图**，于是依赖
      `current_view_mode`——重建 list 时把选中写进了 grid（反之亦然），污染刚拖好的选中。
 
 与 dev/test_transform.py 的分工：
@@ -360,7 +360,7 @@ def _click_row(view, row, column):
 def test_click_grid_row_notifies_downstream():
     """鼠标点击网格里的帧，必须向业务层发出**非空**的选中通知。
 
-    为什么单独加这条：其余选中用例都用 `_apply_selection_to_view` 或
+    为什么单独加这条：其余选中用例都用 `apply_selection_to_view` 或
     `model.set_selection`，**绕过了真实鼠标路径**。于是 25 个用例全绿，却没人发现
     "点了帧，属性面板显示未选中、预览区没反应"。
 
@@ -565,12 +565,12 @@ def test_selection_visible_from_both_views():
     _fill(tw)
 
     tw.model.set_selection([0, 2])
-    tw._apply_selection_to_view({0, 2}, "list")
+    tw.apply_selection_to_view({0, 2}, "list")
     assert tw.grid_view.get_selected_indices() == [0, 2], \
         f"网格看不到列表里选中的行（列不一致导致）: {tw.grid_view.get_selected_indices()}"
 
     # 在网格里改选，列表也必须跟着变
-    tw._apply_selection_to_view({1, 3}, "grid")
+    tw.apply_selection_to_view({1, 3}, "grid")
     assert tw.list_view.get_selected_indices() == [1, 3], \
         f"列表看不到网格里选中的行: {tw.list_view.get_selected_indices()}"
 
@@ -601,7 +601,7 @@ def test_multi_select_drag_starts_drag():
     app.processEvents()
 
     tw.model.set_selection([0, 1])
-    tw._apply_selection_to_view([0, 1], "list")
+    tw.apply_selection_to_view([0, 1], "list")
     app.processEvents()
 
     view = tw.list_view
@@ -647,7 +647,7 @@ def test_grid_multi_select_drag_starts_drag():
     app.processEvents()
 
     tw.model.set_selection([0, 1])
-    tw._apply_selection_to_view([0, 1], "grid")
+    tw.apply_selection_to_view([0, 1], "grid")
     app.processEvents()
 
     view = tw.grid_view

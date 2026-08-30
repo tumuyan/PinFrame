@@ -16,12 +16,12 @@
 | P0-2 `frames` 双源 | ✅ 已完成 | 2026-08-29，`2718d99` |
 | P1-3 双视图迁 model/view | ✅ 三片全部完成 | 2026-08-29，`2764051` 起；**信号仍声明三遍，未消除** |
 | P1-4 `BaseTimelineView` 空转 | ✅ 已解决 | 随 P1-3 第 3 片整个文件删除 |
-| P2-5 `MainWindow` 拆分 | ❌ 未动 | 4579 行 / 157 方法；函数内 import 反增至 34 处 |
+| P2-5 `MainWindow` 拆分 | 🔄 改道 | 原四模块方案试做后**撤回**（教训见实施记录）；改为最小结构修复清单 |
 | P2-6 撤销快照 | ✅ 已完成 | 2026-08-29；走**结构共享**而非评审建议的「轻量补丁」，理由见实施记录 |
 | P2-7 三层缓存 | ✅ 4 点全部完成 | 2026-08-30；字节预算 + LRU、删 `crop_rect` 死参数、导出期源图缓存（缩略图 key 去 index 已于 P1-3 完成）。**三层仍刻意不合并**，理由见实施记录 |
-| P3-8 / 9 / 10 / 11 | ❌ 全部未动 | QSettings 6 处、`version.py` 未 gitignore、1195 行死代码、导出静默吞异常 |
+| P3-8 / 9 / 10 / 11 | 🔄 P3-8 部分缓解 | 布局三个 key 的校验已收拢（见 P3-8 条目注记）；其余 QSettings 散落、`version.py` 未 gitignore、1195 行死代码、导出静默吞异常未动 |
 
-回归基线：`bash dev/run_all_checks.sh --verbose` 实测 **9/9 PASS（约 5s）**。
+回归基线：`bash dev/run_all_checks.sh --verbose` 实测 **12/12 PASS（约 5s）**。
 
 > **2026-08-30 更新：** 新增第 11 项 `dev/verify_image_cache.py`（P2-7），现为
 > **11/11 PASS（约 6s）**。
@@ -241,26 +241,62 @@ def resolve_frame_geometry(frame: FrameData, canvas_w: int, canvas_h: int) -> Fr
 > 函数内 `import` **34 处**（评审时 32）；跨层私有访问**仍是那 2 处**，仅行号位移：
 > `main_window.py:747` → `self.timeline._apply_selection_to_view(...)`、
 > `main_window.py:3234` → `self.timeline.grid_view._clear_thumbnail_cache()`。
+>
+> **2026-08-30 复核：计数修正。** AST 精确核对：4644 行 / 150 个方法；函数内
+> `import` 实为 **35 处**
+> 两处跨层私有访问现位于 `:809` / `:3299`。
+>
+> **2026-08-30 拆分试验与撤回。** 按下方原「建议方向」完整实施过一轮（四个协作
+> 者类 + 两条回归线 28+27 用例，全量回归绿），随后**整体撤回**。逐项核算的结论：
+> 声称的 7 项收益里 6 项不需要拆类（替代实现合计 ~57 行）；拆类净增 571 行源码 +
+> 1330 行测试，唯一不可替代的收益是「四个关注点可桩测试」；且制造了一类新缺陷
+> —— 状态搬走后残留的**读取**（实测 3 处，全在拖拽 / 退出这类低频路径，静态看不
+> 出、11 项全量回归也测不到，直到用户真实拖拽才崩）。
+>
+> **教训（改道依据）**：「自成一体、能独立测试」不是拆类的充分判据 —— 原建议方
+> 向里的这一句是错的。正确判据是**是否独占一份会被多处整体替换的状态**。四个候
+> 选里只有 `ProjectIO`（`ProjectData` 会被整体替换）符合，其余三个（播放状态机、
+> 历史栈、布局预设）都只是"方法聚在一起"，拆出去只买到测试粒度。
 
 两个可观测症状：
 
-- **32 处函数内 `import`**（现 34 处）—— 典型的规避循环依赖信号。例如 `EditorSettingsDialog` 在 `main_window.py:19` 顶部已导入，函数体内又导一遍。
-- **2 处跨层访问私有成员**：
-  - `main_window.py:724`（现 `:747`）→ `self.timeline._apply_selection_to_view(...)`
-  - `main_window.py:3384`（现 `:3234`）→ `self.timeline.grid_view._clear_thumbnail_cache()`
+- **35 处函数内 `import`** —— 典型的规避循环依赖信号。例如 `EditorSettingsDialog` 在 `main_window.py:19` 顶部已导入，函数体内又导一遍。**已验证无真实循环**：把 35 条全部搬到顶部后直接编译通过，说明它们只是复制粘贴残留，不是依赖环。
+- **2 处跨层访问私有成员**（**已于 2026-08-30 消除**，行号为修复前的位置）：
+  - `main_window.py:809` → `self.timeline._apply_selection_to_view(...)`
+  - `main_window.py:3299` → `self.timeline.grid_view._clear_thumbnail_cache()`
 
-  说明 `TimelineWidget` 的公开接口不够用，而非 MainWindow 写得随意。
+  说明 `TimelineWidget` 的公开接口不够用，而非 MainWindow 写得随意。故改道清单 #1
+  的做法是**补公开接口**（`apply_selection_to_view` / `clear_thumbnail_cache`），
+  而不是在 MainWindow 一侧绕。现状由第 12 项回归 `verify_project_ownership.py`
+  守住（连同"无函数内 import""project 只读"共 6 条判据）。
 
-### 建议方向
+### 改道后的任务清单（最小结构修复，不拆类）
 
-不必大重构，按「能否脱离 `QMainWindow` 独立测试」切几块出去：
+| # | 任务 | 成本 | 状态 |
+|---|---|---|---|
+| 1 | `TimelineWidget` 公开接口补齐：`apply_selection_to_view()` / `clear_thumbnail_cache()`，MainWindow 两处调用点同步更新 | ~4 行 | ✅ 2026-08-30 |
+| 2 | `ProjectData` 单持有者：`project` 改**只读** property + `_adopt_project()` 私有方法 —— 三个替换点（`__init__` / `_load_from_path` / `_reset_project_to_empty`）收敛到一处，"换对象"与"重新绑定 frames 数据源"强制同地发生 | ~35 行 | ✅ 2026-08-30 |
+| 3 | `_reset_project_to_empty` 绑定次序修复：`timeline.clear()` 必须先于 `bind_frames_provider`。原次序反了 —— 绑定后 `project.frames` 就是 timeline 的实时内容，而此刻 timeline 里还是上一个工程的帧，新工程会**短暂报告旧工程的帧** | 随 #2 | ✅ 2026-08-30（附注：两种次序的**终态相同**，验收必须在 `_adopt` 那一刻观测 `project.frames`，只断言终态是测不到的） |
+| 4 | QSettings 布局比例校验收拢：模块级 `_valid_sizes()`（两格都必须 > 0）+ `_read_sizes()` / `_write_sizes()` 两个 helper，`custom_layout_v_sizes` / `custom_layout_h_sizes` / `stack_split_sizes` 三个 key 的全部读写点走它们 —— 顺带完成 P3-8 的这部分 | ~45 行 | ✅ 2026-08-30（实测发现 custom 两个 key 原先**读写都无校验**，是三个里唯一漏防的；stack_split_sizes 原本就有内联校验，已改走 helper。写路径刻意**不** remove 旧值 —— 塌缩是布局时序的瞬时产物，删掉上一次的好值等于丢掉用户调好的比例） |
+| 5 | 函数内 `import` 清理（35 → 0）：纯搬运到顶部，已验证无循环依赖 | 0 净增 | ✅ 2026-08-30 |
+| 6 | 加回归护栏 `dev/verify_project_ownership.py`：AST 静态守住 #2/#3/#5 三条契约（project 无赋值点、无 setter、函数内 import 为 0、无跨层私有访问、bind 唯一且只在 `_adopt_project` 内、clear 行号早于 adopt） | ~230 行（含自检） | ✅ 2026-08-30 |
+| — | ~~fps_spin 重建~~ | — | **取消**。HEAD 版三个读取点读的都是 `self.fps_spin`（始终指向最新控件），自洽无缺陷。拆分试验中曾误判为缺陷并加了补偿代码 —— 那段代码只因拆分而存在 |
 
-| 拆出模块 | 职责 | 备注 |
-|---|---|---|
-| `ProjectIO` | 存取盘、相对路径规整 | 与 `ProjectData` 天然配对 |
-| `PlaybackController` | QTimer、播放范围、倒放 | 纯状态机 |
-| `LayoutManager` | 布局预设 + QSettings 校验 | 顺带解决 P3 的 key 校验分散 |
-| `HistoryCoordinator` | `_capture_snapshot` / `_apply_snapshot` / 合并窗口 | 目前已自成一体，切出几乎无摩擦 |
+**为什么 #6 不可省**：#2/#3/#5 这三条**违反后程序照常运行**，且 #3 的两种次序
+**终态完全相同**（实测反证：旧次序下 adopt 那一刻新工程报告 2 帧，终态 0 帧），
+所以任何"跑一遍看结果"的测试都测不到。只有 AST 比行号能拦住。类比第 1 项
+`check_no_duplicate_defs.py` —— 同样是"跑了也绿、但代码已经错了"。
+
+### 明确不做（防止将来走回头路）
+
+- **四个协作者类**（`PlaybackController` / `ProjectIO` / `LayoutManager` / `HistoryCoordinator`）—— 见上方撤回记录。
+- **`create_actions` / `apply_theme` / 帧编辑的类拆分** —— 实测是"体积不是复杂度"：`apply_theme` 331 行里 87%（289 行）是 QSS 字符串字面量、`create_actions` 403 行零分支纯平铺接线、帧编辑 23 个方法里 13 个 ≤27 行。行数在这里是坏指标，拆类是错的工具。
+
+### 后续独立议题（不属于 P2-5，另行立项）
+
+- `apply_theme` 的 289 行 QSS 抽成数据模块 / .qss 文件 —— **收益最高、风险最低**（纯数据搬运，不碰控制流），做完 `main_window.py` 直接到 ~3660 行。
+- `smooth_params_dialog`（122 行平铺、仅 3 个分支）抽成独立的 Dialog 类 —— 它本就不该在 `MainWindow` 里。
+- `_apply_param_smoothing`（126 行 / 26 分支 / **嵌套深度 12**）方法内分解 —— 全文件唯一真有复杂度的点。
 
 ---
 
@@ -633,6 +669,16 @@ image_cache (QImage, 按路径)  ←→  _thumbnail_cache (QPixmap, 按 path+cro
 key 名是散落的字符串字面量，无默认值注册表、无迁移机制。
 
 **建议**：加 `core/settings.py` 集中 key 常量 + 默认值 + 校验。附带好处是布局预设那几个「易损坏、需防御性过滤 `[x, 0]`」的 key（`custom_layout_v_sizes` 等）可以在一处校验，而不是散落在 `main_window` 里做防御。
+
+> **2026-08-30 部分缓解（随 P2-5 改道 #4）：** 布局预设那三个「易损坏」key 的校验
+> 已收拢到 `main_window.py` 的 `_read_sizes()` / `_write_sizes()`（内部分别调模块级
+> `_valid_sizes()`）—— 三个 key 的全部读写点都走这两个 helper。**读**时无效值当场
+> `remove`；**写**时塌缩值不落盘，且**刻意保留磁盘上原有的好值**而不是 remove ——
+> 塌缩到 0 是 Qt 布局时序的瞬时产物（两处注释都记过实测值：`h_split=[640,0]`、
+> `stack sizes=[759, 0]`），而 closeEvent 完全可能正好落在那一瞬间，删掉上一次的
+> 好值等于把用户调好的比例丢掉。坏值的清理统一交给读路径（它才是消费该值的一方）。
+> 实测还发现 custom 两个 key 原先**读写都无校验**，是三个里唯一漏防的。
+> `core/settings.py` 仍未建，其余 key 依旧是散落的字面量，本项不算完成。
 
 ### P3-9 `version.py` 被提交进仓库，但构建时会被改写
 
@@ -1205,11 +1251,14 @@ X 决定前后"是网格按行主序排布的**真实业务语义**，不是衍�
 时 `selection_changed` 仍只触发一次（第二次被 `_on_view_selection_changed` 的
 "选中未变则短路"吸收），无重复通知、无副作用。
 
-**为什么又是 25 个测试全绿**：所有选中用例都用 `_apply_selection_to_view` 或
+**为什么又是 25 个测试全绿**：所有选中用例都用 `apply_selection_to_view` 或
 `model.set_selection`，**绕过了真实鼠标路径**。这与此前拖拽那次（`test_*_drag_starts_drag`
 补的就是 `startDrag` 这一环）是同一类盲区：**用高层 API 驱动测试，就测不到"用户
 实际操作的那条路径"**。已补 `test_click_grid_row_notifies_downstream` 与
 `test_both_views_agree_on_clicked_row`。
+
+（`apply_selection_to_view` 原为私有 `_apply_selection_to_view`，2026-08-30 随
+P2-5 改道 #1 升为公开 —— MainWindow 撤销恢复时要调用它。）
 
 ### 迁移引入的回归（用户报告）
 
@@ -1307,9 +1356,22 @@ grep -rn "def get_frame_data_at_index" src/ui/ --include="*.py"
 # `extract_frame_data_from_item` 应只剩注释里的历史提及（期望 1 处注释，0 处代码）
 grep -rn "extract_frame_data_from_item" src/ --include="*.py"
 
-# P2-5 MainWindow 规模与函数内 import
-grep -c "    def " src/ui/main_window.py
-grep -c "^        from \|^            from \|^        import " src/ui/main_window.py
+# P2-5 改道后（最小结构修复 #1–#6 全部完成）复核：
+#  下面 1)~4) 已被第 12 项回归自动守住，优先直接跑它（自检 + 6 条判据）：
+python dev/verify_project_ownership.py
+
+#  想手工核对时：
+#  1) 跨层私有访问应为 0
+grep -n "timeline\._\|grid_view\._" src/ui/main_window.py
+#  2) 函数内 import 应为 0
+grep -cE "^[[:space:]]+(from|import) " src/ui/main_window.py
+#  3) 单持有者：self.project = 应无结果（backing 字段是 _project，只允许
+#     __init__ 初始化与 _adopt_project 两处赋值）
+grep -n "self\.project = " src/ui/main_window.py
+grep -n "self\._project = \|bind_frames_provider" src/ui/main_window.py
+#  4) 布局比例校验：三个 key 的读写点应全部经过 _read_sizes / _write_sizes
+#     （grep _valid_sizes 只会命中定义处与那两个 helper，命中不了调用点）
+grep -n "_read_sizes\|_write_sizes\|stack_split_sizes\|custom_layout_v_sizes\|custom_layout_h_sizes" src/ui/main_window.py
 
 # P2-7 全部四点（2026-08-30 已完成，以下为复核命令）
 #  1) get() 签名只剩 (self, file_path)；crop_rect 只应出现在解释"为什么删掉"的

@@ -2,31 +2,69 @@
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
                              QDockWidget, QToolBar, QFileDialog, QSpinBox,
                              QLabel, QPushButton, QInputDialog, QMenu, QStyle,
-                             QMessageBox, QDialog, QSplitter)
+                             QMessageBox, QDialog, QSplitter, QScrollArea,
+                             QComboBox, QDialogButtonBox, QCheckBox, QGroupBox)
 from PyQt6.QtGui import QAction, QIcon, QKeySequence, QImage, QActionGroup, QImageReader, QDesktopServices, QColor
-from PyQt6.QtCore import Qt, QTimer, QSettings, QByteArray, QUrl, QDateTime, QLocale, QProcess
+from PyQt6.QtCore import (Qt, QTimer, QSettings, QByteArray, QUrl, QDateTime, QLocale,
+                          QProcess, QSignalBlocker)
 import subprocess
 import sys
 import os
 
+from PIL import Image, ImageSequence
+
 from core import image_formats
+from core.image_cache import image_cache
 from core.version import VERSION as BUILD_VERSION, BUILD_DATE, REPO_URL as BUILD_REPO_URL
-from model.project_data import ProjectData, FrameData
+from model.project_data import ProjectData, FrameData, clear_source_image_size_cache
+from ui.asset_manager_dialog import AssetManagerDialog
 from ui.canvas import CanvasWidget
+from ui.copy_assets_dialog import CopyAssetsDialog
+from ui.duplicate_dialog import DuplicateFramesDialog
+from ui.editor_settings_dialog import (EditorSettingsDialog, load_image_editors,
+                                       save_image_editors)
+from ui.export_dialog import ExportOptionsDialog, SpriteSheetExportDialog
+from ui.image_formats_dialog import ImageFormatsDialog
 from ui.timeline import TimelineWidget
+from ui.timeline_grid_settings import TimelineGridSettingsDialog
+from ui.timeline_model import TimelineModel
 from ui.property_panel import PropertyPanel
 from ui.settings_dialog import SettingsDialog
-from ui.editor_settings_dialog import EditorSettingsDialog
-from ui.export_dialog import ExportOptionsDialog
+from ui.slice_dialog import SliceImportDialog
 from ui.onion_settings import OnionSettingsDialog
 from ui.reference_settings import ReferenceSettingsDialog
 from ui.raster_settings import RasterizationSettingsDialog
 from ui.canvas_border_settings import CanvasBorderSettingsDialog
+from ui.unused_assets_dialog import UnusedAssetsDialog
 from ui.utils.icon_generator import IconGenerator
 from ui.timeline_selection_style import apply_to_qss
 from i18n.manager import i18n
-from utils.debug_config import import_debug, layout_debug
+from utils.debug_config import import_debug, layout_debug, DebugConfig
+from utils.exporter import Exporter
 from core.history import HistoryManager
+
+
+def _valid_sizes(value):
+    """把 QSettings 里读到的布局比例规整成 `[int, int]`；不可用返回 None（P2-5 #4）。
+
+    三个布局比例 key（`stack_split_sizes` / `custom_layout_v_sizes` /
+    `custom_layout_h_sizes`）存的都是"两个 pane 的像素比例"。Qt 有时会持久化出
+    `[x, 0]` 这种塌缩值；一旦被 reuse，另一格就**永远**是 0（用户看到的是面板消失，
+    且重启也回不来）。校验收拢在这里：两格都必须 > 0。
+
+    所有这三个 key 的**读**都必须走本函数；**写**也先过一遍（无效值不落盘），
+    否则坏值会一直在磁盘上被反复读到。QSettings 读回来通常是字符串列表，
+    所以 int() 要能吃字符串。
+    """
+    if not value:
+        return None
+    try:
+        parsed = [int(x) for x in value]
+    except (TypeError, ValueError):
+        return None
+    if len(parsed) != 2 or parsed[0] <= 0 or parsed[1] <= 0:
+        return None
+    return parsed
 
 # 哨兵：区分"没传这个参数"与"显式传了 None"。
 # `_capture_snapshot(reuse_from=None)` 的 None 表示"不用任何复用基准"（全量克隆），
@@ -64,7 +102,6 @@ class MainWindow(QMainWindow):
         self._editor_token_seq = 0
         
         # Set Window Icon
-        import sys
         if getattr(sys, 'frozen', False):
             icon_path = os.path.join(sys._MEIPASS, "src", "resources", "icon.ico")
         else:
@@ -78,8 +115,9 @@ class MainWindow(QMainWindow):
         # 设置窗口为最大化状态
         # self.setWindowState(Qt.WindowState.WindowMaximized)
         
-        # Data
-        self.project = ProjectData()
+        # Data —— 直接赋 backing 字段（此刻 timeline 还不存在，绑定稍后由
+        # `_adopt_project` 完成，见下方同名调用）。
+        self._project = ProjectData()
         
         # Central Widget (Canvas)
         self.canvas = CanvasWidget()
@@ -97,7 +135,8 @@ class MainWindow(QMainWindow):
         # 把工程的 frames 读取绑定到 timeline 模型（唯一权威数据源）。
         # 绑定后 project.frames 恒为实时值，保存/导出/素材类功能都不再需要
         # （也不允许）手工 `project.frames = timeline.get_all_frames()`。
-        self.project.bind_frames_provider(self.timeline.get_all_frames)
+        # 绑定只发生在 `_adopt_project` 一处（P2-5 #2）。
+        self._adopt_project(self._project)
         self.timeline.selection_changed.connect(self.on_selection_changed)
         self.timeline.order_changed.connect(self.on_order_changed)
         # 顺序变更**前**捕获撤销快照。顺序如今是在拖拽当场改模型的（视图只算出
@@ -806,7 +845,7 @@ class MainWindow(QMainWindow):
             selected_frames = [live_frames[i] for i in target_indices]
             self.canvas.set_selected_frames(selected_frames)
             self.property_panel.set_selection(selected_frames)
-            self.timeline._apply_selection_to_view(target_indices)
+            self.timeline.apply_selection_to_view(target_indices)
         else:
             self.timeline.model.clear_selection()
             self.canvas.set_selected_frames([])
@@ -1643,10 +1682,6 @@ class MainWindow(QMainWindow):
 
     def show_debug_control_dialog(self):
         """Show dialog to control debug output"""
-        from PyQt6.QtWidgets import (QDialog, QVBoxLayout, QLabel, QScrollArea,
-                                      QWidget, QDialogButtonBox, QCheckBox)
-        from PyQt6.QtCore import Qt
-        from utils.debug_config import DebugConfig
 
         config = DebugConfig()
 
@@ -1811,11 +1846,9 @@ class MainWindow(QMainWindow):
 
     def open_editor_settings(self):
         """打开外部图像编辑器设置（全局设置，非工程设置）。"""
-        from ui.editor_settings_dialog import EditorSettingsDialog
         dlg = EditorSettingsDialog(self)
         if dlg.exec():
             self.image_editors = dlg.get_editors()
-            from ui.editor_settings_dialog import save_image_editors
             save_image_editors(self.image_editors)
             # 推送时间轴右键菜单 + 重建图像菜单子菜单
             self._push_editors_to_timeline()
@@ -2019,7 +2052,6 @@ class MainWindow(QMainWindow):
 
     def duplicate_frames_dialog(self):
         """Show dialog for advanced duplication with count and mode options"""
-        from ui.duplicate_dialog import DuplicateFramesDialog
 
         # Use unified interface to get selected indices
         indices = self.timeline.get_selected_indices_from_model()
@@ -2606,7 +2638,6 @@ class MainWindow(QMainWindow):
         # Try to get from file
         if os.path.exists(frame.file_path):
             try:
-                from PIL import Image
                 with Image.open(frame.file_path) as img:
                     return img.size
             except:
@@ -2697,7 +2728,6 @@ class MainWindow(QMainWindow):
 
     def smooth_params_dialog(self):
         """Open dialog to smooth parameters between first and last selected frames"""
-        from PyQt6.QtWidgets import QDialog, QVBoxLayout, QComboBox, QLabel, QDialogButtonBox, QCheckBox, QGroupBox
 
         selected_frames = self.timeline.get_selected_frames()
         if not selected_frames or len(selected_frames) < 2:
@@ -3028,7 +3058,6 @@ class MainWindow(QMainWindow):
         self._flush_pending_history()
         before = self._capture_snapshot()
         # Reverse selected frames through model
-        from ui.timeline_model import TimelineModel
         if isinstance(self.timeline.model, TimelineModel):
             self.timeline.model.reverse_frames(indices)
         else:
@@ -3086,7 +3115,6 @@ class MainWindow(QMainWindow):
         self.is_playing = False
         self.timer.stop()
 
-        from PyQt6.QtCore import QSignalBlocker
         with QSignalBlocker(self.play_action), QSignalBlocker(self.rev_play_action):
             self.play_action.setText(i18n.t("btn_play"))
             self.play_action.setChecked(False)
@@ -3118,7 +3146,6 @@ class MainWindow(QMainWindow):
             
             # Update UI
             # Update UI
-            from PyQt6.QtCore import QSignalBlocker
             with QSignalBlocker(self.play_action), QSignalBlocker(self.rev_play_action):
                 self.play_action.setText(i18n.t("btn_pause"))
                 self.play_action.setChecked(True)
@@ -3152,7 +3179,6 @@ class MainWindow(QMainWindow):
             
             # Update UI
             # Update UI
-            from PyQt6.QtCore import QSignalBlocker
             with QSignalBlocker(self.play_action), QSignalBlocker(self.rev_play_action):
                 self.play_action.setText(i18n.t("btn_play"))
                 self.play_action.setChecked(False)
@@ -3249,27 +3275,46 @@ class MainWindow(QMainWindow):
             
         self._load_from_path(path)
 
+    # ------------------------------------------------------------------
+    # 工程对象的唯一持有点（P2-5 改道后的最小结构修复 #2/#3）
+    # ------------------------------------------------------------------
+    # `project` 是**只读**属性。`ProjectData` 会被整体替换（新建 / 载入），若允许
+    # 随处赋值，任何持有旧引用的协作者都会静默读到过期工程对象（与 P0-2 的 frames
+    # 双源同形）。替换的唯一途径是 `_adopt_project()` —— 它把"换对象"与"重新绑定
+    # frames 活跃数据源"强制做成一步，二者不可能只发生其一。
+    @property
+    def project(self) -> ProjectData:
+        """当前工程对象（**只读**）。替换请走 `_adopt_project()`。"""
+        return self._project
+
+    def _adopt_project(self, project):
+        """接管一个新工程对象：设为当前工程，并把 frames 活跃数据源绑定到 timeline。
+
+        调用方必须保证此刻 timeline 里没有旧工程的帧 —— 即**先** `timeline.clear()`
+        **再**调用本方法：绑定之后 `project.frames` 就是 timeline 的实时内容，
+        先绑定会让新工程短暂地"报告上一个工程的帧"（#3 修的就是这个次序）。
+
+        `__init__` 里工程对象先于 timeline 存在，那里直接赋 `self._project` 后、
+        在 timeline 就位时以 `self._adopt_project(self._project)` 完成绑定 ——
+        绑定仍然只发生在本方法内。
+        """
+        self._project = project
+        project.bind_frames_provider(self.timeline.get_all_frames)
+
     def _load_from_path(self, path):
         import_debug(f"[Import] Loading project from: {path}")
         try:
             with open(path, 'r') as f:
                 json_str = f.read()
                 
-            self.project = ProjectData.from_json(json_str, path)
+            project = ProjectData.from_json(json_str, path)
             # 取出载入的静态帧列表，供下面的填充循环使用。
-            # 绑定活跃数据源要等到 timeline.clear() 之后才做（见下方）：绑定后
-            # project.frames 就是 timeline 的实时内容，而 clear 之前那还是【上一个
-            # 工程】的帧——让新工程对象报告旧工程的帧是错的语义。
-            loaded_frames = self.project.frames
+            # 绑定活跃数据源要等到 timeline.clear() 之后的 `_adopt_project()`：
+            # 绑定后 project.frames 就是 timeline 的实时内容，而 clear 之前那还是
+            # 【上一个工程】的帧——让新工程对象报告旧工程的帧是错的语义。
+            loaded_frames = project.frames
             self.current_project_path = path
             self.add_recent_project(path)
-            
-            # Update UI
-            self.fps_spin.setValue(self.project.fps)
-            self.canvas.set_project_settings(self.project.width, self.project.height)
-            self.property_panel.set_project_info(self.project.width, self.project.height)
-
-            # Rasterization settings are now global, don't load from project
 
             self.timeline.clear()
             # 参考帧**不持久化**（工程 JSON 里没有这个字段，见 ProjectData.to_json），
@@ -3278,10 +3323,28 @@ class MainWindow(QMainWindow):
             # `MainWindow.reference_frame`，不清就会继续画**上一个工程**的帧对象。
             # 放在帧列表为空时清最干净 —— 此刻没有任何行需要刷新。
             self.clear_reference_frame()
-            # timeline 已清空，此刻才绑定：从这里起 project.frames 就是新工程的实时
-            # 内容，不存在"新工程对象报告旧工程帧"的窗口。填充循环必须用
+            # timeline 已清空，此刻才接管新工程：从这里起 project.frames 就是新工程
+            # 的实时内容，不存在"新工程对象报告旧工程帧"的窗口。填充循环必须用
             # loaded_frames——绑定后拿 project.frames 驱动循环会边遍历边追加。
-            self.project.bind_frames_provider(self.timeline.get_all_frames)
+            self._adopt_project(project)
+
+            # Update UI —— 必须在 `_adopt_project` **之后**：fps_spin.setValue 会
+            # 同步触发 `update_fps`，其守卫 `self.project.fps != fps` 只有在
+            # self.project 已是新工程时才为 False；若还在旧工程上，这里会污染即将
+            # 被丢弃的旧对象并多记一条历史。
+            #
+            # 另两条（canvas / property_panel 的尺寸）本身对次序不敏感，是**搭车**
+            # 一起挪过来的 —— 为的是与 `_reset_project_to_empty` 保持同一形态，
+            # 别被误读成刻意的时序依赖。代价是 `timeline.clear()` 期间画布与属性
+            # 面板仍短暂显示上一个工程的尺寸；已确认安全：clear() 只触发
+            # `selection_changed`，其空选中分支不读 `self.project.frames`，
+            # MainWindow 也没有连接 `frames_removed`。
+            self.fps_spin.setValue(project.fps)
+            self.canvas.set_project_settings(project.width, project.height)
+            self.property_panel.set_project_info(project.width, project.height)
+
+            # Rasterization settings are now global, don't load from project
+
             for frame in loaded_frames:
                 w, h = 0, 0
                 if frame.crop_rect:
@@ -3296,7 +3359,7 @@ class MainWindow(QMainWindow):
                 self.timeline.add_frame(os.path.basename(frame.file_path), frame)
 
             # Clear thumbnail cache after loading project and refresh grid view
-            self.timeline.grid_view._clear_thumbnail_cache()
+            self.timeline.clear_thumbnail_cache()
             self.timeline.grid_view.refresh_all_items()
 
             # 载入后默认选中第一帧 —— 用 setCurrentRow 而不是 set_reference_frame：
@@ -3326,7 +3389,6 @@ class MainWindow(QMainWindow):
         
     def check_unsaved_changes(self):
         if self.is_dirty:
-            from PyQt6.QtWidgets import QMessageBox
             msg_box = QMessageBox(self)
             msg_box.setWindowTitle(i18n.t("dlg_unsaved_title"))
             msg_box.setText(i18n.t("msg_unsaved_changes"))
@@ -3368,9 +3430,12 @@ class MainWindow(QMainWindow):
     def _reset_project_to_empty(self):
         """Reset the current project to an empty state without any prompts."""
         # Reset project to empty state
-        self.project = ProjectData()
-        # 新建的 ProjectData 需要重新绑定活跃数据源（见 __init__ 中的同名调用）
-        self.project.bind_frames_provider(self.timeline.get_all_frames)
+        #
+        # 先清 timeline 再接管新工程（P2-5 #3 次序修复）：绑定之后 project.frames
+        # 就是 timeline 的实时内容。原实现先绑定（此刻 timeline 里还是**上一个
+        # 工程**的帧）、末尾才 clear —— 两者之间新工程会"报告上一个工程的帧"。
+        self.timeline.clear()
+        self._adopt_project(ProjectData())
         self.fps_spin.setValue(self.project.fps)
         self.canvas.set_project_settings(self.project.width, self.project.height)
         self.property_panel.set_project_info(self.project.width, self.project.height)
@@ -3385,8 +3450,7 @@ class MainWindow(QMainWindow):
         )
         self.update_rasterization_ui()
 
-        # Clear timeline
-        self.timeline.clear()
+        # （timeline.clear() 已提前到本方法开头 —— 见 `_adopt_project` 的次序要求）
         # 与 _load_from_path 同理：参考帧不持久化，新建/关闭工程必须连 MainWindow
         # 这份一起清（timeline.clear() 管不到它），否则画布继续画上一个工程的帧。
         self.clear_reference_frame()
@@ -3458,7 +3522,6 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------
     def _load_image_editors(self):
         """从 QSettings 加载外部图像编辑器配置。"""
-        from ui.editor_settings_dialog import load_image_editors
         return load_image_editors()
 
     def _push_editors_to_timeline(self):
@@ -3585,8 +3648,6 @@ class MainWindow(QMainWindow):
 
     def _reload_edited_images(self, paths):
         """定向失效并重载指定的源图路径（图片缓存、缩略图缓存、画布）。"""
-        from core.image_cache import image_cache
-        from model.project_data import clear_source_image_size_cache
         abs_paths = [os.path.abspath(p) for p in paths]
         for p in abs_paths:
             image_cache.remove(p)
@@ -3648,6 +3709,43 @@ class MainWindow(QMainWindow):
             )
         )
 
+    # ------------------------------------------------------------------
+    # QSettings 里三个布局比例 key 的读写（P2-5 #4；顺带完成 P3-8 的这部分）
+    # ------------------------------------------------------------------
+    # 三个 key（stack_split_sizes / custom_layout_v_sizes / custom_layout_h_sizes）
+    # 存的全是"两个 pane 的像素比例"。读写都要过 `_valid_sizes`：Qt 会持久化出
+    # `[x, 0]` 这类塌缩值，一旦被 reuse，另一格就**永远**是 0（用户看到的是面板
+    # 消失，且重启也回不来）。三个 key 的全部读写点都必须走这两个 helper，
+    # 否则校验会被绕过。
+    def _read_sizes(self, key):
+        """读一个布局比例；无效值当场丢弃并返回 None（由调用方回落到默认值）。
+
+        "丢弃"而非"只返回 None"是刻意的：坏值留在磁盘上会被每次进入该布局时
+        反复读到。
+        """
+        raw = self.settings.value(key)
+        sizes = _valid_sizes(raw)
+        if raw and sizes is None:
+            self.settings.remove(key)
+        return sizes
+
+    def _write_sizes(self, key, sizes):
+        """写一个布局比例；塌缩值（[x, 0]）不落盘。
+
+        无效时**刻意保留**磁盘上已有的旧值，而不是 `remove`：塌缩到 0 往往是 Qt
+        布局时序的瞬时产物（见 `_enter_custom_layout` 里 "observed h_split=[640,0]"
+        与 `_enter_stack_dock` 里 "observed sizes=[759, 0]" 两条注释），而
+        closeEvent 完全可能正好落在那一瞬间 —— 此时删掉上一次的【好值】等于把用户
+        调好的比例丢掉，下次进来只能回落默认。
+
+        坏值的清理交给 `_read_sizes`：只有它才是"正在消费这个值"的地方，并且它在
+        返回 None（调用方回落默认值）的同时把坏值 `remove` 掉，语义自洽。
+        """
+        parsed = _valid_sizes(sizes)
+        if parsed is not None:
+            self.settings.setValue(key, parsed)
+        return parsed
+
     def _reset_to_independent_docks(self):
         """Make sure timeline & property panel live inside their OWN docks and the
         stacked dock is hidden. Safe to call repeatedly / from any state."""
@@ -3655,9 +3753,7 @@ class MainWindow(QMainWindow):
         # and setWidget() will reparent it out into its independent dock.
         if self.timeline.parent() is self.stack_splitter or \
                 self.property_panel.parent() is self.stack_splitter:
-            s = self.stack_splitter.sizes()
-            if len(s) == 2 and s[0] > 0 and s[1] > 0:
-                self.settings.setValue("stack_split_sizes", s)
+            self._write_sizes("stack_split_sizes", self.stack_splitter.sizes())
         if self.timeline.parent() is self.stack_splitter:
             self.timeline_dock.setWidget(self.timeline)
         if self.property_panel.parent() is self.stack_splitter:
@@ -3691,26 +3787,14 @@ class MainWindow(QMainWindow):
         # Calling setSizes() before layout lets Qt recompute from each child's
         # sizeHint, which collapsed one pane to 0 (observed sizes=[759, 0]).
         # Use explicit pixel halves of the available height so neither pane is 0.
-        saved = self.settings.value("stack_split_sizes")
-        from PyQt6.QtCore import QTimer
+        saved = self._read_sizes("stack_split_sizes")
+
         def _apply_stack_sizes():
             h = self.stack_splitter.height()
             if h < 2:
                 # Layout not settled yet; use a sane minimum so neither pane is 0.
                 h = 600
-            sizes = None
-            # Only trust a saved ratio if BOTH panes are > 0 (a collapsed [x, 0]
-            # value would otherwise be persisted and reused forever).
-            if saved:
-                parsed = [int(x) for x in saved]
-                if len(parsed) == 2 and parsed[0] > 0 and parsed[1] > 0:
-                    sizes = parsed
-                else:
-                    # Drop the corrupted saved ratio so it isn't reused.
-                    self.settings.remove("stack_split_sizes")
-            if sizes is None:
-                sizes = [h // 2, h - h // 2]
-            self.stack_splitter.setSizes(sizes)
+            self.stack_splitter.setSizes(saved or [h // 2, h - h // 2])
             layout_debug("_enter_stack_dock: area=%s applied stack sizes=%s" % (
                 self.dockWidgetArea(self.stack_dock), self.stack_splitter.sizes()))
         QTimer.singleShot(0, _apply_stack_sizes)
@@ -3775,7 +3859,6 @@ class MainWindow(QMainWindow):
         self.settings.setValue("last_layout", preset)
         # Geometry is recomputed asynchronously; dump again after the event loop
         # tick so we capture the applied layout, not the pre-layout state.
-        from PyQt6.QtCore import QTimer
         QTimer.singleShot(0, lambda: self._dump_layout_state("after-" + preset))
 
     def _enter_custom_layout(self):
@@ -3837,8 +3920,10 @@ class MainWindow(QMainWindow):
         default_h = [int(win_w * 2 / 3), int(win_w * 1 / 3)]
         default_v = [int(win_h * 3 / 4), int(win_h * 1 / 4)]
 
-        v_sizes = self.settings.value("custom_layout_v_sizes")
-        h_sizes = self.settings.value("custom_layout_h_sizes")
+        # 读回时必须校验（塌缩值 [x, 0] 会让属性列永远为 0）：无效值当场丢弃。
+        # 这里原先**没有任何校验**，是三个比例 key 里唯一漏防的（P2-5 #4）。
+        v_sizes = self._read_sizes("custom_layout_v_sizes")
+        h_sizes = self._read_sizes("custom_layout_h_sizes")
 
         self.setCentralWidget(h_split)
         self.timeline.show()
@@ -3850,18 +3935,12 @@ class MainWindow(QMainWindow):
         # property column to 0 (observed h_split=[640,0]). Delay one tick so the
         # initial layout is settled, then apply our sizes.
         def _apply_split_sizes():
-            if v_sizes:
-                v_split.setSizes([int(x) for x in v_sizes])
-            else:
-                v_split.setSizes(default_v)
-            if h_sizes:
-                h_split.setSizes([int(x) for x in h_sizes])
-            else:
-                h_split.setSizes(default_h)
+            # v_sizes / h_sizes 已由 _read_sizes 规整（或 None → 用默认值）
+            v_split.setSizes(v_sizes or default_v)
+            h_split.setSizes(h_sizes or default_h)
             layout_debug("_enter_custom_layout: applied h_split sizes=%s v_split sizes=%s" % (
                 h_split.sizes(), v_split.sizes()))
 
-        from PyQt6.QtCore import QTimer
         QTimer.singleShot(0, _apply_split_sizes)
 
     def _exit_custom_layout_if_needed(self):
@@ -3871,9 +3950,11 @@ class MainWindow(QMainWindow):
         self._custom_layout_active = False
         layout_debug("_exit_custom_layout_if_needed: reparenting widgets back")
 
-        # Persist splitter sizes for next time.
-        self.settings.setValue("custom_layout_v_sizes", self._custom_v_splitter.sizes())
-        self.settings.setValue("custom_layout_h_sizes", self._custom_h_splitter.sizes())
+        # Persist splitter sizes for next time —— 塌缩值（[x, 0]）不落盘
+        # （保留上一次的好值，不 remove：详见 _write_sizes 的 docstring）。
+        for key, sizes in (("custom_layout_v_sizes", self._custom_v_splitter.sizes()),
+                           ("custom_layout_h_sizes", self._custom_h_splitter.sizes())):
+            self._write_sizes(key, sizes)
 
         # Reparent the detached widgets back into their docks FIRST. setWidget()
         # reparents them out of the splitter tree, so that deleting the splitters
@@ -4120,8 +4201,11 @@ class MainWindow(QMainWindow):
                 # here, so we never store a stale/empty dock layout. When restarting
                 # in custom mode, closeEvent's saved sizes + last_layout="custom"
                 # are enough to rebuild it.
-                self.settings.setValue("custom_layout_v_sizes", self._custom_v_splitter.sizes())
-                self.settings.setValue("custom_layout_h_sizes", self._custom_h_splitter.sizes())
+                # 塌缩值不落盘（与 _exit_custom_layout_if_needed 同一规则，
+                # 且保留上一次的好值 —— 详见 _write_sizes 的 docstring）。
+                for key, sizes in (("custom_layout_v_sizes", self._custom_v_splitter.sizes()),
+                                   ("custom_layout_h_sizes", self._custom_h_splitter.sizes())):
+                    self._write_sizes(key, sizes)
             else:
                 self.settings.setValue("windowState", self.saveState())
             self.settings.setValue("recent_projects", self.recent_projects)
@@ -4155,7 +4239,6 @@ class MainWindow(QMainWindow):
         
         import_debug(f"[Import] Importing sprite sheet: {file}")
             
-        from ui.slice_dialog import SliceImportDialog
         dlg = SliceImportDialog(file, self)
         if not dlg.exec():
             return
@@ -4182,7 +4265,6 @@ class MainWindow(QMainWindow):
             if not os.path.exists(slice_dir):
                 os.makedirs(slice_dir)
                 
-            from PIL import Image
             src = Image.open(file).convert("RGBA")
             
             for i, crop_item in enumerate(crops):
@@ -4214,7 +4296,6 @@ class MainWindow(QMainWindow):
         before = self._capture_snapshot()
             
         try:
-            from PIL import Image, ImageSequence
             gif = Image.open(file)
             
             base_dir = os.path.dirname(file)
@@ -4255,14 +4336,12 @@ class MainWindow(QMainWindow):
             # Use unified interface to get selected indices
             return sorted(self.timeline.get_selected_indices_from_model())
         elif range_mode == "custom":
-            from utils.exporter import Exporter
             return Exporter.parse_range_string(custom_range, self.timeline.get_frame_count())
         else: # "all"
             # Return all non-disabled frames' indices
             return [i for i, f in enumerate(self.timeline.get_all_frames()) if not f.is_disabled]
 
     def export_sprite_sheet(self):
-        from ui.export_dialog import SpriteSheetExportDialog
         dlg = SpriteSheetExportDialog(self)
         dlg.cols_spin.setValue(self.project.export_sheet_cols)
         dlg.padding_spin.setValue(self.project.export_sheet_padding)
@@ -4288,7 +4367,6 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(i18n.t("msg_no_frames_to_export", "No frames to export"), 3000)
             return
 
-        from utils.exporter import Exporter
         try:
             Exporter.export_sprite_sheet(self.project, file, frame_indices=indices, bg_color=self.project.export_bg_color)
             self.statusBar().showMessage(i18n.t("msg_export_complete"), 3000)
@@ -4302,7 +4380,6 @@ class MainWindow(QMainWindow):
             self.stop_playback()
         
         # Options
-        from ui.export_dialog import ExportOptionsDialog
         dlg = ExportOptionsDialog(self)
         # Load persistent options
         dlg.use_original_names.setChecked(self.project.export_use_orig_names)
@@ -4327,8 +4404,6 @@ class MainWindow(QMainWindow):
              self.statusBar().showMessage(i18n.t("msg_no_frames_to_export"), 3000)
              return
 
-        from utils.exporter import Exporter
-        from PyQt6.QtWidgets import QApplication
 
         if export_type == "sequence":
             start_dir = self.project.last_export_path if self.project.last_export_path else ""
@@ -4391,7 +4466,6 @@ class MainWindow(QMainWindow):
             msg_box.exec()
             return
             
-        from ui.copy_assets_dialog import CopyAssetsDialog
         dlg = CopyAssetsDialog(self.project, self.current_project_path, self)
         if dlg.exec():
             self._flush_pending_history()
@@ -4412,7 +4486,6 @@ class MainWindow(QMainWindow):
             msg_box.exec()
             return
 
-        from ui.asset_manager_dialog import AssetManagerDialog
         dlg = AssetManagerDialog(self.project, self,
                                  on_delete=self._remove_assets_refs,
                                  on_replace=self._replace_asset,
@@ -4477,7 +4550,6 @@ class MainWindow(QMainWindow):
         indices = [i for i, f in enumerate(all_frames) if _norm(f.file_path) == old_norm]
 
         if indices:
-            from model.project_data import clear_source_image_size_cache
             for i in indices:
                 self.timeline.get_frame_at(i).file_path = new_abs
             clear_source_image_size_cache(old_path)
@@ -4509,13 +4581,11 @@ class MainWindow(QMainWindow):
             msg_box.exec()
             return
 
-        from ui.unused_assets_dialog import UnusedAssetsDialog
         dlg = UnusedAssetsDialog(self.project, self.current_project_path, self)
         dlg.exec()
 
     def open_image_formats(self):
         """打开图像格式设置对话框。"""
-        from ui.image_formats_dialog import ImageFormatsDialog
         dlg = ImageFormatsDialog(self)
         dlg.exec()
 
@@ -4602,7 +4672,6 @@ class MainWindow(QMainWindow):
     
     def open_timeline_grid_settings(self):
         """Open grid view settings dialog"""
-        from ui.timeline_grid_settings import TimelineGridSettingsDialog
 
         dlg = TimelineGridSettingsDialog(
             self,

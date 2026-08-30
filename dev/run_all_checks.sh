@@ -44,6 +44,12 @@
 #    覆盖先定义，前者从此是死代码。`MainWindow` 曾经躺着 5 份这样的死代码
 #    （configure_reference_settings ×3、update_onion_state ×3）。
 #
+# 5. 第 12 项（ProjectData 持有契约）与第 1 项同族：纯标准库 AST、~0.1s、拦的也是
+#    "跑了也测不到"的那类。它排在最末**仅仅是为了不给 2~11 项重新编号** ——
+#    脚本里多处注释按序号指认检查项，重排的收益远小于改错一处引用带来的风险。
+#    它守的是 P2-5 改道后的三条约定（project 只读 / clear 先于 adopt / 无跨层私有
+#    访问），其中"次序"那条两种写法的**终态完全相同**，只有 AST 比行号能拦住。
+#
 # ---------------------------------------------------------------------------
 # 关于第 3 项的基线语义（重要）
 # ---------------------------------------------------------------------------
@@ -230,8 +236,8 @@ echo "============================================================"
 FAILED=0
 ABORTED=0
 
-if [ "$ABORTED" -eq 0 ]; then run_check "1/11 重复定义（结构性）"      "$PY" dev/check_no_duplicate_defs.py          || FAILED=1; fi
-if [ "$ABORTED" -eq 0 ]; then run_check "2/11 语法编译 main.py+src"    "$PY" -m compileall -q main.py src            || FAILED=1; fi
+if [ "$ABORTED" -eq 0 ]; then run_check "1/12 重复定义（结构性）"      "$PY" dev/check_no_duplicate_defs.py          || FAILED=1; fi
+if [ "$ABORTED" -eq 0 ]; then run_check "2/12 语法编译 main.py+src"    "$PY" -m compileall -q main.py src            || FAILED=1; fi
 
 # compileall 刚把 pyc 写满了 src/ 与 dev/，3~11 项不清掉就会读这批而非源码。
 # 同样失败即中止。根目录 __pycache__（compileall 为 main.py 生成的）刻意不动：
@@ -241,15 +247,16 @@ if ! purge_bytecode; then
     ABORTED=1
 fi
 
-if [ "$ABORTED" -eq 0 ]; then run_check "3/11 几何与模型单测"          "$PY" dev/test_transform.py                   || FAILED=1; fi
-if [ "$ABORTED" -eq 0 ]; then run_check "4/11 渲染像素哈希 --compare"   "$PY" dev/transform_baseline.py --compare     || FAILED=1; fi
-if [ "$ABORTED" -eq 0 ]; then run_check "5/11 双视图同步与拖拽"         "$PY" dev/verify_timeline_view_sync.py        || FAILED=1; fi
-if [ "$ABORTED" -eq 0 ]; then run_check "6/11 网格视图"                 "$PY" dev/verify_grid_view.py                 || FAILED=1; fi
-if [ "$ABORTED" -eq 0 ]; then run_check "7/11 MainWindow 接线：重排"    "$PY" dev/smoke_reorder.py                    || FAILED=1; fi
-if [ "$ABORTED" -eq 0 ]; then run_check "8/11 MainWindow 接线：参考帧"  "$PY" dev/smoke_reference_frame.py            || FAILED=1; fi
-if [ "$ABORTED" -eq 0 ]; then run_check "9/11 选中配色跨平台一致"       "$PY" dev/verify_selection_style.py           || FAILED=1; fi
-if [ "$ABORTED" -eq 0 ]; then run_check "10/11 撤销快照：增量与共享"    "$PY" dev/verify_undo_snapshot.py             || FAILED=1; fi
-if [ "$ABORTED" -eq 0 ]; then run_check "11/11 图片缓存与导出缓存"      "$PY" dev/verify_image_cache.py               || FAILED=1; fi
+if [ "$ABORTED" -eq 0 ]; then run_check "3/12 几何与模型单测"          "$PY" dev/test_transform.py                   || FAILED=1; fi
+if [ "$ABORTED" -eq 0 ]; then run_check "4/12 渲染像素哈希 --compare"   "$PY" dev/transform_baseline.py --compare     || FAILED=1; fi
+if [ "$ABORTED" -eq 0 ]; then run_check "5/12 双视图同步与拖拽"         "$PY" dev/verify_timeline_view_sync.py        || FAILED=1; fi
+if [ "$ABORTED" -eq 0 ]; then run_check "6/12 网格视图"                 "$PY" dev/verify_grid_view.py                 || FAILED=1; fi
+if [ "$ABORTED" -eq 0 ]; then run_check "7/12 MainWindow 接线：重排"    "$PY" dev/smoke_reorder.py                    || FAILED=1; fi
+if [ "$ABORTED" -eq 0 ]; then run_check "8/12 MainWindow 接线：参考帧"  "$PY" dev/smoke_reference_frame.py            || FAILED=1; fi
+if [ "$ABORTED" -eq 0 ]; then run_check "9/12 选中配色跨平台一致"       "$PY" dev/verify_selection_style.py           || FAILED=1; fi
+if [ "$ABORTED" -eq 0 ]; then run_check "10/12 撤销快照：增量与共享"    "$PY" dev/verify_undo_snapshot.py             || FAILED=1; fi
+if [ "$ABORTED" -eq 0 ]; then run_check "11/12 图片缓存与导出缓存"      "$PY" dev/verify_image_cache.py               || FAILED=1; fi
+if [ "$ABORTED" -eq 0 ]; then run_check "12/12 ProjectData 持有契约"    "$PY" dev/verify_project_ownership.py         || FAILED=1; fi
 
 # ---- 基线未改写校验 ---------------------------------------------------------
 BASELINE_AFTER="$("$PY" -c "import hashlib,sys; print(hashlib.md5(open(sys.argv[1],'rb').read()).hexdigest())" "$BASELINE_JSON")"
@@ -317,6 +324,15 @@ if [ "$FAILED" -ne 0 ]; then
     # 反引号在双引号里会被 bash 当**命令替换**执行，ASCII 双引号则会提前闭合字符串
     # —— 两者都会让这段提示在真失败时输出残缺并往 stderr 喷 command not found。
     # 故提示文字一律不用反引号包裹标识符，且整段拆成单行 echo（与周围风格一致）。
+    echo "  - 若第 12 项失败（ProjectData 持有契约）：6 条判据各自对应一个改动点。"
+    echo "      · self.project = ... → project 是只读 property，替换工程对象必须走"
+    echo "        _adopt_project()，它把【换对象】与【重新绑定 frames 数据源】绑成一步；"
+    echo "      · 次序反了 → 必须先 timeline.clear() 再 _adopt_project()。绑定后"
+    echo "        project.frames 就是 timeline 的实时内容，先绑定会让新工程短暂报告"
+    echo "        【上一个工程】的帧。两种次序的终态相同，跑了看结果测不出来；"
+    echo "      · 跨层私有访问 → 说明 TimelineWidget 的公开接口不够用，去补公开方法，"
+    echo "        不要在 MainWindow 里伸手进别人的私有成员；"
+    echo "      · 函数内 import → 一律提到模块顶部（P2-5 已清到 0，别再往回加）。"
     echo "  - 若第 11 项失败（缓存）：image_cache.py 与 exporter.py 的"
     echo "     SourceImageCache 都是「字节预算 + LRU」。退回按张数或 FIFO 功能完全正常，"
     echo "     只是内存/性能退化，肉眼几乎看不出来，所以只能靠这一项拦。"

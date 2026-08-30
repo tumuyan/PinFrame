@@ -256,7 +256,7 @@ class TimelineWidget(QStackedWidget):
             self.grid_view.blockSignals(True)
 
         # Only update the currently active view
-        self._apply_selection_to_view(selected_indices)
+        self.apply_selection_to_view(selected_indices)
 
         # Unblock signals
         if self.current_view_mode == "list":
@@ -315,8 +315,18 @@ class TimelineWidget(QStackedWidget):
     def clear(self):
         """Clear all data"""
         self.model.clear()  # 发 frames_removed → 适配层清行 → 两视图自动跟随
-        # 只需清缩略图缓存 —— 那属于网格视图（列表视图没有缩略图）。
-        # 迁移前两视图各有一个 clear_view()，列表那个迁到 model/view 后退化为空，已删。
+        self.clear_thumbnail_cache()
+
+    def clear_thumbnail_cache(self):
+        """清空网格缩略图缓存。
+
+        列表视图没有缩略图，所以只有网格那一份需要清（迁移前两视图各有一个
+        clear_view()，列表那个迁到 model/view 后退化为空，已删）。
+
+        **公开**接口：载入工程后 `MainWindow` 要清它，此前只能跨层调
+        `grid_view._clear_thumbnail_cache()` —— 那是"公开接口不够用"的症状
+        （见 `architecture_review.md` 的 P2-5）。
+        """
         self.grid_view.clear_view()
 
     def set_reference_frame(self, frame_data: Optional[FrameData]):
@@ -415,7 +425,7 @@ class TimelineWidget(QStackedWidget):
         """
         selected_indices = set(self.model.get_selected_indices())
         self._block_all_signals()
-        self._apply_selection_to_view(selected_indices, self.current_view_mode)
+        self.apply_selection_to_view(selected_indices, self.current_view_mode)
         self._unblock_all_signals()
 
     def _rebuild_list_view(self):
@@ -427,7 +437,7 @@ class TimelineWidget(QStackedWidget):
         selected_indices = set(self.model.get_selected_indices())
         if selected_indices:
             self.list_view.blockSignals(True)
-            self._apply_selection_to_view(selected_indices, "list")
+            self.apply_selection_to_view(selected_indices, "list")
             self.list_view.blockSignals(False)
 
     def _rebuild_grid_view(self):
@@ -456,8 +466,12 @@ class TimelineWidget(QStackedWidget):
         self.list_view.block_selection_signals_internal(False)
         self.grid_view.block_selection_signals_internal(False)
 
-    def _apply_selection_to_view(self, selected_indices, mode=None):
+    def apply_selection_to_view(self, selected_indices, mode=None):
         """Apply selection indices to a view and sync currentIndex/anchor
+
+        **公开**接口（曾是 `_apply_selection_to_view`）。升为公开的理由见
+        `architecture_review.md` 的 P2-5：`MainWindow` 撤销恢复时要用它，此前只能
+        跨层调私有方法 —— 那是"公开接口不够用"的症状，不是调用方写得随意。
 
         mode: 目标视图（`"list"` / `"grid"`）；省略时取 `current_view_mode`。
 

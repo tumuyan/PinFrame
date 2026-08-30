@@ -22,10 +22,11 @@ PinFrame (定帧) is a PyQt6 desktop application for previewing, fine-tuning, an
 
 - **Run all automated checks (全量回归):**
   `bash dev/run_all_checks.sh`（退出码 0=全过 / 1=有失败 / 2=前置依赖缺失）。
-  依次跑 11 项：`check_no_duplicate_defs.py` → 语法编译 → `test_transform.py` →
+  依次跑 12 项：`check_no_duplicate_defs.py` → 语法编译 → `test_transform.py` →
   `transform_baseline.py --compare` → `verify_timeline_view_sync.py` →
   `verify_grid_view.py` → `smoke_reorder.py` → `smoke_reference_frame.py` →
-  `verify_selection_style.py` → `verify_undo_snapshot.py` → `verify_image_cache.py`。
+  `verify_selection_style.py` → `verify_undo_snapshot.py` → `verify_image_cache.py`
+  → `verify_project_ownership.py`。
   `--verbose` 实时回显完整输出，`--fail-fast` 首败即停。
   **改动触及共享层（`core/transform.py`、`timeline_model.py`、`timeline_item_model.py`、
   `project_data.py`）或打包发布前，必须跑全量**；只动某个对话框/i18n 键时可只跑定向项。
@@ -91,7 +92,9 @@ PinFrame is a single-window PyQt6 app. `main.py` bootstraps `QApplication` + `Ma
 Two dataclasses form the entire project state:
 - `FrameData`: one sprite frame — `file_path`, `scale`, `position`, `rotation`, `aspect_ratio` (X/Y distortion, negative = mirror), `crop_rect`, `is_disabled`, and an ephemeral `target_resolution`. Supports `to_dict`/`from_dict` with project-relative path normalization (so projects stay portable when moved).
 - `ProjectData`: the document — `fps`, `width`, `height`, `background_color`, `frames`, plus persisted export settings. `to_json`/`from_json` (file path drives relative-path resolution) are the save/load contract. **All persistence goes through these methods.**
-- **`ProjectData.frames` 是绑定活跃数据源的属性，不是第二份副本。** `MainWindow` 调用 `project.bind_frames_provider(self.timeline.get_all_frames)`（在 `__init__`、`_reset_project_to_empty`，以及 `_load_from_path` 里 `from_json` 之后、先 `timeline.clear()`、再于填充循环之前绑定），之后读 `project.frames` 恒为 `TimelineModel` 的实时列表。**绑定后赋值会抛 `RuntimeError`**——旧的 `project.frames = self.timeline.get_all_frames()` 同步仪式已全部删除，不要再写回来。未绑定时（刚 `from_json`、或无 UI 脚本）回退到 `_static_frames`，载入流程正是靠这条路径填充帧。
+- **`ProjectData.frames` 是绑定活跃数据源的属性，不是第二份副本。** `MainWindow._adopt_project(project)` 调用 `project.bind_frames_provider(self.timeline.get_all_frames)`——这是**绑定发生的唯一地点**（P2-5 改道后 #2）：`MainWindow.project` 是只读属性，替换工程对象的唯一途径是 `_adopt_project()`，它把"换对象"与"重新绑定"强制做成一步，二者不可能只发生其一。调用时机：`__init__`（timeline 就位后，以 `self._adopt_project(self._project)` 补绑定）、`_load_from_path` 与 `_reset_project_to_empty`（都必须**先 `timeline.clear()` 再 adopt**）。之后读 `project.frames` 恒为 `TimelineModel` 的实时列表。**绑定后赋值会抛 `RuntimeError`**——旧的 `project.frames = self.timeline.get_all_frames()` 同步仪式已全部删除，不要再写回来。未绑定时（刚 `from_json`、或无 UI 脚本）回退到 `_static_frames`，载入流程正是靠这条路径填充帧。
+  - 注意"先 `timeline.clear()`、再 `_adopt_project`"这个次序：`clear()` 之前 timeline 里还是**上一个工程**的帧，提前绑定会让新工程对象短暂地报告旧工程的帧。`_reset_project_to_empty` 曾因次序反了踩过这个坑（P2-5 #3）。
+  - 载入路径里推 UI 设置（`fps_spin.setValue` 等）要放在 adopt **之后**：`setValue` 会同步触发 `update_fps`，其守卫 `self.project.fps != fps` 只有在 `self.project` 已是新工程时才为 False。
   - 附带影响：`project.frames` 每次读取都返回**新列表**（`get_all_frames()` 是拷贝）。循环前先存到局部变量（`Exporter` 已这么做），且不要去改这个返回的列表；改它里面的 `FrameData` 对象**是有效的**，会作用到模型上。
 - **`FrameData.clone()` 是唯一的帧复制实现。** 不要再手写字段列表复制帧——曾经有 4 份手写克隆，其中 3 份（`duplicate_frame` 与重复帧对话框的 ABAB / AABB 模式）漏拷 `aspect_ratio`，导致重复一个镜像帧时副本丢失镜像状态；第 4 份漏了 `target_resolution`。
 
@@ -241,6 +244,10 @@ Singleton `I18nManager` (`i18n`) loaded from `en_US.json` / `zh_CN.json`. Call `
   `dev/verify_undo_snapshot.py` 是撤销快照（恢复走增量而非整体替换、快照之间按帧
   共享对象、历史快照不被后续编辑污染 —— 增量/回落两条路径各测一遍），
   `dev/verify_image_cache.py` 是缓存（`image_cache` 的字节预算 + LRU、导出期源图每张只解码一次、共享原图不被污染），
+  `dev/verify_project_ownership.py` 是 `ProjectData` 持有契约的结构性检查（AST，纯标准库：
+  `project` 只读且无 setter、无 `self.project =` 赋值点、`bind_frames_provider` 唯一且只在
+  `_adopt_project` 内、`timeline.clear()` 行号必须早于 `_adopt_project()`、`main_window.py`
+  无函数内 import、无跨层私有访问），
   `dev/screenshot.sh` 是人工目视检查。
   **另有三个缺口无任何自动化覆盖**：右键菜单、外部文件拖入、播放时的选中跟随。
 
