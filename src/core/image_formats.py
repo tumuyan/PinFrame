@@ -9,7 +9,7 @@
 """
 import os
 
-from PyQt6.QtCore import QSettings
+from core.app_settings import settings as app_settings
 
 # 默认支持的图像格式（统一小写、带点前缀，供比较时统一大小写）
 _DEFAULT_FORMATS = [".png", ".jpg", ".jpeg", ".bmp", ".gif"]
@@ -30,7 +30,7 @@ def _load() -> list:
     global _cached_formats
     if _cached_formats is not None:
         return _cached_formats
-    settings = QSettings("tumuyan", "PinFrame")
+    settings = app_settings()
     raw = settings.value(_SETTINGS_KEY, None)
     if not raw:
         _cached_formats = list(_DEFAULT_FORMATS)
@@ -52,7 +52,7 @@ def _load() -> list:
 def save_formats(formats: list) -> None:
     """保存用户自定义的格式列表到 QSettings。"""
     global _cached_formats
-    settings = QSettings("tumuyan", "PinFrame")
+    settings = app_settings()
     settings.setValue(_SETTINGS_KEY, [f.lower().strip() for f in formats])
     _cached_formats = None  # 使缓存失效，下次读取重新加载
 
@@ -60,7 +60,7 @@ def save_formats(formats: list) -> None:
 def reset_to_default() -> None:
     """恢复默认格式（从 QSettings 中删除自定义项）。"""
     global _cached_formats
-    settings = QSettings("tumuyan", "PinFrame")
+    settings = app_settings()
     settings.remove(_SETTINGS_KEY)
     _cached_formats = None  # 使缓存失效，下次读取重新加载
 

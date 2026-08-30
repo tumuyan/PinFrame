@@ -19,7 +19,8 @@
 | P2-5 `MainWindow` 拆分 | 🔄 改道 | 原四模块方案试做后**撤回**（教训见实施记录）；改为最小结构修复清单 |
 | P2-6 撤销快照 | ✅ 已完成 | 2026-08-29；走**结构共享**而非评审建议的「轻量补丁」，理由见实施记录 |
 | P2-7 三层缓存 | ✅ 4 点全部完成 | 2026-08-30；字节预算 + LRU、删 `crop_rect` 死参数、导出期源图缓存（缩略图 key 去 index 已于 P1-3 完成）。**三层仍刻意不合并**，理由见实施记录 |
-| P3-8 / 9 / 10 / 11 | 🔄 P3-8 部分缓解 | 布局三个 key 的校验已收拢（见 P3-8 条目注记）；其余 QSettings 散落、`version.py` 未 gitignore、1195 行死代码、导出静默吞异常未动 |
+| P3-8 / 10 / 11 | ✅ P3-10 / P3-11 已完成；P3-8 按收窄方案完成 | 2026-08-30。死代码 1195 行已删；导出失败可见化已落地（**主体是 `compose_frame` 返回值被忽略，评审原文漏了这条**），新增第 13 项回归 9 用例 + 4 个破坏点全部被捕获。P3-8 **刻意不建** 34 key 的注册表，只做「颜色解析收拢（消灭 3 处裸 `except:`）+ QSettings 单一来源」 |
+| P3-9 `version.py` | ✅ 已完成 | 2026-08-30。仓库**不再包含** `version.py`（已 `git rm --cached` + `.gitignore`），改为**打包时由 spec 生成**；`main_window.py` 的导入改成**容错**（缺文件不报错，回落运行时 `git describe`）。三条路径均已实测：全新克隆 / 打包态 / 无 git。做法与先前「拆成两个文件」方案的区别见 [P3 实施计划](#p3-实施计划) |
 
 回归基线：`bash dev/run_all_checks.sh --verbose` 实测 **12/12 PASS（约 5s）**。
 
@@ -44,6 +45,8 @@
 - [P1-3 实施计划](#p1-3-实施计划)
 - [P2-6 实施记录](#p2-6-实施记录)
 - [P2-7 实施记录](#p2-7-实施记录)
+- [P3 实施计划](#p3-实施计划)
+- [P3 实施记录](#p3-实施记录)
 - [复核方法](#复核方法)
 
 ---
@@ -657,6 +660,12 @@ image_cache (QImage, 按路径)  ←→  _thumbnail_cache (QPixmap, 按 path+cro
 > `core/settings.py`；`version.py` 仍受版本控制且 `.gitignore` 未收录；
 > `temp_prop.py`(911) 与 `assemble.py`(284) 仍在；`exporter.py` 三处
 > `except Exception` 仍在，行号已漂到 `:164` / `:212` / `:248`。
+>
+> **2026-08-30 复核 + 实施：P3-8 / 10 / 11 已处理，P3-9 暂缓。**
+> 死代码已删（`src` 15936 → 14741 行）；导出失败可见化已落地并配第 13 项回归；
+> P3-8 按**收窄**方案完成（未建 34 key 的注册表，理由见实施记录「事实 3」）。
+> P3-9 核实后优先级下调 —— 原文列的「开发态显示过期版本号」这条后果**不成立**。
+> 逐项状态见文首进度总览，做法与实测数据见 [P3 实施计划](#p3-实施计划)。
 
 ### P3-8 配置持久化三套机制并存
 
@@ -679,6 +688,19 @@ key 名是散落的字符串字面量，无默认值注册表、无迁移机制�
 > 好值等于把用户调好的比例丢掉。坏值的清理统一交给读路径（它才是消费该值的一方）。
 > 实测还发现 custom 两个 key 原先**读写都无校验**，是三个里唯一漏防的。
 > `core/settings.py` 仍未建，其余 key 依旧是散落的字面量，本项不算完成。
+>
+> **2026-08-30 收窄完成：** 只做了能消除真实缺陷的两小块，**未建** `core/settings.py`
+> 的 34 key 注册表 —— 那是改完行为完全不变、也不消除任何缺陷的机械搬迁，判据与
+> P2-5 撤回拆分时那条同源（详见 [P3 实施计划](#p3-实施计划) 的「事实 3」）：
+>
+> | 做了 | 结果 |
+> |---|---|
+> | 新增 `core/app_settings.py`：org/app 名常量 + 单例 `settings()` | `QSettings(...)` 构造点 **6 处 → 1 处**；key 名与读写逻辑**一个没动** |
+> | 三个颜色 key 的解析收拢为 `_read_color()` / `_write_color()`（配模块级 `_parse_color()` / `_format_color()`） | 消灭 `__init__` 里三份复制粘贴的解析，**顺带消灭 3 处裸 `except:`**（它们连 `KeyboardInterrupt` 都吞，而真正要兜的只有"配置文件被手改坏"这一种 `ValueError`）；helper 与既有的 `_read_sizes` / `_write_sizes` 并排，同风格 |
+>
+> 与布局比例那条**刻意不同的一点**：`_read_color` 不 `remove` 坏值（颜色是标量，
+> 下次写入会被整体覆盖，`remove` 只是多一次磁盘操作），而 `_read_sizes` 必须
+> `remove`（坏比例会让面板永久消失）。
 
 ### P3-9 `version.py` 被提交进仓库，但构建时会被改写
 
@@ -698,7 +720,44 @@ BUILD_DATE = "2026-01-14T18:53+00:00"
 
 **建议**：`.gitignore` 掉 `src/core/version.py`，改为缺失时回退到运行时 `git describe` 或 `"dev"`。文档中「自动生成，永不手改」那句话才能真正成立。
 
+> **状态：已完成（2026-08-30），且做法与上述建议有一处关键差异。**
+>
+> 采纳了"gitignore 掉 `version.py` + 缺失时回落"，但**回落逻辑没有写进 `version.py`
+> 本身**，而是写在 `main_window.py`（入库文件）里：
+>
+> ```python
+> try:
+>     from core import version as _build_info
+> except ImportError:        # 开发态没有 version.py 是**正常**的
+>     _build_info = None
+> ```
+>
+> 为什么不能照建议直接改 `version.py`：它是 `main_window.py` 的**模块层** import。
+> 若把"缺失时回落"写进一个自己也不存在的文件里，全新克隆会直接 `ImportError`
+> —— 应用起不来。容错必须落在**入库**的文件里。
+>
+> 现在的三条路径（均已实测）：
+>
+> | 场景 | `version.py` | 结果 |
+> |---|---|---|
+> | 全新克隆 / 开发态 | 不存在 | 运行时 `git describe` → `v0.5.3-14-g2507384`（永远是当前 HEAD，不可能过期） |
+> | 打包产物 | spec 构建时生成 | 用构建值；且**不再 spawn git** |
+> | 无 git / 源码 tarball | 不存在 | 版本号为空串，URL 用内置默认值 |
+>
+> 打包产物因此也少了一次子进程：原先每次打开"关于"都要 spawn git 并失败
+> （Windows 上还有弹控制台窗口的风险），现在有 `version.py` 就直接命中。
+>
+> **一个必须写下来的坑**：`REPO_URL` 不能置空。`open_repo_url()` 是
+> `QDesktopServices.openUrl(QUrl(BUILD_REPO_URL))`，而**空 URL 不抛异常，只是
+> 什么都不做** —— 那个 `except` 兜底永远轮不上，结果就是"打开仓库"菜单静默失效。
+> 故它有一个内置默认值（`DEFAULT_REPO_URL`）。`VERSION` / `BUILD_DATE` 置空是安全的。
+
 ### P3-10 约 1200 行死代码（占全项目 8%）
+
+> **状态：已完成（2026-08-30）。** 两个文件已 `git rm`；`check_no_duplicate_defs.py`
+> 的 `EXCLUDE_FILES` 清空（保留空集合 + 注释），检查从此覆盖全仓库。
+> 连带消灭 1 处裸 `except:`、2 处裸 `print`、1 处硬编码 `a:/` 路径。
+> `src` 从 15936 行降到 14741 行（−7.5%）。
 
 | 文件 | 行数 | 状态 |
 |---|---|---|
@@ -713,11 +772,31 @@ BUILD_DATE = "2026-01-14T18:53+00:00"
 
 ### P3-11 导出失败被静默吞掉
 
+> **状态：已完成（2026-08-30）。** 但**原文把主体漏掉了**：被吞的不仅是异常，
+> 更要紧的是 `compose_frame` 返回 `False`（源文件缺失 / 缩放后尺寸退化为 0）在
+> 三个导出点**全被忽略** —— 它不抛异常，所以"看有没有报错"根本发现不了，而
+> "素材丢了"恰恰是最常见的现实场景。做法与破坏性验证见
+> [P3 实施计划](#p3-实施计划)（事实 1 + 第 3 步）。
+> 实施后：`exporter.py` 的 4 处裸 `print` 归零，全项目裸 `except:` 从 5 处降到
+> 1 处（剩下那处是刻意保留的，见下）。
+
 `exporter.py:144 / 219 / 282`（三个导出方法各一处）：单帧异常被 `except Exception` 捕获后仅 `print`，导出流程照常「成功」结束。用户得到一个少了若干帧的序列，且不会收到任何提示。
 
 `export_iter` 已经是 generator，顺手 yield 出错误、结束时汇总提示即可。
 
+> **未采纳"yield 出错误"这个建议**：改 yield 元数会让 `main_window.py:4419`、
+> `transform_baseline.py:203`、`verify_image_cache.py:264` 等 4 处调用全部改一遍，
+> 且把"进度"与"错误"两种语义塞进同一个元组。改用可选出参
+> `errors: Optional[List[ExportError]] = None`，不传则行为与改动前完全一致 ——
+> 现有调用方零改动。
+
 其他：全项目 5 处裸 `except:`（`main_window.py:169 / 177 / 184 / 2690`，`temp_prop.py:684`）；10 处裸 `print` 未走 debug 框架（`exporter.py` 4、`i18n/manager.py` 2、`main_window.py` 1、`timeline.py` 1）。
+
+> 2026-08-30 收尾：前 3 处随 P3-8 的颜色解析收拢消灭（原为三份复制粘贴的
+> `try/tuple(map(int,...))/except:`，裸 `except:` 连 `KeyboardInterrupt` 都吞）；
+> 第 4 处（`main_window.py:2686`，`Image.open` 取源图尺寸失败时回落 `(0,0)`）
+> **刻意保留** —— 它是有意的降级（缩略图/属性面板对拿不到尺寸的帧要显示占位），
+> 不是疏漏。
 
 ---
 
@@ -1326,6 +1405,307 @@ P2-5 改道 #1 升为公开 —— MainWindow 撤销恢复时要调用它。）
 
 ---
 
+## P3 实施计划
+
+> 起草日期：2026-08-30，基线 `main` @ `2507384`。
+> **本节前半是核实结果（未改动任何代码），后半是待执行的计划。** 核实逐条对照了
+> 评审原文，其中三条结论与原文不同 —— 已在下文标出，做法据此调整。
+
+### 核实结果：与评审原文的逐条对照
+
+| 项 | 评审记录（2026-08-20 / 08-29） | 2026-08-30 实测 | 判定 |
+|---|---|---|---|
+| **P3-8** | `QSettings` 6 处各自 new；无 `core/settings.py` | 仍是 **6 处**（`image_formats.py:33/55/63`、`editor_settings_dialog.py:17/33`、`main_window.py:92`）。`main_window` 内 **32 个 key / 79 处读写点**，散落在 `__init__`（217–350）、`_save_*` 系列（2260–2348）、`closeEvent`（3240–3251、4197–4226）与十余处 setter；另有 `image_formats.py` 的 `recognized_image_formats`、`editor_settings_dialog.py` 的 `image_editors`，全应用共 **34 个 key**。其中 3 个布局 key 已走 `_read_sizes` / `_write_sizes`（P2-5 改道 #4 属实，它们在 grep 里表现为**不出现字面量**），**其余 29 个仍是散落字面量** | 属实，且**规模被低估**（评审只写"key 名散落"，未给出量级） |
+| **P3-9** | `version.py` 受版本控制、内容过期、构建时污染工作区 | 仍受控制（`git ls-files` 命中），`.gitignore` 无该条目。文件内 `v0.4.1-6-gce17dec` / `2026-01-14`，而 `git describe` = `v0.5.3-14-g2507384` —— **偏差比评审时更大**（跨 4 个 tag 段、14 个提交）。引用点 4 处：`main_window.py:18`（import）、`:1677`（`REPO_URL`）、`:1769`（`VERSION`）、`:1776`（`BUILD_DATE`） | 后果 1（污染工作区）**成立**；后果 2（开发态显示过期版本号）**不成立**，见下方「事实 2」 |
+| **P3-10** | 1195 行死代码（`temp_prop.py` 911 + `assemble.py` 284） | **一行未动**。行数完全吻合。全仓库引用只有 3 处，且全是"排除项 / 说明文字"，**零 import**：`dev/check_no_duplicate_defs.py:61-64` 的 `EXCLUDE_FILES`、`dev/run_all_checks.sh:305` 的一行提示、`assemble.py:255` 自己内部的硬编码路径 | 完全属实 |
+| **P3-11** | `exporter.py` 三处 `except Exception` 静默吞异常 | 三处仍在，行号漂到 `:266` / `:316` / `:354`。**另有一处评审没列的、且是主体的**：`compose_frame` 返回 `False`（源文件缺失 / 缩放后尺寸退化为 0）在**三个调用点全部被忽略**（`:237` / `:304` / `:344`） | 属实，但**真正的主体被漏掉了**，见下方「事实 1」 |
+
+### 三条核实中才发现的事实（改变了做法）
+
+**事实 1｜P3-11 的主体不是「吞异常」，是「忽略返回值」。**
+
+`compose_frame` 的契约是"源文件缺失或尺寸退化为 0 时返回 `False`"（`exporter.py:115`），
+三个导出方法都**不看这个返回值**。后果比抛异常更糟：
+
+| 失败原因 | 走哪条路 | 用户看到什么 |
+|---|---|---|
+| 源文件缺失 | `compose_frame` → `False`（**不抛异常**） | PNG 序列：文件照写，得到一个**全透明空图**；精灵表：该格**空白**；GIF：该帧是空白帧 |
+| 缩放后尺寸 ≤ 0 | 同上 | 同上 |
+| 合成中途抛异常（损坏图片等） | `except Exception` → `print` | 同上，且控制台一行字 |
+
+三条路都表现为"导出成功、N 个文件、其中若干个是空的"，**没有任何提示**。
+而"源文件缺失"是最常见的现实场景（工程被移动、素材被删、工程从别人机器上拷来），
+它恰恰走的正是"忽略返回值"那条路 —— 也就是说评审盯住的 `except Exception`
+只是本项里**较罕见**的那一条。
+
+故 P3-11 的改动必须**先**覆盖返回值，异常只是同一份错误清单的第二个来源。
+
+**事实 2｜P3-9 的「后果 2（开发态显示过期版本号）」实际不成立。**
+
+`main_window.get_git_version()`（`:1758`）**已经在运行时跑 `git describe --tags --long`**，
+`BUILD_VERSION` 只是 git 不可用时的 fallback。开发机上有 git，所以 About 里显示的
+**永远是当前 HEAD 的真实版本**，`version.py` 里那个过期值根本用不上。真正会用到它
+的只有打包产物（frozen 环境通常无 git），而打包时 spec 刚写过它 —— **那个是对的**。
+
+结论：P3-9 只剩一条真实后果（构建污染工作区），优先级应从"十分钟顺手清掉"降为
+"可延后，但做法要改"。更重要的是：这条事实**削弱了"直接 gitignore 掉 version.py"的
+合理性** —— 它是 `main_window.py:18` 的模块级 import，一旦被 ignore 且本地不存在，
+**全新克隆直接 `ImportError`**，整应用起不来。评审写的"缺失时回退到运行时 git describe"
+必须落在一个**受版本控制**的文件里，不能指望那个被 ignore 的文件存在。
+
+**事实 3｜P3-8 的成本被低估，且原建议方向与 P2-5 撤回的教训同源。**
+
+评审建议"加 `core/settings.py` 集中 key 常量 + 默认值 + 校验"。核实下来这是
+**34 个 key × 79 处读写点的机械搬迁**，涉及 3 个文件，改完之后：
+`main_window.py` 少约 80 行、`settings.py` 多约 170 行，**行为完全不变**，且不消除
+任何一个已存在的缺陷（没有跨版本 key 变更的历史需求，"迁移机制"是凭空加的）。
+
+这正是 P2-5 拆分试验撤回时那条教训：**"能独立成一坨"不是搬走的充分判据，正确判据是
+"是否独占一份会被多处整体替换的状态"或"是否消除一个真实缺陷"**。34 个 key 的搬迁
+既不满足前者（QSettings 是进程单例，搬去哪都是同一个），也不满足后者。故本项收窄。
+
+### 计划：分四步，按此顺序
+
+排序依据：**先做零风险且能减少后续 grep 噪音的，再把唯一有用户可见缺陷的一项放在
+回归网最完整的时候做，最后做纯可维护性的。**
+
+#### 第 1 步：P3-10 删死代码（约 10 min，零风险）
+
+| 动作 | 说明 |
+|---|---|
+| `git rm src/ui/temp_prop.py src/ui/assemble.py` | 1195 行；git 保有历史，随时可取回 |
+| 清空 `dev/check_no_duplicate_defs.py` 的 `EXCLUDE_FILES` | **保留空集合 + 注释**，不删机制：注释写明"此集合应恒为空；若将来想加例外，先问能不能直接删那个文件"。空集合意味着检查从此覆盖全仓库，`temp_prop.py` 里那个同名 `PropertyPanel` 的隐患彻底消失 |
+| 删 `dev/run_all_checks.sh:305` 的提示行 | 它解释的例外已不存在 |
+| 更新 `AGENTS.md` | 删掉"已知例外：`src/ui/temp_prop.py`…"整段；刷新代码规模数字 |
+
+**连带收益**（都是评审「其他」里列着的项）：消灭 1 处裸 `except:`（`temp_prop.py:684`）、
+2 处裸 `print`（`assemble.py:265/284`）、1 处硬编码绝对路径（`:255` 的 `a:/ProjectPython/...`）。
+全项目 15936 行 → 14741 行（−7.5%）。
+
+验收：`grep -rn "temp_prop\|assemble" src/ main.py PinFrame.spec dev/` 应只剩本文件的历史提及；
+`bash dev/run_all_checks.sh --verbose` 12/12。
+
+#### 第 2 步：P3-9 仓库不再包含 `version.py`（约 20 min）
+
+> **计划变更（实施时改了方案）。** 原计划写的是"拆成两个文件"：受控的
+> `version.py` 装逻辑、gitignore 的 `_build_info.py` 装数据。先按此实施了一版，
+> 随后**放弃** —— 两个文件解决的是同一个问题，但多引入一个文件名和一个间接层，
+> 而收益（保住 `version.py` 这个模块名）是零。最终回到更简单的方案，见下。
+
+核心思路：**仓库不装 `version.py`；打包时由 spec 生成；缺失时容错回落。**
+
+| 动作 | 说明 |
+|---|---|
+| `.gitignore` 加 `src/core/version.py` | 仓库从此不含该文件 |
+| `git rm --cached src/core/version.py` + 删除本地文件 | 保留 git 历史，随时可取回 |
+| `PinFrame.spec` 不改写入目标 | 仍写 `src/core/version.py`；因为它不再入库，重写就不再污染工作区。生成时机不变（仍在 `Analysis` 之前） |
+| `spec` 的 `hiddenimports` 加 `core.version` | `core` 是命名空间包（无 `__init__.py`），显式列出以免静态分析漏收 —— 漏了不报错，只是产物里版本号为空 |
+| `main_window.py` 容错导入 | `try: from core import version as _build_info / except ImportError: _build_info = None` |
+| `get_git_version()` | `BUILD_VERSION or _git_describe()` |
+| `get_build_date()` | 判据从 `_git_available` 改为"有没有 `BUILD_DATE`"（区分的是打包产物，而非 git 在不在） |
+
+三个必须注意的点：
+
+- **`REPO_URL` 不能置空。** `QDesktopServices.openUrl(QUrl(""))` **不抛异常，只是
+  什么都不做**，所以 `open_repo_url()` 的 `except` 兜底永远轮不上 —— 置空会让
+  "打开仓库"菜单**静默失效**。故它 fallback 到内置的 `DEFAULT_REPO_URL`。
+  `VERSION` / `BUILD_DATE` 置空是安全的（前者显示空比显示错的好，后者解析失败
+  回落当前时间）。
+- **`git describe` 必须显式指定 cwd**：从 `__file__` 往上找含 `.git` 的目录。不能
+  依赖进程 cwd —— 从别的目录 `python /path/to/main.py` 是完全正常的用法。
+- **打包产物不再 spawn git**：`version.py` 存在时直接命中。这比改动前更好 ——
+  原先每次打开"关于"都要 spawn 一次 git 并失败，Windows 上还有弹控制台窗口的风险。
+
+验收（三条都要，缺一不可）：
+1. **全新克隆**（无 `version.py`）能正常启动 → 版本菜单显示 `git describe` 的结果
+   `v0.5.3-14-g2507384`，仓库 URL 为内置默认值；
+2. **打包态**（手工造 `version.py`）优先取构建值，且 `open_repo_url` 用的是它的 URL；
+3. **无 git**（把 `.git` 临时移走或改 `_repo_root` 的搜索根）不崩，版本号为空串。
+
+第 1 条是 P3-9 的关键验收 —— 正是"直接 gitignore 会 ImportError"那个陷阱。
+
+#### 第 3 步：P3-11 导出失败可见化（约 90 min，本批唯一有用户可见缺陷的一项）
+
+**3.1 exporter 侧：错误清单 + 检查返回值**
+
+- 新增 `@dataclass ExportError`：`kind`（`"missing_source"` / `"degenerate_size"` /
+  `"exception"`）、`frame_index`（**工程内帧号**，用户能对着时间轴找到它）、
+  `detail`（异常文本或路径）。
+- 三个导出方法统一加关键字参数 `errors: Optional[list] = None`。**不传则行为与现在完全一致**
+  —— 这一条让 `dev/transform_baseline.py:203`、`dev/verify_image_cache.py:264`、
+  `dev/verify_image_cache.py:273/279` 四处现有调用**零改动**。
+- **检查 `compose_frame` 的返回值**（事实 1 的主体）：`False` 时记一条
+  `kind="missing_source"` 的错误并**跳过该帧**（PNG 序列不要再 `canvas.save()` 写空文件；
+  精灵表留空格；GIF 不 append 该帧）。
+- `except Exception` 改为 `export_debug(...)` + `errors.append(...)`，替换掉裸 `print`。
+- `exporter.py:370`（GIF 全帧失败）从 `print` 改为**抛异常** —— 那是整体失败不是单帧失败，
+  不该静默。`main_window` 已有 `try/except` 接得住。
+
+**不能改 `export_iter` 的 yield 元数**：评审建议"顺手 yield 出错误"，但那会让
+`for current, total_cnt in Exporter.export_iter(...)`（`main_window.py:4419`）与
+`for _ in ...`（`transform_baseline.py:203`、`verify_image_cache.py:264`）共 4 处全改，
+且把"进度"与"错误"两种语义塞进同一个元组。用出参 list 更干净，还顺带保住了向后兼容。
+
+**3.2 UI 侧：汇总提示，而不是 statusBar 一闪而过**
+
+三个调用点（`main_window.py:4371` 精灵表、`:4419` 序列、`:4455` GIF）改为传入 `errors`，
+结束后若有错 → `QMessageBox.warning` 列出前 N 条（帧号 + 原因）+ "还有 k 条…"。
+**部分成功仍要提示**（导出完了，但缺了东西）；全部失败才算失败。
+需新增 i18n 键（zh/en 各一，现 479 键双向差集为空，新增必须同步，否则破坏"i18n 无债"）。
+
+**3.3 回归护栏：新增 `dev/verify_export_errors.py`，作 `run_all_checks.sh` 第 13 项**
+
+| 用例 | 钉住什么 |
+|---|---|
+| 源文件缺失 → PNG 序列 | 记 1 条 `missing_source`、**不产出该帧的文件**、其余帧照常 |
+| 同上 → 精灵表 / GIF | 三种模式各验一遍（与 P2-7 那套"三种模式共用 `compose_frame`，故三个都验"同理） |
+| `errors=None` | 行为与改动前一致（防止"没传就崩"） |
+| GIF 全部帧失败 | **必须抛**，不能静默生成/不生成文件 |
+| 单帧抛异常 | 被记进 errors，不中断整批 |
+
+破坏性验证（每条都要实测变红，否则是假通过）：
+
+| 破坏 | 应被捕获 |
+|---|---|
+| `compose_frame` 返回值继续忽略 | 前三条用例 |
+| 缺帧时仍然 `canvas.save()` 写空文件 | PNG 序列用例（断言文件**不存在**） |
+| `except` 改回"仅 print 不收集" | 单帧抛异常用例 |
+| GIF 全失败改回 print 不抛 | GIF 全帧失败用例 |
+
+> 教训照抄 P2-6 那条：**`clone()` 分散在两条路径上，就只能测两条 —— 这是本项最贵的一条
+> 教训。** 本项的对应物是"三种导出模式"，前面 P2-7 也踩过一次（`test_export_decodes_each_source_once`）。
+> 三个模式的错误处理各写一遍，就必须各测一遍。
+
+#### 第 4 步：P3-8 收窄为两小块（约 40 min，纯可维护性）
+
+只做**能消除真实缺陷**的两小块，不做 key 注册表搬迁（理由见事实 3）：
+
+- **4.1 颜色 key 的解析收拢（消除 3 处裸 `except:`）。**
+  `raster_grid_color` / `canvas_border_inner_color` / `canvas_border_outer_color`
+  在 `main_window.py:220-236` 是三份复制粘贴的
+  `try: tuple(map(int, s.split(','))) except: 默认值`，用裸 `except:` 兜一切
+  （连 `KeyboardInterrupt` 都吞）。抽 `_read_color(key, default)` / `_write_color(key, rgb)`，
+  与已有的 `_read_sizes` / `_write_sizes` 放一起（`:3720` 附近），风格一致。
+  写路径的颜色拼接在 `:2292` / `:2328` / `:2333` 也是三份 `",".join(map(str, ...))`。
+- **4.2 `QSettings` 实例的单一来源。**
+  新增 `core/app_settings.py`，只放 org/app 名常量 + 一个 `settings()` 单例访问函数；
+  `main_window.py:92` 与其余 5 处全部改用它。**不动任何 key 名、不动任何读写逻辑。**
+
+验收：这一项改完**功能必须完全不变**，护栏就是全量回归（尤其第 4 项 `MAIN_DIGEST`）。
+颜色 helper 需补一个 round-trip 断言（写进去再读出来相等、坏值退回默认），放第 13 项
+脚本里语义不合，另行决定是并入 `dev/test_transform.py` 还是单开一个小脚本 ——
+**倾向不单开，避免 dev/ 里又多一个只有 3 个用例的文件。**
+
+### 明确不做（防止将来走回头路）
+
+- **`core/settings.py` 的 34 个 key 注册表 + 默认值 + 迁移机制**（P3-8 原建议）
+  —— 理由见事实 3。若将来真出现"某个 key 需要跨版本改名"，那时再为**那一个** key 加迁移，
+  比现在凭空搭一套机制划算。
+- **改 `export_iter` 的 yield 元数**（P3-11 评审原建议）—— 见第 3 步的理由。
+- **把 `dev/*.py` 里剩下的裸 `print` 全改成 debug 框架** —— 只改 `exporter.py` 那 4 处
+  （本项范围内）。`i18n/manager.py` 的 2 处是**启动期**日志（i18n 还没初始化，进不了
+  debug 框架）、`main_window.py:3265` 与 `timeline.py:236` 各有自己的语境，都不在本项内。
+- **导出前预扫描缺失素材并阻断** —— 那是新功能（会改变"缺帧也能导出其余帧"的既有行为），
+  不是缺陷修复。本项只做到"缺了要告诉你"。
+- **`main_window.py:2643` 那处裸 `except:`** —— 它在 `Image.open` 取源图尺寸失败时
+  `pass` 并回落 `(0,0)`，是**有意的**（缩略图/属性面板对拿不到尺寸的帧要显示占位），
+  改成 `except Exception` 即可，不要改语义。
+
+### 四步的回归要求
+
+| 步 | 必跑 | 补充 |
+|---|---|---|
+| 1 / 2 / 4 | `bash dev/run_all_checks.sh --verbose` 全绿 | 第 2 步另需「全新克隆能启动」那条手工验收 |
+| 3 | 全量回归 + **新增第 13 项** | 做完全套破坏性验证；跑 `transform_baseline.py --compare`（导出路径改了，哈希必须不变） |
+
+四步都**不改变任何像素输出**，故第 4 项 `MAIN_DIGEST` 每一步都应保持不变 ——
+它若变了，说明改动意外碰到了渲染或导出合成路径。
+
+---
+
+## P3 实施记录
+
+> 完成日期：2026-08-30（第 1、3、4 步；第 2 步 P3-9 暂缓）。基线 `2507384`。
+> 与计划的偏差都记在这里。
+
+### 第 1 步（P3-10）实际结果
+
+与计划完全一致，零意外：`temp_prop.py` / `assemble.py` 已删，`src` 15936 → 14741 行。
+
+`check_no_duplicate_defs.py` 的 `EXCLUDE_FILES` 清空后，扫描文件数从 46 升到 48
+（空集合使检查覆盖全仓库）—— **注意这个数字不会随删除而下降**，因为被删的两个
+文件原本就在排除集合里、从未被扫过。
+
+### 第 3 步（P3-11）与计划的三处偏差
+
+**1. 精灵表缺帧时「格子仍占位」，与计划里的字面表述不同。**
+
+计划写的是"精灵表留空格"。实施时发现这句话有歧义，两种实现差别很大：
+
+- 若**跳过**该帧不 composite —— 后面所有帧整体前移一格，精灵表末尾空一格。
+  用户按行列取图时会**全部错位**，而且看不出是哪一帧没了；
+- 若**留空但占位** —— 格子还在、只是空白，行列对齐不变。
+
+选了后者。这是 P1-3 迁移时那条纪律的又一次应用："格子 → 帧"的映射没变，只是
+某一格内容为空。已写进 `test_missing_source_is_recorded_in_sprite_sheet`（断言
+表宽不变）。
+
+**2. GIF 缺帧时「不补空白帧」，与精灵表的处理**相反**。**
+
+计划写的是"GIF 不 append 该帧"，实施时确认这是对的，但理由值得写下来：GIF 没有
+"占位帧"的概念，补一帧空白会**同时改变动画时长与节奏**，比少一帧更糟 —— 这与
+精灵表"必须占位"正好相反。同一个"缺帧"在两种产物里的最优处理不同，取决于该产物
+有没有位置语义。两个用例分别钉住，别在将来统一成一种。
+
+**3. 错误清单的收集方式从"每处手写"改成"一个 helper"。**
+
+计划里三个导出点各自 `errors.append(...)`。实施时抽了模块级
+`_compose_into_canvas()` —— 因为区分 `missing_source` 与 `degenerate_size` 需要
+复现 `compose_frame` 内部的两个判据（它只回一个 bool），这份判断写三遍就是
+P0-1 那类毛病。helper 分担的是"失败分类 + 记账"，`compose_frame` 的公开签名与
+像素行为**一个字节都没动**。
+
+### 破坏性验证（4 个破坏点，全部被捕获）
+
+脚本写在 `/tmp` 里跑完即删（不入库）：改坏 → 跑测试 → 断言变红 → 还原 → 清
+`__pycache__`。**全部 4 个都精确变红**，且还原后 9/9 复绿。
+
+| 破坏 | 被哪些用例捕获 |
+|---|---|
+| `compose_frame` 返回值继续忽略（本项主体） | 8/9 个用例变红 |
+| 缺帧时仍然 `canvas.save()` 写空 PNG | `test_missing_source_is_recorded_in_png_sequence` |
+| `except` 改回"仅 print 不收集" | `test_exception_is_recorded_and_does_not_abort_batch` |
+| GIF 整批失败改回 `pass` 不抛 | `test_gif_raises_when_no_frame_rendered`、`test_errors_omitted_behaves_as_before` |
+
+第一个破坏点一次打红 8 个用例 —— 说明"忽略返回值"是这批契约里最根本的一条，
+其余用例都是它的下游。
+
+两条仓库里记过的教训在此复现并生效：**破坏脚本先断言目标字符串存在再改**（否则
+`str.replace` 静默无操作，"测试没红"会被误读成"测试无效"），**每次改完强制清
+`__pycache__`**（否则加载被破坏时的旧字节码，症状极具迷惑性）。
+
+### 刻意未做的部分
+
+- **不校验颜色分量是否在 0~255 内**。`_parse_color` 只校验"能解析成 3 个整数"。
+  原实现也不校验，加上去会改变既有行为（超出范围的值此前是能存能读的）。P3-8
+  这一步的目标是"消灭裸 `except:` 与三份复制粘贴"，不是" tightening 取值域"。
+- **`errors` 不做去重**。同一帧若既缺源图又触发异常（理论上可能），报两条比
+  静默丢一条好 —— 用户看到两条反而说明这帧问题更大。
+- **错误清单不写进工程文件**。它是本次导出的瞬时结果，不是文档状态；落盘会让
+  用户困惑"工程里怎么多了个我没存的东西"。
+
+### 回归网现状
+
+`dev/run_all_checks.sh` 现为 **13 项**（新增第 13 项「导出失败可见化」，
+`dev/verify_export_errors.py`，9 个用例），2026-08-30 实测 **13/13 PASS，约 6s**。
+`MAIN_DIGEST` 与 `EDGE_DIGEST` 均保持不变，确认本批改动未触及渲染与导出合成路径。
+
+缺口仍是那三项（右键菜单、外部文件拖入、播放跟随）。**另有一项新增的手工验收
+空白**：导出失败汇总弹的是模态 `QMessageBox`，offscreen 下无法自动点击，故只
+验证了文案渲染与"空清单不弹框"，弹框本身需人工看一眼。
+
+---
+
 ## 复核方法
 
 本文全部数字可用以下命令重新验证（repo 根目录，Git Bash）。
@@ -1388,17 +1768,41 @@ grep -n "SourceImageCache()" src/utils/exporter.py   # 应为 3 处
 python dev/verify_image_cache.py
 
 # P3-8 QSettings 散落点
+# ⚠️ 预期已变（2026-08-30 收窄完成）：应只剩 core/app_settings.py 里的 1 处构造
+#     （外加同文件 docstring 里的 1 句历史提及）。key 名**刻意**仍是散落字面量。
 grep -rn "QSettings(" src/
+# 颜色解析：三个颜色 key 的读写点应全部经过 _read_color / _write_color
+grep -n "_read_color\|_write_color\|raster_grid_color\|canvas_border_inner_color\|canvas_border_outer_color" src/ui/main_window.py
 
-# P3-9 version.py 是否受版本控制
-git ls-files src/core/version.py && cat src/core/version.py
+# P3-9 version.py（✅ 已不入库）
+git ls-files src/core/version.py                 # 期望：无输出（未跟踪）
+git check-ignore -v src/core/version.py          # 期望：命中 .gitignore
+ls src/core/version.py                           # 期望：No such file（开发态本就不该有）
 
-# P3-10 死代码是否真无引用（dev/ 里应只有 check_no_duplicate_defs.py 的排除项）
-grep -rn "temp_prop\|assemble" src/ main.py PinFrame.spec dev/
+# 三条路径都要能跑通（P3-9 的验收）：
+# 1) 全新克隆（无 version.py）—— 关键：不能 ImportError
+python -c "import sys;sys.path.insert(0,'src');import ui.main_window as m;print(repr(m.BUILD_VERSION or m._git_describe()))"
+# 2) 打包态：手工造一个 version.py，应优先取它的值
+# 3) 无 git：把 src 拷到没有 .git 祖先的目录再 import，_git_describe() 应返回空串且不抛
+
+# P3-10 死代码（✅ 已删）：两个文件应不存在；EXCLUDE_FILES 应为空集合
+ls src/ui/temp_prop.py src/ui/assemble.py 2>&1    # 期望：两条 No such file
+grep -n "EXCLUDE_FILES" -A 2 dev/check_no_duplicate_defs.py
 
 # P3-11 吞异常与裸 print（--include 要加引号，zsh 下未 quote 的 glob 会报 no matches）
+# ⚠️ 预期已变（2026-08-30）：exporter.py 应**零**命中；全项目裸 except: 只剩
+#     main_window.py 取源图尺寸那一处（刻意保留的有意降级），裸 print 剩 4 处
+#     （i18n 启动期 2 + main_window 存盘 1 + timeline 警告 1），均不在本项范围内。
 grep -rn "except:" src/ --include="*.py"
 grep -rn "^\s*print(" src/ --include="*.py" | grep -v debug_config.py
+
+# P3-11 的主体（评审漏掉的那条）：compose_frame 的返回值必须被检查。
+# 期望：1 处定义 + 1 处调用（都在 `_compose_into_canvas` 里），三个导出方法
+# 改调 `_compose_into_canvas` 而非直接调 `compose_frame`。
+grep -n "compose_frame(\|_compose_into_canvas(" src/utils/exporter.py
+
+# P3-11 修完之后（第 13 项）：
+python dev/verify_export_errors.py
 
 # i18n 键一致性（应为双向空集）
 python -c "import json;a=json.load(open('src/i18n/zh_CN.json',encoding='utf-8'));b=json.load(open('src/i18n/en_US.json',encoding='utf-8'));print(len(a),len(b),set(a)-set(b),set(b)-set(a))"

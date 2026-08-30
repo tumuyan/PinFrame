@@ -3,7 +3,8 @@ import os
 from PyQt6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel,
                              QPushButton, QGroupBox, QListWidget, QListWidgetItem,
                              QLineEdit, QFileDialog, QInputDialog)
-from PyQt6.QtCore import Qt, QSettings
+from PyQt6.QtCore import Qt
+from core.app_settings import settings as app_settings
 from i18n.manager import i18n
 
 
@@ -14,7 +15,7 @@ def load_image_editors():
     返回编辑器列表，每一项为 dict：{name, path, default}
     default 为 True 的项表示用户指定的默认编辑器（至多一个）。
     """
-    settings = QSettings("tumuyan", "PinFrame")
+    settings = app_settings()
     raw = settings.value("image_editors", [], type=list)
     editors = []
     if isinstance(raw, list):
@@ -30,7 +31,7 @@ def load_image_editors():
 
 def save_image_editors(editors):
     """将编辑器列表写入 QSettings。"""
-    settings = QSettings("tumuyan", "PinFrame")
+    settings = app_settings()
     settings.setValue("image_editors", editors)
 
 

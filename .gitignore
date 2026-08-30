@@ -6,4 +6,7 @@ dist/
 venv/
 dev/tmp_baseline/
 .Trash-0/
+# 版本信息：只在打包（release CI）时由 PinFrame.spec 生成，不入库。
+# 缺失时 main_window 容错回落（运行时 git describe / 内置默认 URL），故开发态无需此文件。
+src/core/version.py
 

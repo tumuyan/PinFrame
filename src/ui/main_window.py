@@ -5,7 +5,7 @@ from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout, QH
                              QMessageBox, QDialog, QSplitter, QScrollArea,
                              QComboBox, QDialogButtonBox, QCheckBox, QGroupBox)
 from PyQt6.QtGui import QAction, QIcon, QKeySequence, QImage, QActionGroup, QImageReader, QDesktopServices, QColor
-from PyQt6.QtCore import (Qt, QTimer, QSettings, QByteArray, QUrl, QDateTime, QLocale,
+from PyQt6.QtCore import (Qt, QTimer, QByteArray, QUrl, QDateTime, QLocale,
                           QProcess, QSignalBlocker)
 import subprocess
 import sys
@@ -13,9 +13,12 @@ import os
 
 from PIL import Image, ImageSequence
 
+from typing import List
+
 from core import image_formats
+from core.app_settings import settings as app_settings
 from core.image_cache import image_cache
-from core.version import VERSION as BUILD_VERSION, BUILD_DATE, REPO_URL as BUILD_REPO_URL
+
 from model.project_data import ProjectData, FrameData, clear_source_image_size_cache
 from ui.asset_manager_dialog import AssetManagerDialog
 from ui.canvas import CanvasWidget
@@ -40,8 +43,73 @@ from ui.utils.icon_generator import IconGenerator
 from ui.timeline_selection_style import apply_to_qss
 from i18n.manager import i18n
 from utils.debug_config import import_debug, layout_debug, DebugConfig
-from utils.exporter import Exporter
+from utils.exporter import Exporter, ExportError, ExportFailedError
 from core.history import HistoryManager
+
+# ---------------------------------------------------------------------------
+# 构建版本信息（P3-9）
+#
+# `src/core/version.py` **不入库**（见 .gitignore），只在打包时由 `PinFrame.spec`
+# 生成。所以它在本机可能不存在 —— 这里是**容错导入**：缺文件就回落到运行时
+# `git describe` 与内置默认 URL，绝不因缺一个"展示用的版本号"而让应用起不来。
+#
+# 为什么这个文件不入库：它在入库时的值必然是过期的（评审时记录的是
+# `v0.4.1-6-gce17dec`，而当时 HEAD 已是 `v0.5.3-14-g2507384`），而且每次打包都
+# 重写一个入库文件，会在 git status 里留下一条莫名其妙的改动。
+#
+# 注意：容错逻辑必须写在**入库**的文件里。若把 `git describe` 的回落写进那个被
+# ignore 的 version.py，全新克隆就会因为没有它而直接 ImportError —— 正好是本段
+# 要避免的事。
+# ---------------------------------------------------------------------------
+try:
+    from core import version as _build_info
+except ImportError:      # noqa: BLE001 - 开发态没有 version.py 是**正常**的
+    _build_info = None
+
+# `REPO_URL` 的兜底值。
+#
+# 只有它需要兜底，另外两个不需要：`VERSION` 拿不到时显示空比显示错的好，
+# `BUILD_DATE` 解析失败会回落当前时间（见 `MainWindow.get_build_date`）。而
+# `REPO_URL` 为空会让"打开仓库"菜单**静默失效** —— `QDesktopServices.openUrl(QUrl(""))`
+# 不抛异常、只是什么都不做，它的 except 兜底永远轮不上。
+#
+# 它也不像 `VERSION` 那样每个提交都变 —— 就是上游仓库地址，不存在"过期"这回事。
+DEFAULT_REPO_URL = "https://github.com/tumuyan/PinFrame"
+
+BUILD_VERSION = str(getattr(_build_info, "VERSION", "") or "")
+BUILD_DATE = str(getattr(_build_info, "BUILD_DATE", "") or "")
+BUILD_REPO_URL = str(getattr(_build_info, "REPO_URL", "") or "") or DEFAULT_REPO_URL
+
+
+def _git_describe():
+    """运行 `git describe --tags --long`；拿不到返回空字符串（P3-9）。
+
+    开发态没有 `version.py`（它只在打包时生成），版本号就靠这里现算 —— 因此它
+    **永远是当前 HEAD 的真实值**，不可能过期。
+
+    **不能依赖进程 cwd**：从别的目录 `python /path/to/main.py` 是完全正常的用法，
+    而 `git describe` 只在仓库内才有意义。故从本文件位置往上找 `.git`。
+    """
+    root = os.path.dirname(os.path.abspath(__file__))
+    while True:
+        # 用 exists 而不是 isdir：git worktree 与 submodule 里的 `.git` 是**文件**
+        # （内容为 `gitdir: ...`），用 isdir 会一路走到文件系统根再返回空串 ——
+        # 版本号从此为空，且没有任何报错。
+        if os.path.exists(os.path.join(root, ".git")):
+            break
+        parent = os.path.dirname(root)
+        if parent == root:          # 已到文件系统根，不是 git 仓库
+            return ""
+        root = parent
+    try:
+        return subprocess.check_output(
+            ["git", "describe", "--tags", "--long"],
+            cwd=root,
+            stderr=subprocess.DEVNULL,
+            text=True,
+        ).strip()
+    except Exception:      # noqa: BLE001 - 没装 git / 从 tarball 运行，都属正常
+        return ""
 
 
 def _valid_sizes(value):
@@ -66,10 +134,65 @@ def _valid_sizes(value):
         return None
     return parsed
 
+
+def _parse_color(value):
+    """把 QSettings 里读到的 `"r,g,b"` 规整成 `(int, int, int)`；不可用返回 None（P3-8）。
+
+    三个颜色 key（`raster_grid_color` / `canvas_border_inner_color` /
+    `canvas_border_outer_color`）此前在 `__init__` 里各抄一份
+    `try: tuple(map(int, s.split(','))) except: 默认值`。抄三遍只是其一，真正的问题是
+    那个**裸 `except:`** —— 它连 `KeyboardInterrupt` / `SystemExit` 都吞，而这里要兜的
+    其实只有"用户手改过配置文件 / 旧版本写坏了"这一种 ValueError。
+
+    与 `_valid_sizes` 同一套路：形状与可解析性收在一处。**刻意不校验 0~255 的取值
+    范围** —— 原实现也不校验，加上去会改变既有行为（超出范围的值此前是能存能读的）。
+    """
+    if isinstance(value, (tuple, list)):
+        parts = value
+    elif isinstance(value, str):
+        parts = value.split(",")
+    else:
+        return None
+    try:
+        parsed = tuple(int(x) for x in parts)
+    except (TypeError, ValueError):
+        return None
+    if len(parsed) != 3:
+        return None
+    return parsed
+
+
+def _format_color(rgb) -> str:
+    """`_parse_color` 的逆操作。"""
+    return ",".join(str(c) for c in rgb)
+
+
 # 哨兵：区分"没传这个参数"与"显式传了 None"。
 # `_capture_snapshot(reuse_from=None)` 的 None 表示"不用任何复用基准"（全量克隆），
 # 而省略参数表示"用默认基准"。用 None 兼任二者会把这两种意图混为一谈。
 _UNSET = object()
+
+# 导出错误汇总里最多逐条列出的条数；超出的只报数量。
+# 几百帧全缺时把清单全列出来等于用错误信息刷屏，用户根本读不完。
+_EXPORT_ERROR_DETAIL_LIMIT = 8
+
+
+def _describe_export_error(err) -> str:
+    """把一条 `ExportError` 翻成用户能看懂的一行（P3-11）。
+
+    三种 kind 分开处理，因为"源图找不到"与"尺寸退化"的用户动作完全不同 ——
+    前者是去把素材找回来，后者是去改缩放参数。都塞进一句"导出失败"等于没说。
+    """
+    # 帧号 +1：工程内下标是 0 基，而时间轴与用户认知都是 1 基
+    display_index = err.frame_index + 1
+    if err.kind == "missing_source":
+        return i18n.t("msg_export_frame_missing").format(index=display_index,
+                                                         path=err.detail)
+    if err.kind == "degenerate_size":
+        return i18n.t("msg_export_frame_degenerate").format(index=display_index,
+                                                            path=err.detail)
+    return i18n.t("msg_export_frame_exception").format(index=display_index,
+                                                       error=err.detail)
 
 
 class MainWindow(QMainWindow):
@@ -89,7 +212,7 @@ class MainWindow(QMainWindow):
         self._history_merge_timer.setSingleShot(True)
         self._history_merge_timer.setInterval(600)
         self._history_merge_timer.timeout.connect(self._close_history_merge_window)
-        self.settings = QSettings("tumuyan", "PinFrame")
+        self.settings = app_settings()
         self.current_theme = self.settings.value("theme", "dark")
         self.current_lang = self.settings.value("language", "zh_CN")
         i18n.load_language(self.current_lang)
@@ -216,26 +339,14 @@ class MainWindow(QMainWindow):
         # Rasterization Settings (Global)
         self.raster_enabled = self.settings.value("raster_enabled", False, type=bool)
         self.raster_show_grid = self.settings.value("raster_show_grid", True, type=bool)
-        grid_color_str = self.settings.value("raster_grid_color", "128,128,128")
-        try:
-            self.raster_grid_color = tuple(map(int, grid_color_str.split(',')))
-        except:
-            self.raster_grid_color = (128, 128, 128)
+        self.raster_grid_color = self._read_color("raster_grid_color", (128, 128, 128))
         self.raster_scale_threshold = float(self.settings.value("raster_scale_threshold", 5.0))
 
         # Canvas Border Settings
-        border_inner_color_str = self.settings.value("canvas_border_inner_color", "255,255,255")
-        try:
-            self.canvas_border_inner_color = tuple(map(int, border_inner_color_str.split(',')))
-        except:
-            self.canvas_border_inner_color = (255, 255, 255)
+        self.canvas_border_inner_color = self._read_color("canvas_border_inner_color", (255, 255, 255))
         self.canvas_border_inner_width = self.settings.value("canvas_border_inner_width", 2, type=int)
-        
-        border_outer_color_str = self.settings.value("canvas_border_outer_color", "0,0,0")
-        try:
-            self.canvas_border_outer_color = tuple(map(int, border_outer_color_str.split(',')))
-        except:
-            self.canvas_border_outer_color = (0, 0, 0)
+
+        self.canvas_border_outer_color = self._read_color("canvas_border_outer_color", (0, 0, 0))
         self.canvas_border_outer_width = self.settings.value("canvas_border_outer_width", 1, type=int)
 
         # Load timeline view settings (before creating actions/menus)
@@ -1756,30 +1867,33 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(i18n.t("msg_debug_settings_saved"), 2000)
 
     def get_git_version(self):
-        self._git_available = False
-        try:
-            version = subprocess.check_output(
-                ['git', 'describe', '--tags', '--long'],
-                stderr=subprocess.DEVNULL,
-                text=True
-            ).strip()
-            self._git_available = True
-            return version
-        except Exception:
-            return BUILD_VERSION
+        """当前版本号（P3-9）。
+
+        取值顺序：
+          1. 打包时生成的值（`version.py`，只在打包产物里存在）；
+          2. 否则运行时 `git describe`（开发态，永远是当前 HEAD 的真实值）；
+          3. 都拿不到（没装 git，或从源码 tarball 直接跑）→ `BUILD_VERSION`，即空串。
+
+        注意 `BUILD_VERSION` 为**空**是可能的，且是刻意的：宁可显示"版本未知"，
+        也不显示一个会误导人的过期数字。
+        """
+        return BUILD_VERSION or _git_describe()
 
     def get_build_date(self):
-        if getattr(self, '_git_available', False):
-            dt = QDateTime.currentDateTime()
-        else:
+        """构建日期；打包产物用构建时的值，开发态显示当前时间。
+
+        判据是"有没有打包时生成的 BUILD_DATE"，而不是"git 在不在" ——
+        开发态即使装了 git，也不该把"现在"当成"构建日期"。
+        """
+        if BUILD_DATE:
             try:
                 dt = QDateTime.fromString(BUILD_DATE, Qt.DateFormat.ISODate)
-                if not dt.isValid():
-                    dt = QDateTime.currentDateTime()
-                else:
-                    dt = dt.toLocalTime()
-            except Exception:
-                dt = QDateTime.currentDateTime()
+                if dt.isValid():
+                    return QLocale.system().toString(dt.toLocalTime(),
+                                                     QLocale.FormatType.LongFormat)
+            except Exception:      # noqa: BLE001 - 格式不对就回落，不该崩
+                pass
+        dt = QDateTime.currentDateTime()
         return QLocale.system().toString(dt, QLocale.FormatType.LongFormat)
 
     def create_toolbar(self):
@@ -2288,8 +2402,7 @@ class MainWindow(QMainWindow):
             # Save to global settings
             self.settings.setValue("raster_enabled", self.raster_enabled)
             self.settings.setValue("raster_show_grid", self.raster_show_grid)
-            grid_color_str = ",".join(map(str, self.raster_grid_color))
-            self.settings.setValue("raster_grid_color", grid_color_str)
+            self._write_color("raster_grid_color", self.raster_grid_color)
             self.settings.setValue("raster_scale_threshold", self.raster_scale_threshold)
 
             # Update canvas settings
@@ -2324,12 +2437,10 @@ class MainWindow(QMainWindow):
             self.canvas_border_outer_width = settings["outer_width"]
 
             # Save to global settings
-            inner_color_str = ",".join(map(str, self.canvas_border_inner_color))
-            self.settings.setValue("canvas_border_inner_color", inner_color_str)
+            self._write_color("canvas_border_inner_color", self.canvas_border_inner_color)
             self.settings.setValue("canvas_border_inner_width", self.canvas_border_inner_width)
-            
-            outer_color_str = ",".join(map(str, self.canvas_border_outer_color))
-            self.settings.setValue("canvas_border_outer_color", outer_color_str)
+
+            self._write_color("canvas_border_outer_color", self.canvas_border_outer_color)
             self.settings.setValue("canvas_border_outer_width", self.canvas_border_outer_width)
 
             # Update canvas settings
@@ -3746,6 +3857,22 @@ class MainWindow(QMainWindow):
             self.settings.setValue(key, parsed)
         return parsed
 
+    def _read_color(self, key, default):
+        """读一个 `"r,g,b"` 形式的颜色 key；坏值退回 `default`（P3-8）。
+
+        与 `_read_sizes` 同一套路，但**不 `remove` 坏值**：颜色是标量而非比例，
+        下次写入时会被整体覆盖，`remove` 只是多一次磁盘操作。
+        """
+        parsed = _parse_color(self.settings.value(key))
+        return parsed if parsed is not None else default
+
+    def _write_color(self, key, rgb):
+        """写一个颜色 key；形状不对就不落盘（与 `_write_sizes` 同一纪律）。"""
+        parsed = _parse_color(rgb)
+        if parsed is not None:
+            self.settings.setValue(key, _format_color(parsed))
+        return parsed
+
     def _reset_to_independent_docks(self):
         """Make sure timeline & property panel live inside their OWN docks and the
         stacked dock is hidden. Safe to call repeatedly / from any state."""
@@ -4367,11 +4494,17 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(i18n.t("msg_no_frames_to_export", "No frames to export"), 3000)
             return
 
+        errors: List[ExportError] = []
         try:
-            Exporter.export_sprite_sheet(self.project, file, frame_indices=indices, bg_color=self.project.export_bg_color)
+            Exporter.export_sprite_sheet(self.project, file, frame_indices=indices,
+                                         bg_color=self.project.export_bg_color,
+                                         errors=errors)
             self.statusBar().showMessage(i18n.t("msg_export_complete"), 3000)
         except Exception as e:
             self.statusBar().showMessage(f"{i18n.t('msg_save_error').format(error=str(e))}", 5000)
+
+        # 部分成功也要提示：导出确实完成了，但用户不知道少了东西。
+        self._report_export_errors(errors)
 
 
     def export_sequence(self):
@@ -4415,14 +4548,19 @@ class MainWindow(QMainWindow):
             
             # Export Loop
             total = len(indices)
+            errors: List[ExportError] = []
             try:
-                for current, total_cnt in Exporter.export_iter(self.project, out_dir, use_orig_names, 
-                                                            frame_indices=indices, bg_color=self.project.export_bg_color):
+                for current, total_cnt in Exporter.export_iter(self.project, out_dir, use_orig_names,
+                                                            frame_indices=indices, bg_color=self.project.export_bg_color,
+                                                            errors=errors):
                     self.statusBar().showMessage(i18n.t("msg_exporting").format(index=current, total=total_cnt))
                     QApplication.processEvents()
                 self.statusBar().showMessage(i18n.t("msg_export_complete"), 3000)
             except Exception as e:
                 self.statusBar().showMessage(f"Export Error: {str(e)}", 5000)
+
+            # 生成器是惰性的：只有消费完之后 errors 才是完整的。
+            self._report_export_errors(errors)
 
         elif export_type == "gif":
             # Determine default filename and directory
@@ -4451,11 +4589,51 @@ class MainWindow(QMainWindow):
             self.project.last_gif_export_path = out_path
             
             self.statusBar().showMessage(i18n.t("msg_exporting").format(index="...", total="..."))
+            errors: List[ExportError] = []
             try:
-                Exporter.export_gif(self.project, out_path, frame_indices=indices, bg_color=self.project.export_bg_color)
+                Exporter.export_gif(self.project, out_path, frame_indices=indices,
+                                    bg_color=self.project.export_bg_color,
+                                    errors=errors)
                 self.statusBar().showMessage(i18n.t("msg_export_complete"), 3000)
+            except ExportFailedError:
+                # 整批失败必须单独挑出来，不能落进下面的 `except Exception`：
+                # 那条分支会把 ExportFailedError 自带的**英文诊断文本**原样显示
+                # 在状态栏（`f"...: {e}"`）。而且此时磁盘上没有产物，报"导出
+                # 完成"是错的、报一句未本地化的英文同样没用。
+                #
+                # 这里只留一句话 —— 逐条清单由下面的 `_report_export_errors`
+                # 统一弹（已本地化）。两处都列清单等于同一件事通知两遍。
+                self.statusBar().showMessage(i18n.t("msg_export_failed"), 5000)
             except Exception as e:
                 self.statusBar().showMessage(f"GIF Export Error: {str(e)}", 5000)
+
+            self._report_export_errors(errors)
+
+    def _report_export_errors(self, errors):
+        """导出结束后汇总提示失败帧（P3-11）。
+
+        单帧失败在 exporter 侧**不**抛异常 —— 缺几帧但其余都导出来是有价值的，
+        不该整体失败。但静默就更糟：用户拿到"导出完成"却少了几张素材，且无从
+        察觉。故在这里统一弹一次清单。
+
+        用 QMessageBox 而不是 statusBar：后者几秒就消失，而错误信息是需要用户
+        读、且可能要照着去补素材的。
+        """
+        if not errors:
+            return
+
+        shown = errors[:_EXPORT_ERROR_DETAIL_LIMIT]
+        details = "\n".join(_describe_export_error(e) for e in shown)
+        hidden = len(errors) - len(shown)
+        if hidden > 0:
+            details += i18n.t("msg_export_more_errors").format(count=hidden)
+
+        QMessageBox.warning(
+            self,
+            i18n.t("dlg_export_problem_title"),
+            i18n.t("msg_export_partial").format(count=len(errors),
+                                                details=details))
+
     def copy_assets_to_local(self):
         if not self.current_project_path:
             msg_box = QMessageBox(self)

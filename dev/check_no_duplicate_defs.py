@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""结构性检查：同一个命名空间里不许有**重复的函数/方法定义**。
+"""结构性检查：同一个命名空间里不许有**重复的类/函数/方法定义**。
 
 ---------------------------------------------------------------------------
 为什么需要这条检查（而不是靠 review 发现）
@@ -14,12 +14,13 @@ Python 对重名定义**既不报错也不警告** —— 后出现的静默覆�
 
 覆盖范围：
   - 类体内的方法（含嵌套类）；
+  - 模块顶层的**类**（见下方"类的判据"）；
   - 模块顶层的函数（dev/ 的测试脚本尤其要查：它们的 `_run_all()` 用
     `globals()` 收集 `test_` 函数，重名会让其中一个**静默不跑** —— 测试数量
     少一条却不报错，是最难察觉的假通过）。
 
 ---------------------------------------------------------------------------
-判据：只有"至少一个定义不带任何装饰器"才报错
+判据一（函数/方法）：只有"至少一个定义不带任何装饰器"才报错
 ---------------------------------------------------------------------------
 以下三种重名是**合法**的，必须放行，否则这个检查会淹没在误报里：
 
@@ -33,6 +34,23 @@ Python 对重名定义**既不报错也不警告** —— 后出现的静默覆�
 
 代价：两个都带 `@staticmethod` 的真重复会被漏掉。这个漏网概率远低于"误报多到
 没人看"，且那种写法本身罕见，接受。
+
+---------------------------------------------------------------------------
+判据二（类）：同名即报错，不看装饰器
+---------------------------------------------------------------------------
+这条是 2026-08-30 补的 —— 本检查原先只收集 `FunctionDef`，**完全看不见类**，
+于是一份 `src/utils/exporter.py` 里躺着两个 `ExportError`（一个 `@dataclass`、
+一个 `@dataclass(frozen=True)`）而本项全绿通过。
+
+函数的装饰器判据**不能沿用到类**：类没有"重载"这回事，同名 class 后定义必然
+覆盖前定义，没有例外。而 `@dataclass` / `@dataclass(frozen=True)` 恰恰是类最常
+见的装饰器 —— 沿用"全都带装饰器就放行"会**正好放行**这类重复，等于没查。
+
+实测过那份重复定义的迷惑性：`inspect.getsourcelines()` 报告的是**前面那份
+死代码**的行号，而 `frozen` 等类属性来自后面那份。`inspect` 显示正确、行为却
+是另一份，正是本检查存在的理由。
+
+类与函数同名也报（后定义覆盖前定义，同样静默）。
 
 ---------------------------------------------------------------------------
 自检（self-test）
@@ -58,34 +76,45 @@ SCAN_FILES = ("main.py",)
 
 # 已知例外。留在这里是为了让"还有活儿没干"显式可见，而不是悄悄跳过。
 #
-# src/ui/temp_prop.py —— `PropertyPanel` 的旧副本（无任何人 import，只在
-# dev/architecture_review.md 里被提到）。它是"死文件"而非"重复定义"：整体删除
-# 是另一件事，本检查只管定义重名，故单独排除、并在此记一笔。
-EXCLUDE_FILES = frozenset({"src/ui/temp_prop.py"})
+# 此集合**应当恒为空**。它曾装过 `src/ui/temp_prop.py`（`PropertyPanel` 的旧副本、
+# 无人 import），那个"死文件"已于 2026-08-30 随 P3-10 删除，检查从此覆盖全仓库。
+#
+# 若将来又想往这里加东西，先问一句"能不能直接删掉那个文件"：放进本集合等于
+# 让它永久躲过检查，而"死文件"的正确处理是删除（git 保有历史），不是豁免。
+# 唯一合理的例外是"重名是有意的且无法改名"（如 vendored 的第三方代码），
+# 那种情况要在此写明理由与预计的移除时间。
+EXCLUDE_FILES = frozenset()
 
 
-def _def_names(body):
-    """取一个命名空间体里的函数/方法名（含 async）。"""
-    return [n.name for n in body
-            if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef))]
+#: 一个命名空间体里可能出现重名的定义节点类型。
+#:
+#: **`ast.ClassDef` 必须在这里。** 它原先不在（只收集函数），于是顶层重复的类
+#: 定义完全查不出来 —— `src/utils/exporter.py` 的两个 `ExportError` 就是这么
+#: 混过全量回归的。类的判据与函数不同，见 `_duplicates`。
+_DEF_NODES = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
 
 
 def _duplicates(body):
-    """返回 (名字, [行号...])，只报"至少一个定义不带装饰器"的重名。
+    """返回 (名字, [行号...])；函数的放行规则见文件头，类同名一律报。
 
     为什么按名字分组后再判断装饰器：property 的 getter/setter 是两个不同节点，
     必须放在一起看才知道它们是"一对"，逐个节点看装饰器永远看不出来。
     """
     by_name = collections.defaultdict(list)
     for n in body:
-        if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)):
+        if isinstance(n, _DEF_NODES):
             by_name[n.name].append(n)
 
     out = []
     for name, defs in by_name.items():
         if len(defs) < 2:
             continue
-        # 全都带装饰器 → 判为有意的重载（property / pyqtSlot / overload），放行
+        # 只要组里有类，就**不看装饰器**直接报：类没有重载语义，@dataclass 也
+        # 不产生新的类型标识（详见文件头"判据二"）。
+        if any(isinstance(d, ast.ClassDef) for d in defs):
+            out.append((name, sorted(d.lineno for d in defs)))
+            continue
+        # 剩下的全是函数：全都带装饰器 → 判为有意的重载，放行
         if all(d.decorator_list for d in defs):
             continue
         out.append((name, sorted(d.lineno for d in defs)))
@@ -125,9 +154,11 @@ def iter_python_files():
         yield p, rel
 
 
-def self_test():
-    """验证检查器本身有效 —— 该报的报，不该报的不报。"""
-    cases = [
+#: 自检用例：`(说明, 源码, 是否应当报出)`。
+#:
+#: 放模块级而不是 `self_test()` 里，是为了让 `main()` 能打印例数 —— 例数写死在
+#: 字符串里每次加用例都会漂，而漂了的例数会让人误以为自检还是原来那些。
+SELF_TEST_CASES = [
         ("两个裸 def 同名（复制粘贴的典型形态）",
          "class A:\n    def f(self):\n        return 1\n    def f(self):\n        return 2\n",
          True),
@@ -151,9 +182,27 @@ def self_test():
          "class A:\n    def f(self):\n        return 1\n"
          "    @staticmethod\n    def f():\n        return 2\n",
          True),
-    ]
+        # ---- 类：同名即报，不看装饰器（文件头"判据二"）-------------------
+        # 这两个用例是 2026-08-30 补的，对应的正是当时漏网的真实缺陷：
+        # exporter.py 里 `@dataclass class ExportError` 与
+        # `@dataclass(frozen=True) class ExportError` 并存。
+        ("两个同名 @dataclass（类不适用函数的装饰器放行规则）",
+         "@dataclass\nclass E:\n    x: int\n"
+         "@dataclass(frozen=True)\nclass E:\n    x: int\n    y: int\n",
+         True),
+        ("类与同名函数（后定义覆盖先定义，同样静默）",
+         "class E:\n    pass\n\ndef E():\n    pass\n",
+         True),
+        ("同名类只有一个（不该报）",
+         "@dataclass\nclass E:\n    x: int\n",
+         False),
+]
+
+
+def self_test():
+    """验证检查器本身有效 —— 该报的报，不该报的不报。"""
     failures = []
-    for label, src, should_report in cases:
+    for label, src, should_report in SELF_TEST_CASES:
         found = check_source(src, "<self_test>")
         reported = bool(found)
         if reported != should_report:
@@ -170,7 +219,8 @@ def main():
         print("FAIL  自检未通过 —— 检查器本身有问题，下面的结果不可信：")
         print("\n".join(failures))
         return 1
-    print("  自检通过（6 例：该报的报、该放行的放行）")
+    # 例数动态算：写死数字每次加用例都会漂（曾经就是这么错的）
+    print(f"  自检通过（{len(SELF_TEST_CASES)} 例：该报的报、该放行的放行）")
 
     total = 0
     offenders = []
@@ -197,6 +247,8 @@ def main():
 
     print(f"FAIL: {len(offenders)} 个文件存在重复定义")
     print("     Python 只保留**最后**一个定义，前面的永不执行。")
+    print("     类同名一律报（类无重载语义）；函数只在有裸 def 时报（放行 property/")
+    print("     pyqtSlot/overload 那类带装饰器的重载）。")
     for rel, found in offenders:
         print(f"  {rel}")
         for name, lines in found:

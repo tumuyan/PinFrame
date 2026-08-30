@@ -15,18 +15,18 @@ PinFrame (定帧) is a PyQt6 desktop application for previewing, fine-tuning, an
   `python main.py` (adds `src` to path internally). In headless/code-server environments use `bash dev/run_gui.sh` which starts Xvfb and `DISPLAY=:99`.
 
 - **Build Windows executable (PyInstaller):**
-  `pyinstaller PinFrame.spec` → output in `dist/PinFrame`. The spec auto-generates `src/core/version.py` from `git describe`/`git remote` at build time.
+  `pyinstaller PinFrame.spec` → output in `dist/PinFrame`. The spec auto-generates `src/core/version.py` from `git describe`/`git remote` at build time. 该文件**不入库**（`.gitignore`），故构建后再也不会污染工作区；开发态没有它，`main_window` 容错回落。
 
 - **Screenshot for visual verification (headless):**
   `bash dev/screenshot.sh` launches the app under Xvfb and captures `dev/tmp_screenshot.png`.
 
 - **Run all automated checks (全量回归):**
   `bash dev/run_all_checks.sh`（退出码 0=全过 / 1=有失败 / 2=前置依赖缺失）。
-  依次跑 12 项：`check_no_duplicate_defs.py` → 语法编译 → `test_transform.py` →
+  依次跑 13 项：`check_no_duplicate_defs.py` → 语法编译 → `test_transform.py` →
   `transform_baseline.py --compare` → `verify_timeline_view_sync.py` →
   `verify_grid_view.py` → `smoke_reorder.py` → `smoke_reference_frame.py` →
   `verify_selection_style.py` → `verify_undo_snapshot.py` → `verify_image_cache.py`
-  → `verify_project_ownership.py`。
+  → `verify_project_ownership.py` → `verify_export_errors.py`。
   `--verbose` 实时回显完整输出，`--fail-fast` 首败即停。
   **改动触及共享层（`core/transform.py`、`timeline_model.py`、`timeline_item_model.py`、
   `project_data.py`）或打包发布前，必须跑全量**；只动某个对话框/i18n 键时可只跑定向项。
@@ -63,8 +63,8 @@ PinFrame (定帧) is a PyQt6 desktop application for previewing, fine-tuning, an
   `configure_reference_settings` 定义 3 份、`update_onion_state` 定义 3 份。
   判据：重名且**至少一个定义不带装饰器**才报错 —— 全都带装饰器视为有意的重载
   （`@property` + setter、`@pyqtSlot` 重载、`typing.overload`），必须放行否则误报淹没。
-  已知例外：`src/ui/temp_prop.py` 是 `PropertyPanel` 的旧副本（无人 import），
-  作为死文件被单独排除，不在检查范围内。
+  **例外集合应当恒为空**（曾装过 `src/ui/temp_prop.py`，那个死文件已随 P3-10 删除）；
+  想加豁免前先问"能不能直接删掉那个文件"。
 
 - **做破坏性验证前必须清字节码缓存:**
   ```sh
@@ -111,7 +111,7 @@ Two dataclasses form the entire project state:
   - **但撤销后一旦有新操作，重做分支即永久丢弃。** `push()` 第一步就是 `del self._entries[self._index + 1:]`。
   - **这是刻意的线性语义，不是缺陷，不要"修"成分支树**（与 Photoshop / Office 一致）。
   - 推论：`jump_to` 直接应用目标条目的 `after`、**不重放**中间步骤，因此快照必须是**完整状态**而非增量补丁。
-- `version.py`: build-time generated; holds `VERSION`, `REPO_URL`, `BUILD_DATE`. Do not edit by hand.
+- `version.py`: **不入库**（见 `.gitignore`），打包时由 `PinFrame.spec` 生成；holds `VERSION`, `REPO_URL`, `BUILD_DATE`。`main_window.py` 的导入是**容错**的：缺该文件不报错，版本回落运行时 `git describe`、URL 回落内置 `DEFAULT_REPO_URL`。不要手工创建或编辑它。
 
 ### Rendering (`src/core/transform.py`, `src/ui/canvas.py`, `src/utils/exporter.py`)
 
@@ -133,6 +133,13 @@ Two dataclasses form the entire project state:
 - **不要跨导出复用**：跨次缓存会让"改了图再导出"拿到旧图，而它的失效时机比缩略图还难判。
 - **上限必须设（默认 256 MiB）**，不要做成无限：无上限会把峰值内存从 1 张变成 N 张，几百帧各用各的大图时**比不缓存更容易 OOM**。
 - 缓存**未裁切**的原图：安全前提是 PIL 的 crop / resize / transpose / rotate 一律返回新对象、从不在原地修改。改用任何原地 API 都会让多帧互相污染且不报错。
+
+**导出失败必须被看见（P3-11）。** `compose_frame` 返回 `False` 表示"源文件缺失或缩放后尺寸退化为 0"——它**不抛异常**，所以"看有没有报错"发现不了。三个导出方法都不许忽略这个返回值，必须经 `_compose_into_canvas()` 记进 `errors`：
+- **`errors` 是可选出参**（`Optional[List[ExportError]] = None`），不传则行为与加该参数前完全一致 —— `transform_baseline.py` 与 `verify_image_cache.py` 都还在不传参地调用，别把它改成必填。
+- **缺帧不产出的具体形态，两种产物刻意相反**：PNG 序列**不写**该文件（写空图会让用户以为素材本来就是空的）；精灵表**留空但占位**（否则后续帧整体错位）；GIF **不 append**（补空白帧会同时改变动画时长与节奏）。
+- **整批失败（一帧都没渲染出来）必须抛 `ExportFailedError`** —— 只有 GIF 会这样。静默返回会让调用方接着弹"导出完成"而磁盘上没有产物。
+- `ExportError.frame_index` 是**工程内 0 基下标**，不是导出批次序号（导出可以只导选中范围，批次序号对不上时间轴）。UI 里显示时才 +1。
+- 单帧失败**不**中断整批：缺 3 帧但其余 97 帧导出来是有价值的。由 `MainWindow._report_export_errors()` 在最后汇总弹一次 `QMessageBox`（部分成功也要提示）。
 
 **`aspect_ratio` 的符号是有语义的。** 它是 X/Y 失真系数，**负值编码镜像状态**——`property_panel._mirror_axis` 对水平镜像同时翻转 `scale` 与 `aspect_ratio` 的符号，垂直镜像只翻转 `aspect_ratio`，而 `reset_mirror` 靠符号**组合**反推镜像轴。只有 `0` 是无效值（除零且无语义）；`normalize_aspect_ratio()` 把它归一为 `1.0`，已应用于 `resolve_frame_geometry`、`frame_aabb`、`effective_target_size()`、`FrameData.from_dict`。**绝不可归一负值**——那会让水平镜像静默变成 180° 旋转、垂直镜像直接失效。
 
@@ -212,7 +219,7 @@ The timeline is a **model/view system**: `TimelineModel` owns the frame list and
 ### Panels, dialogs, and settings (`src/ui/`)
 - `PropertyPanel`: per-frame transform controls (scale, position, rotation, anchor mode, repeat-move timer). Emits `frame_data_changed`/`relative_move_requested`/`custom_anchor_changed`.
 - `slice_dialog.py`: sprite-sheet slicing — rows/cols/grid preview that creates multiple `FrameData` sharing one source image with different `crop_rect`s.
-- Settings dialogs: `settings_dialog`, `onion_settings`, `reference_settings`, `raster_settings`, `canvas_border_settings`, `duplicate_dialog`, `export_dialog`, `copy_assets_dialog`, `color_picker`, `assemble`. Each is a modal feeding `MainWindow` state.
+- Settings dialogs: `settings_dialog`, `onion_settings`, `reference_settings`, `raster_settings`, `canvas_border_settings`, `duplicate_dialog`, `export_dialog`, `copy_assets_dialog`, `color_picker`. Each is a modal feeding `MainWindow` state.
 - `MainWindow` owns the `ProjectData`, wires every signal, manages save/load (`_save_to_path`, `_load_from_path`, `check_unsaved_changes`), playback (`QTimer`-driven `toggle_play`/`next_frame`/`reverse`), and copy/paste of frame properties.
 
 ### i18n (`src/i18n/`)
@@ -231,7 +238,7 @@ Singleton `I18nManager` (`i18n`) loaded from `en_US.json` / `zh_CN.json`. Call `
 - **`source_image_size()`（`model/project_data.py`）有路径缓存，改磁盘上的源图后必须失效。** 它每次调用都是真实的文件 I/O（`QImageReader` 开文件读头），而时间轴的分辨率列在**每次重绘**都会调它。缓存加在 I/O 边界，因此 `base_size()` 与 `effective_target_size()` 都自动受益。失效时机：外部编辑器改图（`_reload_edited_images`）、替换素材（`_replace_asset`）—— 两处均已调 `clear_source_image_size_cache()`。**新增任何"换掉源文件"的路径都要补上这一句**，它不与 `image_cache` 的失效联动。
 - **`project.frames` 已是绑定活跃数据源的属性，恒为实时值**（见上方 Data model）。不要再写 `self.project.frames = self.timeline.get_all_frames()`——绑定后赋值会抛 `RuntimeError`。
 - Image loading = `image_cache.get(...)`（注意用 `from core.image_cache import ...`，不要带 `src.` 前缀）。帧变换语义统一在 `core/transform.py`，canvas 与 exporter 共用；两者只在像素化方式上不同。
-- `src/core/version.py` is auto-generated — never commit hand edits.
+- **`src/core/version.py` 不入库**，只在打包时由 `PinFrame.spec` 生成 —— never commit it，也别手工创建。开发态**没有这个文件是正常的**：`main_window.py` 用 `try/except ImportError` 容错导入，版本回落运行时 `git describe`。**容错逻辑必须留在入库文件里**（就是 `main_window.py`），写进那个被 ignore 的 `version.py` 会让全新克隆直接 `ImportError`。另：`REPO_URL` **不可置空** —— `QDesktopServices.openUrl(QUrl(""))` 不抛异常，只是什么都不做，"打开仓库"菜单会静默失效，故它有内置兜底 `DEFAULT_REPO_URL`。
 - 自动化验证的统一入口是 `bash dev/run_all_checks.sh`（项数与耗时见 Common Commands，
   此处不复制数字，避免两处同时漂移）。
   各脚本分工：`dev/check_no_duplicate_defs.py` 是重复定义的结构性检查（AST，纯标准库），

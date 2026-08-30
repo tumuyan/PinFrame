@@ -1,5 +1,6 @@
 import os
-from typing import List, Tuple, Optional
+from dataclasses import dataclass
+from typing import List, Optional, Tuple
 from PIL import Image
 from core.transform import (base_size, composite_origin,
                             resolve_frame_geometry, scaled_size_floor)
@@ -12,6 +13,16 @@ from utils.debug_config import export_debug
 # 用各的大图" —— 后者若无限缓存，峰值内存从 1 张变成 N 张，比不缓存更容易 OOM。
 # 有上限之后，最坏情况退化为"缓存没命中"，不会比改之前更差。
 DEFAULT_SOURCE_CACHE_BYTES = 256 * 1024 * 1024
+
+
+# 单帧合成失败的原因（ExportError.kind 的取值）。
+#
+# 分两类而不是笼统记一个"失败"：源文件缺失是**用户能自己修**的（找回文件、改素材
+# 路径），而尺寸退化为 0 是**帧参数**问题（缩放得太小），两者的处置完全不同。
+MISSING_SOURCE = "missing_source"
+DEGENERATE_SIZE = "degenerate_size"
+# 合成过程中抛出的异常也进同一份清单，kind 固定为它
+EXCEPTION = "exception"
 
 
 class SourceImageCache:
@@ -95,6 +106,92 @@ class SourceImageCache:
             del self._images[path]
             self._bytes -= self._image_bytes(victim)
             victim.close()
+
+
+@dataclass(frozen=True)
+class ExportError:
+    """一次单帧导出失败的记录。
+
+    导出里最容易被忽略的失败**不是异常**，而是 `compose_frame` 返回 `False`
+    （`missing_source` / `degenerate_size`）—— 它**不抛异常**。三个导出方法此前都
+    不看这个返回值：PNG 序列照样 `canvas.save()` 写出一张全透明的空图、精灵表留
+    一个空白格、GIF 补一个空白帧。用户的观感是"导出成功"，只是少了几张素材 ——
+    而"工程被移动 / 素材被删 / 工程从别人机器上拷来"恰恰是最常见的现实场景。
+
+    `frame_index` 是**工程内帧号**（用户能对着时间轴找到它），不是导出批次内的
+    序号 —— 导出可以只导选中范围，批次序号对不上时间轴。展示时按 1 基显示
+    （时间轴的序号是 1 基）。
+
+    `frozen` 不是洁癖：`errors` 会被**跨层**传回 `MainWindow` 再逐条展示，可变的
+    记录对象让"谁改了它"无从追查。代价是要改一条记录得整体替换。
+    """
+
+    kind: str          # MISSING_SOURCE | DEGENERATE_SIZE | EXCEPTION
+    frame_index: int
+    detail: str = ""
+
+
+class ExportFailedError(Exception):
+    """整批导出彻底失败（一帧都没成功）。
+
+    单帧失败**不**抛，而是记进 `errors` 让其余帧继续导出 —— "缺 3 帧但其余 97
+    帧导出来了"是有价值的，不该整体失败。但"一帧都没导出"就不是部分成功了，
+    此时必须抛出，否则用户拿到一个空的/不存在的文件却看到"导出完成"。
+
+    `str(e)` 是**给开发者的诊断文本，不是给用户看的文案**。它最终会原样显示在
+    状态栏上（调用方是 `except Exception as e: showMessage(f"...: {e}")`），所以
+    UI 层要单独 `except ExportFailedError` 挑出来、改说本地化的一句话；用户可见
+    的逐条清单则由 `errors` 出参承载，走 i18n。
+    """
+
+    def __init__(self, errors: List[ExportError]):
+        super().__init__(f"export failed: {len(errors)} error(s)")
+        self.errors = errors
+
+
+def _record_error(errors: Optional[List[ExportError]], kind: str,
+                  frame_index: int, detail: str = "") -> None:
+    """把一条失败记进调用方给的清单；`errors` 为 None 时什么都不做。
+
+    None 表示调用方不关心错误（保持加这个功能之前的静默行为），故三个导出方法的
+    既有调用点无需改动。
+
+    记错点**一律**走本函数，不要在调用处写
+    `if errors is not None: errors.append(...)`：漏掉那个 `if` 会在 `errors=None`
+    时 AttributeError，而 None 恰恰是既有调用方（`transform_baseline.py` /
+    `verify_image_cache.py`）的常态 —— 只测"传了 errors"的路径是测不出这个错的。
+
+    位置必须在 `ExportError` **之后**：注解 `List[ExportError]` 在函数定义时就
+    要求值，放前面会 NameError（挪动顺序时踩过）。
+    """
+    if errors is not None:
+        errors.append(ExportError(kind=kind, frame_index=frame_index,
+                                  detail=detail))
+
+
+def _compose_into_canvas(canvas: Image.Image, frame, canvas_w: int, canvas_h: int,
+                         source_cache, frame_index: int,
+                         errors: Optional[List[ExportError]]) -> bool:
+    """调 `compose_frame` 并把失败记进 `errors`；返回是否成功。
+
+    失败种类靠复现 `compose_frame` 自己的两个判据来区分 —— 它只回一个 bool，
+    而"源文件没了"与"缩放后尺寸退化成 0"对用户的含义完全不同。判断顺序必须与
+    `compose_frame` 内部一致（先查文件存在、再查尺寸退化），**且只在失败路径上
+    执行**，故不引入额外的常态开销。
+
+    `errors` 为 None 时只返回结果、什么都不记 —— 这保留了加本参数之前的行为，
+    现有调用方（`dev/transform_baseline.py`、`dev/verify_image_cache.py`）因此零改动。
+    """
+    if Exporter.compose_frame(canvas, frame, canvas_w, canvas_h, source_cache):
+        return True
+
+    if not os.path.exists(frame.file_path):
+        kind = MISSING_SOURCE
+    else:
+        kind = DEGENERATE_SIZE
+
+    _record_error(errors, kind, frame_index, frame.file_path)
+    return False
 
 
 class Exporter:
@@ -195,8 +292,15 @@ class Exporter:
         return sorted(list(indices))
 
     @staticmethod
-    def export_iter(project: ProjectData, output_dir: str, use_original_filenames: bool = True, 
-                    frame_indices: Optional[List[int]] = None, bg_color: Tuple[int, int, int, int] = (0, 0, 0, 0)):
+    def export_iter(project: ProjectData, output_dir: str, use_original_filenames: bool = True,
+                    frame_indices: Optional[List[int]] = None, bg_color: Tuple[int, int, int, int] = (0, 0, 0, 0),
+                    errors: Optional[List[ExportError]] = None):
+        """逐帧导出 PNG 序列，yield (当前序号, 总数) 供进度条使用。
+
+        `errors` 是**出参**：单帧失败不抛异常，而是往里追加一条 `ExportError`，
+        其余帧继续导出。不传则与加本参数之前完全一致（失败只是不产出该文件）。
+        调用方在生成器消费完之后读它 —— 生成器是惰性的，未消费完就读取会漏。
+        """
         export_debug(f"[Export] Starting export_iter: output_dir={output_dir}, use_original_filenames={use_original_filenames}")
         if not os.path.exists(output_dir):
             os.makedirs(output_dir)
@@ -234,8 +338,12 @@ class Exporter:
                 canvas = Image.new('RGBA', (project.width, project.height), bg_color)
             
                 try:
-                    Exporter.compose_frame(canvas, frame, project.width, project.height,
-                                           source_cache)
+                    # 合成失败（源图缺失 / 尺寸退化）时**不**写文件 —— 否则用户会
+                    # 拿到一张全透明的空 PNG，还以为只是素材本来就是空的。
+                    if not _compose_into_canvas(canvas, frame, project.width,
+                                                project.height, source_cache,
+                                                orig_idx, errors):
+                        continue
 
                     # Save
                     if use_original_filenames:
@@ -263,22 +371,33 @@ class Exporter:
                     canvas.save(os.path.join(output_dir, filename))
 
                 except Exception as e:
-                    print(f"Error exporting frame {orig_idx}: {e}")
-                
+                    # 不静默：进 errors 供调用方汇总提示（errors 为 None 时至少
+                    # 走 debug 框架，比裸 print 强 —— 它可被 export 分类开关关掉）
+                    export_debug(f"[Export] Frame {orig_idx} failed: {e}")
+                    _record_error(errors, EXCEPTION, orig_idx, str(e))
+
         export_debug(f"[Export] Export_iter completed: {total_frames} frames exported")
                 
     @staticmethod
-    def export_sprite_sheet(project: ProjectData, output_path: str, 
-                           frame_indices: Optional[List[int]] = None, bg_color: Tuple[int, int, int, int] = (0, 0, 0, 0)):
-        
+    def export_sprite_sheet(project: ProjectData, output_path: str,
+                            frame_indices: Optional[List[int]] = None, bg_color: Tuple[int, int, int, int] = (0, 0, 0, 0),
+                            errors: Optional[List[ExportError]] = None):
+        """导出精灵表。
+
+        `errors` 是出参，语义同 `export_iter`：单帧失败不中断整批，该格留空并记一条。
+        """
         export_debug(f"[Export] Starting sprite sheet export: output_path={output_path}")
 
         all_frames = project.frames      # 属性读取会取实时快照，只取一次
         if frame_indices is None:
-            frames_to_export = [f for f in all_frames if not f.is_disabled]
+            # 带上工程内帧号：导出可能只覆盖选中范围，批次序号对不上时间轴，
+            # 报错时用户没法按批次序号找到是哪一帧。
+            frames_to_export = [(i, f) for i, f in enumerate(all_frames)
+                                if not f.is_disabled]
         else:
-            frames_to_export = [all_frames[i] for i in frame_indices if i < len(all_frames)]
-            
+            frames_to_export = [(i, all_frames[i]) for i in frame_indices
+                                if i < len(all_frames)]
+
         if not frames_to_export:
             return
             
@@ -296,63 +415,81 @@ class Exporter:
         sheet = Image.new('RGBA', (total_w, total_h), (0, 0, 0, 0))
         
         with SourceImageCache() as source_cache:
-            for i, frame in enumerate(frames_to_export):
+            for i, (orig_idx, frame) in enumerate(frames_to_export):
                 # Render individual frame to a temporary canvas with bg_color
                 canvas = Image.new('RGBA', (fw, fh), bg_color)
             
                 try:
-                    Exporter.compose_frame(canvas, frame, fw, fh,
-                                           source_cache)
+                    # 合成失败则该格留空（不 composite），但格子仍然占位 ——
+                    # 精灵表是按 col/row 定位的，跳过一帧会让后面所有帧整体错位。
+                    if _compose_into_canvas(canvas, frame, fw, fh, source_cache,
+                                            orig_idx, errors):
+                        row_idx = i // cols
+                        col_idx = i % cols
 
-                    row_idx = i // cols
-                    col_idx = i % cols
-                
-                    sheet_x = col_idx * fw + (col_idx + 1) * padding
-                    sheet_y = row_idx * fh + (row_idx + 1) * padding
-                
-                    sheet.alpha_composite(canvas, (sheet_x, sheet_y))
-                
+                        sheet_x = col_idx * fw + (col_idx + 1) * padding
+                        sheet_y = row_idx * fh + (row_idx + 1) * padding
+
+                        sheet.alpha_composite(canvas, (sheet_x, sheet_y))
+
                 except Exception as e:
-                    print(f"Error merging frame {i}: {e}")
+                    export_debug(f"[Export] Sheet frame {orig_idx} failed: {e}")
+                    _record_error(errors, EXCEPTION, orig_idx, str(e))
                 
         sheet.save(output_path)
         export_debug(f"[Export] Sprite sheet saved: {output_path}, {len(frames_to_export)} frames, {cols}x{rows} grid")
 
     @staticmethod
-    def export_gif(project: ProjectData, output_path: str, 
-                   frame_indices: Optional[List[int]] = None, bg_color: Tuple[int, int, int, int] = (0, 0, 0, 0)):
-        
+    def export_gif(project: ProjectData, output_path: str,
+                   frame_indices: Optional[List[int]] = None, bg_color: Tuple[int, int, int, int] = (0, 0, 0, 0),
+                   errors: Optional[List[ExportError]] = None):
+        """导出 GIF。
+
+        `errors` 是出参，语义同 `export_iter`。唯一的不同是**整批失败会抛**
+        `ExportFailedError`：GIF 是单文件产物，一帧都没渲染出来时不存在"部分成功"，
+        静默生成一个空文件或干脆不生成都会让用户以为成功了。
+        """
+
         export_debug(f"[Export] Starting GIF export: output_path={output_path}")
 
         all_frames = project.frames      # 属性读取会取实时快照，只取一次
         if frame_indices is None:
-            frames_to_export = [f for f in all_frames if not f.is_disabled]
+            frames_to_export = [(i, f) for i, f in enumerate(all_frames)
+                                if not f.is_disabled]
         else:
-            frames_to_export = [all_frames[i] for i in frame_indices if i < len(all_frames)]
-            
+            frames_to_export = [(i, all_frames[i]) for i in frame_indices
+                                if i < len(all_frames)]
+
         if not frames_to_export:
+            # 刻意静默返回，不抛 ExportFailedError：这里不是"一帧都没渲染出来"，
+            # 而是"压根没有帧可导"。两者后果不同 —— 后者没有产物是**正确的**
+            # （空工程本就导不出东西），抛异常反而把正常流程变成报错。
+            # 调用方（MainWindow）在此前已用 `if not indices: return` 挡过一次。
             return
-            
+
         pil_frames = []
         duration = int(1000 / project.fps) if project.fps > 0 else 100
         
         with SourceImageCache() as source_cache:
-            for frame in frames_to_export:
+            for orig_idx, frame in frames_to_export:
                 canvas = Image.new('RGBA', (project.width, project.height), bg_color)
             
                 try:
-                    Exporter.compose_frame(canvas, frame, project.width, project.height,
-                                           source_cache)
-
-                    # Convert to RGB or keep RGBA?
-                    # GIF doesn't support full alpha, but PIL can handle it with trans index.
-                    # To be safe and simple, let's keep it in RGBA and let PIL handle it, 
-                    # or convert if necessary.
-                    pil_frames.append(canvas)
+                    # 合成失败则**不 append**：GIF 没有"占位帧"的概念，补一帧空白
+                    # 会让动画时长与节奏都变掉，比少一帧更糟。
+                    if _compose_into_canvas(canvas, frame, project.width,
+                                            project.height, source_cache,
+                                            orig_idx, errors):
+                        # Convert to RGB or keep RGBA?
+                        # GIF doesn't support full alpha, but PIL can handle it with trans index.
+                        # To be safe and simple, let's keep it in RGBA and let PIL handle it,
+                        # or convert if necessary.
+                        pil_frames.append(canvas)
                 
                 except Exception as e:
-                    print(f"Error rendering gif frame: {e}")
-                
+                    export_debug(f"[Export] GIF frame {orig_idx} failed: {e}")
+                    _record_error(errors, EXCEPTION, orig_idx, str(e))
+
         if pil_frames:
             # save_all=True will save the first image followed by all others in pil_frames[1:]
             pil_frames[0].save(
@@ -365,7 +502,7 @@ class Exporter:
             )
             export_debug(f"[Export] GIF saved: {output_path}, {len(pil_frames)} frames, duration={duration}ms")
         else:
-            # All frames failed to render - log a warning so the failure is visible,
-            # consistent with the other exporters.
-            print(f"Error rendering gif: no frames could be rendered for {output_path}")
+            # 一帧都没渲染出来：这是整批失败，不是部分成功。此前只是 print，调用方
+            # 随后照样弹"导出完成"，而磁盘上根本没有这个文件（P3-11）。
             export_debug(f"[Export] GIF export failed: no frames rendered for {output_path}")
+            raise ExportFailedError(list(errors) if errors is not None else [])

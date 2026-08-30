@@ -21,6 +21,11 @@ def update_version_info():
 
     build_date = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec='minutes')
     
+    # 写 `version.py`（P3-9）：该文件**不入库**（见 .gitignore），只在打包时生成，
+    # 故每次构建重写它不会再污染工作区。开发态没有它 —— `main_window` 的导入是
+    # **容错**的（缺文件时回落到运行时 git describe / 内置默认 URL）。
+    #
+    # 生成时机仍在 `Analysis` 之前，这样 PyInstaller 的静态分析能把它收进产物。
     version_file = os.path.join('src', 'core', 'version.py')
     with open(version_file, 'w') as f:
         f.write(f'VERSION = "{version_str}"\n')
@@ -34,7 +39,10 @@ a = Analysis(
     pathex=['src'],
     binaries=[],
     datas=[('src/i18n', 'src/i18n'), ('src/resources', 'src/resources')],
-    hiddenimports=[],
+    # `core.version` 由上面的 `update_version_info()` 生成，且 `core` 是命名空间包
+    # （无 __init__.py）。显式列出以免静态分析漏收 —— 漏了的后果是打包产物里
+    # 版本号为空，且**不报错**（导入是容错的）。
+    hiddenimports=['core.version'],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
