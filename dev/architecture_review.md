@@ -416,7 +416,11 @@ O(1) —— 若没有第 2 项，这个 O(n) 比较会把省下的克隆又赔�
 但**完全没有 redo**；`verify_undo_snapshot.py` 补的是 undo↔redo **往返**。
 两者不重复，删任何一个都会留下缺口。
 
-### 一个未修的既有缺陷（本项不改，记录在此）
+### 一个既有缺陷（2026-08-30 已修）
+
+> **状态：已修。** 原标题是「一个未修的既有缺陷（本项不改，记录在此）」，当时
+> 搁置的理由是"会改变播放中的既有行为，超出本项范围"。2026-08-30 补做，做法与
+> 当初设想的三条信号不同（实际接了五条），记录在下。
 
 `MainWindow.playlist` **缓存帧对象**（`self.playlist = [f for f in frames ...]`），
 而 `update_playlist()` 只在"开始播放 / 禁用状态变化 / 播放中选中变化"时调用 ——
@@ -425,8 +429,99 @@ O(1) —— 若没有第 2 项，这个 O(n) 比较会把省下的克隆又赔�
 这不是 P2-6 引入的：改动前撤销走整体替换，**全部**对象换新（实测 13/13 失效）；
 改动后撤销单帧属性只让 **1** 个失效。亦即 P2-6 顺带把它变轻了，但没消除。
 
-修法很直接（让 `frames_replaced` / `frames_reordered` / `data_changed` 在
-`is_playing` 时刷新 playlist），但会改变播放中的既有行为，超出本项范围，故只记录。
+#### 修法：接五条模型信号，不是当初设想的三条
+
+原设想只接 `frames_replaced` / `frames_reordered` / `data_changed`。实测三条**不够**，
+缺的正是最常见的两类操作：
+
+| 缺哪条 | 漏掉什么（实测） |
+|---|---|
+| `frames_inserted` | 播放中加帧 → 新帧永远轮不到（模型 16 帧，playlist 仍是 13） |
+| `frames_removed` | 播放中删帧 → 已删的帧**继续播出来**（模型 14 帧，playlist 仍是 13） |
+| `data_changed` | 播放中撤销属性 → 画面继续用旧对象，**看起来像"撤销没生效"** |
+| `frames_replaced` | 播放中撤销加/删帧（行数变 → 回落 `set_frames`）→ 同上 |
+| `frames_reordered` | 播放中拖拽换序 → 播放顺序停在旧顺序上 |
+
+`data_changed` 与 `frames_replaced` 是撤销的**两条**路径（行数不变走前者、行数变走
+后者），与 `clone()` 分散在两条路径上那条教训同构 —— 只接一条，另一半静默退回旧行为。
+
+`data_changed` 还不止管撤销：外部编辑器改图后回写帧属性（`main_window.py` 的
+`_reload_edited_images` 之后那条 `model.data_changed.emit`）走的也是它。用例只覆盖
+了撤销那条。
+
+刻意**未接** `frame_disabled_changed`：改的只是 `is_disabled`，上面五条一条都不会
+发；禁用态的三条写入路径各自调了 `_refresh_playlist_if_playing()`，再接一次是纯
+冗余。
+
+代价是这三条是**分散的人工调用**、不是信号驱动的：少一处，被禁用的帧就继续播，
+而五条信号的用例一个都测不到。故三条各配一条断言 —— 见破坏性验证表下半部分。
+
+#### 刷新之后必须判空：空 playlist 会留下僵尸播放态
+
+帧被删光（或全被禁用）时 `update_playlist()` 会算出空列表。此时 `next_frame()`
+在列表为空时静默 return、计时器继续空转、`is_playing` 一直是 True、按钮卡在"暂停"
+—— 不报错、不崩溃，但界面看起来像卡死，只能靠用户再点一次按钮解开。
+`toggle_play` 开播时本来就有这个判空，刷新路径不能只有一半。
+
+判空放在 `_refresh_playlist_if_playing()` 里、**不**放进 `update_playlist()`：后者
+是纯粹的"重建列表"，而 `toggle_play` 在调它之后还要 `timer.start()` —— 在那里判空
+会立刻被随后的 start 抵消。
+
+#### 一个必须守住的前提：`is_playing` 守卫不能去掉
+
+这五条信号在**载入工程**时会被成串触发（`timeline.clear()` 一次 `frames_removed`
++ N 次 `frames_inserted`）。守卫一旦去掉，载入就会一边灌帧一边重建 playlist，而且是
+在 `project.frames` 正处于半填充状态时 —— 正是 `_load_from_path` 那条注释里"已确认
+安全"的论证所依赖的前提。该注释已同步改写（它原先写的是"MainWindow 也没有连接
+`frames_removed`"，接入之后这句不再成立）。
+
+**但"载入后 playlist 最终是新的"并不靠这个守卫。** 实测播放中重新载入工程，
+`playlist[0]` 确实是新工程的帧 —— 救它的是载入末尾的 `setCurrentRow(0)` →
+`on_selection_changed` → 刷新，不是这五条连接。守卫管的只是"灌帧期间别反复重建"。
+给 `setCurrentRow(0)` 加条件时别以为有守卫兜底。
+
+#### 破坏性验证（11 个破坏点全部被捕获）
+
+五条连接**逐条**摘掉，各有一条对应用例变红（1:1，无交叉）；再单独摘掉 `is_playing`
+守卫、`playlist` 判空、以及三处禁用/选中的人工调用，也各有一条变红。
+
+| 破坏 | 被哪个用例捕获 |
+|---|---|
+| 摘 `data_changed` | `test_playlist_tracks_undo_during_playback` |
+| 摘 `frames_replaced` | `test_playlist_tracks_undo_of_row_count_change_during_playback` |
+| 摘 `frames_reordered` | `test_playlist_tracks_reorder_during_playback` |
+| 摘 `frames_inserted` | `test_playlist_tracks_inserted_frame_during_playback` |
+| 摘 `frames_removed` | `test_playlist_tracks_removed_frame_during_playback` |
+| 摘 `is_playing` 守卫 | `test_playlist_refresh_is_noop_when_not_playing` |
+| 刷新后不判空 | `test_playback_stops_when_playlist_empties` |
+| `toggle_enable_disable` 不刷新 | `test_playlist_tracks_disable_during_playback` |
+| `on_frame_disabled_state_changed` 不刷新 | 同上（两条禁用路径共用一个用例） |
+| `on_selection_changed` 不刷新 | `test_playlist_follows_selection_change_during_playback` |
+
+**第一次做守卫那条破坏时没生效，是破坏脚本的错，不是用例的错。** 我用
+`if self.is_playing:\n    self.update_playlist()` 当匹配串，而**同样的两行在
+`on_selection_changed` 里还有两处** —— 改到的是错误的那一处，于是"测试没红"差点被
+读成"守卫没用"。`assert 目标 in 源码` 只保证**存在**、不保证**唯一**；破坏点不唯一
+时必须带上下文化的锚点（我后来用 `def stop_playback` 收尾）并断言 `count == 1`。
+这是[P1-3 那条"破坏脚本必须先断言目标字符串存在再改"](#p1-3-实施计划)的加强版。
+
+（后来三处禁用/选中调用统一成 `self._refresh_playlist_if_playing()`，同形串从
+3 处变成 3 处、问题依旧 —— 破坏脚本一律用"上一行注释 + 调用"当锚点并断言
+`count == 1`。）
+
+#### 另两处测试自身的坑
+
+`toggle_play` 是**切换**语义。第一个用例跑完若留下 `is_playing=True`，下一个用例再
+调它就变成"停止"，`is_playing` 立刻为 False —— 断言会以"前置条件失败"的形式假通过
+（实测踩到）。故用例走 `with _playing(win)` 上下文：进入前先 `stop_playback()` 保证
+幂等，退出时 `finally` 停掉，避免把 `is_playing` 泄漏给后续用例。判空那条用例的断言
+必须写在上下文**内部** —— 放在外面会被 `finally` 的 `stop_playback()` 抹平。
+
+"改选中"不能靠 `model.set_selection()`：那是**模型 → 视图**方向，
+`TimelineWidget._on_model_selection_changed` 会 `blockSignals` 后写视图、刻意不回传
+`selection_changed`（否则成环），`MainWindow.on_selection_changed` 根本不会被调用，
+断言随即假通过（实测踩到）。必须模拟**用户选中**（操作共享的 `QItemSelectionModel`），
+并等过视图那 50ms 的选中防抖定时器。
 
 ### 实测数据（500 帧工程）
 
@@ -1251,7 +1346,7 @@ X 决定前后"是网格按行主序排布的**真实业务语义**，不是衍�
 | `dev/smoke_reorder.py` | 完整 `MainWindow` 链路：加载工程 → 拖拽 → 撤销（含加帧/删帧）→ 列映射/参考帧/禁用（断言式，无 `test_*` 命名） | 接线网 |
 | `dev/smoke_reference_frame.py` | **9 个用例**：参考帧高亮、连设两次幂等、清除后还原 | 接线网 |
 | `dev/verify_selection_style.py` | **9 个用例**：选中配色跨平台一致、对比度下限、单一来源 | 视觉样式网 |
-| `dev/verify_undo_snapshot.py` | **11 个用例**：撤销走增量而非整体替换、行数变化回落、快照不被后续编辑污染（**增量/回落两条路径各一**）、未变帧共享、记历史的克隆成本与帧数无关、加帧/删帧/拖拽重排的撤销**重做**往返、参考帧在撤销后仍还原、`apply_frames` 契约 | 撤销快照网（P2-6） |
+| `dev/verify_undo_snapshot.py` | **17 个用例**：撤销走增量而非整体替换、行数变化回落、快照不被后续编辑污染（**增量/回落两条路径各一**）、未变帧共享、记历史的克隆成本与帧数无关、加帧/删帧/拖拽重排的撤销**重做**往返、参考帧在撤销后仍还原、`apply_frames` 契约；2026-08-30 起另含 6 个**播放列表鲜度**用例（撤销 / 增删 / 换序各一条 + 撤销行数变化一条 + `is_playing` 守卫一条） | 撤销快照网（P2-6） |
 
 `dev/run_all_checks.sh` 把这批资产并为 **10 项**（含 `check_no_duplicate_defs` 与
 语法编译），2026-08-29 实测 **10/10 PASS，约 5s**。
@@ -1744,7 +1839,18 @@ python dev/verify_project_ownership.py
 #  1) 跨层私有访问应为 0
 grep -n "timeline\._\|grid_view\._" src/ui/main_window.py
 #  2) 函数内 import 应为 0
-grep -cE "^[[:space:]]+(from|import) " src/ui/main_window.py
+#     ⚠️ **不要**用「数带缩进的 import」来判（`grep -cE "^[[:space:]]+(from|import) "`）:
+#     它恒命中 1 条 —— `main_window.py` 顶部那个模块级
+#     `try: from core import version`（P3-9 的容错导入）。它在 `try` 块里所以带缩进，
+#     但**不在任何函数内**。「有缩进」不等于「在函数内」，只有 AST 能区分：
+python - <<'PY'
+import ast
+t = ast.parse(open('src/ui/main_window.py', encoding='utf-8').read())
+inner = {id(n) for f in ast.walk(t) if isinstance(f, (ast.FunctionDef, ast.AsyncFunctionDef))
+         for n in ast.walk(f)}
+print([n.lineno for n in ast.walk(t)
+       if isinstance(n, (ast.Import, ast.ImportFrom)) and id(n) in inner])   # 期望 []
+PY
 #  3) 单持有者：self.project = 应无结果（backing 字段是 _project，只允许
 #     __init__ 初始化与 _adopt_project 两处赋值）
 grep -n "self\.project = " src/ui/main_window.py
@@ -1756,11 +1862,19 @@ grep -n "_read_sizes\|_write_sizes\|stack_split_sizes\|custom_layout_v_sizes\|cu
 # P2-7 全部四点（2026-08-30 已完成，以下为复核命令）
 #  1) get() 签名只剩 (self, file_path)；crop_rect 只应出现在解释"为什么删掉"的
 #     docstring 里，不得出现在 get() 的实现里
+#     ⚠️ **不要**数 `crop_rect` 的命中数：它恒命中 1 条（类 docstring 里那句解释
+#     为什么删掉它的话），那是刻意保留的说明文字，不是参数回潮。签名才是判据。
 #  2) 上限是字节预算 + LRU：不应再有 _max_size / 按张数的判据，命中处应有 move_to_end
+#     （上面那条 grep：`_max_size` 应 0 命中，`_max_bytes` / `move_to_end` 应有命中）
 #  3) 缩略图 key 不含行号（P1-3 期已修）
 #  4) 导出期源图缓存：三种导出模式都用 with SourceImageCache()
-grep -n "def get" src/core/image_cache.py
-grep -rn "crop_rect\|_max_size" src/core/image_cache.py
+python - <<'PY'
+import ast
+t = ast.parse(open('src/core/image_cache.py', encoding='utf-8').read())
+get_ = [n for n in ast.walk(t) if isinstance(n, ast.FunctionDef) and n.name == 'get'][0]
+print([a.arg for a in get_.args.args])      # 期望 ['self', 'file_path']
+PY
+grep -n "_max_bytes\|_max_size\|move_to_end" src/core/image_cache.py
 grep -n "_get_cache_key" -A 8 src/ui/timeline_grid.py
 grep -n "SourceImageCache()" src/utils/exporter.py   # 应为 3 处
 
@@ -1793,7 +1907,17 @@ grep -n "EXCLUDE_FILES" -A 2 dev/check_no_duplicate_defs.py
 # ⚠️ 预期已变（2026-08-30）：exporter.py 应**零**命中；全项目裸 except: 只剩
 #     main_window.py 取源图尺寸那一处（刻意保留的有意降级），裸 print 剩 4 处
 #     （i18n 启动期 2 + main_window 存盘 1 + timeline 警告 1），均不在本项范围内。
-grep -rn "except:" src/ --include="*.py"
+# ⚠️ **不要**用 `grep -rn "except:"` 数：它会命中 **docstring** 里的历史描述
+#    （main_window.py 的模块 docstring 有两行在讲"曾经的裸 except:"，实测多报 2 条）。
+#    那是三引号字符串、**不是** `#` 注释，所以 grep -v 筛注释拦不住。用 AST 数真正的
+#    `ExceptHandler`（`type is None` 才是裸 `except:`）：
+python - <<'PY'
+import ast, pathlib
+print([(str(p), h.lineno)
+       for p in sorted(pathlib.Path('src').rglob('*.py'))
+       for h in ast.walk(ast.parse(p.read_text(encoding='utf-8')))
+       if isinstance(h, ast.ExceptHandler) and h.type is None])
+PY
 grep -rn "^\s*print(" src/ --include="*.py" | grep -v debug_config.py
 
 # P3-11 的主体（评审漏掉的那条）：compose_frame 的返回值必须被检查。

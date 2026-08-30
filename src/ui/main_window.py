@@ -365,6 +365,36 @@ class MainWindow(QMainWindow):
         self.playlist = []
         self.play_index = 0
 
+        # 播放列表的鲜度 —— 模型一变就重建（修 P2-6 记录里那条未修的既有缺陷）。
+        #
+        # `playlist` 缓存的是**帧对象**，而"模型里的帧对象"会在三种情况下被换掉，
+        # 此前没有任何一处通知它，于是播放中做这些操作都会静默失效：
+        #   - 撤销/重做（行数不变走 `data_changed`，行数变走 `frames_replaced`）：
+        #     `apply_frames` **刻意**把快照里的帧克隆进模型（不复用快照对象，否则
+        #     后续原地编辑会写进历史），于是 playlist 里的旧对象就此失效 ——
+        #     用户撤销后画面继续用旧值，看起来像"撤销没生效"；
+        #   - 增删帧（`frames_inserted` / `frames_removed`）：删掉的帧仍在播，
+        #     新加的帧永远轮不到；
+        #   - 换序（`frames_reordered`）：播放顺序停在旧顺序上。
+        #
+        # 只接这五条、不接 `frame_disabled_changed`：禁用态的三条写入路径
+        # （`toggle_enable_disable` / `on_frame_disabled_state_changed` / 选中变化）
+        # 已经各自调了 `_refresh_playlist_if_playing()`（改的只是 `is_disabled`，
+        # 上面五条一条都不会发），再接一次就是纯冗余。
+        #
+        # 但代价是这三条是**分散的人工调用**、不是信号驱动的：少一处，被禁用的帧
+        # 就会继续播，而上面五条用例一个都测不到 —— 由
+        # `test_playlist_tracks_disable_during_playback` 单独钉住。
+        #
+        # 槽函数无参数：PyQt 允许槽的参数少于信号，多余的实参会被丢弃
+        # （`data_changed` 等带两个 int，这里用不上）。
+        _model = self.timeline.model
+        _model.data_changed.connect(self._refresh_playlist_if_playing)
+        _model.frames_replaced.connect(self._refresh_playlist_if_playing)
+        _model.frames_reordered.connect(self._refresh_playlist_if_playing)
+        _model.frames_inserted.connect(self._refresh_playlist_if_playing)
+        _model.frames_removed.connect(self._refresh_playlist_if_playing)
+
         # Onion Skin & Reference State (must be initialized before create_actions)
         self.onion_enabled = False
         self.onion_prev = self.settings.value("onion_prev", 1, type=int)
@@ -2290,8 +2320,7 @@ class MainWindow(QMainWindow):
         self.canvas.update() 
         
         # Update playlist if playing so that skip logic applies immediately
-        if self.is_playing:
-            self.update_playlist()
+        self._refresh_playlist_if_playing()
         self.record_history(i18n.t("hist_toggle_disable"), before=before, after=after)
 
     def toggle_enable_disable(self, enable):
@@ -2335,8 +2364,7 @@ class MainWindow(QMainWindow):
 
         self.mark_dirty()
         self.canvas.update()
-        if self.is_playing:
-            self.update_playlist()
+        self._refresh_playlist_if_playing()
         self.statusBar().showMessage(i18n.t("msg_frames_enabled_disabled").format(action=i18n.t("action_enabled") if enable else i18n.t("action_disabled"), count=len(selected_indices)), 3000)
         self.record_history(i18n.t("hist_toggle_disable"), before=before, after=after)
 
@@ -2676,8 +2704,7 @@ class MainWindow(QMainWindow):
         self.update_onion_state() # Update Onion (auto-suppress logic handled here)
         
         # Update playlist if playing
-        if self.is_playing:
-            self.update_playlist()
+        self._refresh_playlist_if_playing()
         
         # Show offset information for multi-frame selection when not playing
         if not self.is_playing and len(frames) >= 2:
@@ -3222,6 +3249,31 @@ class MainWindow(QMainWindow):
         else:
             self.play_index = 0
 
+    def _refresh_playlist_if_playing(self):
+        """模型结构或内容变了 —— 播放中就把 playlist 按模型重建。
+
+        只在播放时动作：不播放时 `playlist` 不参与任何逻辑，而 `toggle_play` 本来就
+        会重建它，白刷一遍没有意义。
+
+        重建后**必须判空并真的停下**。帧被删光（或全被禁用）时 `playlist` 会变成空
+        列表，此时 `next_frame()` 静默 return、计时器继续空转、`is_playing` 一直为
+        True、按钮卡在"暂停" —— 不报错、不崩溃，但界面看起来像卡死，且只能靠用户
+        再点一次按钮才解开。`toggle_play` 在开播时就有同样的判空（见那里），刷新
+        路径不能只有一半。
+
+        判空放在这里、不放在 `update_playlist()` 内：`update_playlist()` 是纯粹的
+        "重建列表"，而 `toggle_play` 在调用它之后还要 `timer.start()` —— 在那里
+        判空会立刻被随后的 start 抵消。
+
+        注意这里**不**去重、不延迟：`update_playlist()` 只是一次 O(帧数) 的取数加过滤，
+        而"载入工程"这类一次性灌 N 帧的场景最多也就是 N 次 O(帧数)，实测量级可忽略。
+        """
+        if not self.is_playing:
+            return
+        self.update_playlist()
+        if not self.playlist:
+            self.stop_playback()
+
     def stop_playback(self):
         self.is_playing = False
         self.timer.stop()
@@ -3449,7 +3501,9 @@ class MainWindow(QMainWindow):
             # 别被误读成刻意的时序依赖。代价是 `timeline.clear()` 期间画布与属性
             # 面板仍短暂显示上一个工程的尺寸；已确认安全：clear() 只触发
             # `selection_changed`，其空选中分支不读 `self.project.frames`，
-            # MainWindow 也没有连接 `frames_removed`。
+            # 而 `frames_removed` 在 MainWindow 这一侧唯一的处理器是
+            # `_refresh_playlist_if_playing()` —— 它既不读 `self.project`，
+            # 也只在 `is_playing` 时才动作。
             self.fps_spin.setValue(project.fps)
             self.canvas.set_project_settings(project.width, project.height)
             self.property_panel.set_project_info(project.width, project.height)

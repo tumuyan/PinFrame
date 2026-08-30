@@ -22,6 +22,7 @@
 运行： ./venv/bin/python dev/verify_undo_snapshot.py
 退出码非 0 表示有失败。
 """
+import contextlib
 import os
 import sys
 
@@ -31,8 +32,11 @@ REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(REPO_ROOT, "src"))
 
 from PyQt6.QtWidgets import QApplication  # noqa: E402
-from PyQt6.QtCore import QMimeData, QPoint, QPointF, Qt, QEvent  # noqa: E402
+from PyQt6.QtCore import (  # noqa: E402
+    QItemSelectionModel, QMimeData, QPoint, QPointF, Qt, QEvent,
+)
 from PyQt6.QtGui import QDropEvent  # noqa: E402
+from PyQt6.QtTest import QTest  # noqa: E402
 
 app = QApplication(sys.argv)
 
@@ -116,6 +120,35 @@ def _sig(win):
     """
     return [tuple(f.crop_rect or ()) + (f.scale, f.rotation, f.is_disabled)
             for f in win.timeline.get_all_frames()]
+
+
+def _select_rows_like_user(win, rows):
+    """模拟用户点选若干行 —— **唯一**能触发 `MainWindow.on_selection_changed` 的路径。
+
+    `win.timeline.model.set_selection(rows)` **不能用**：那是"模型 → 视图"方向，
+    `TimelineWidget._on_model_selection_changed` 会 `blockSignals` 后写视图、刻意
+    不回传 `selection_changed`（否则成环）。用它当"改了选中"的前置条件，
+    `on_selection_changed` 根本不会被调用，断言随即**假通过**（实测踩到）。
+
+    真实路径是：selectionModel 变化 → 视图 `on_selection_changed` → **50ms 防抖**
+    → `_emit_selection_changed` → `MainWindow.on_selection_changed`。防抖是给
+    属性面板用的（拖框选时别每帧重绘），故这里必须等过它。
+    """
+    view = win.timeline.list_view
+    sel = view.selectionModel()
+    wanted = set(rows)
+    for row in set(view.get_selected_indices()) - wanted:
+        sel.select(view._item_model.index(row, 0),
+                   QItemSelectionModel.SelectionFlag.Deselect
+                   | QItemSelectionModel.SelectionFlag.Rows)
+    for row in wanted:
+        sel.select(view._item_model.index(row, 0),
+                   QItemSelectionModel.SelectionFlag.Select
+                   | QItemSelectionModel.SelectionFlag.Rows)
+    QTest.qWait(120)  # 过防抖（50ms）
+    assert set(win.timeline.get_selected_indices_from_model()) == wanted, (
+        "前置条件失败：选中没生效（模型 %s），后续断言会假通过"
+        % win.timeline.get_selected_indices_from_model())
 
 
 def _drag_row(win, from_row, insert_before):
@@ -530,6 +563,250 @@ def test_apply_frames_contract():
     m2.apply_frames(make(3, 9.0))
     assert m2.get_reference_frame() is None, \
         "apply_frames 未清空已失效的参考帧 —— 与 set_frames 的副作用分叉了"
+
+
+# ---------------------------------------------------------------------------
+# 播放列表的鲜度（P2-6 实施记录里那条「未修的既有缺陷」）
+# ---------------------------------------------------------------------------
+#
+# `MainWindow.playlist` 缓存的是**帧对象**，而模型在撤销 / 增删 / 换序时会把帧对象
+# 换掉。此前没有任何一处通知它，于是播放中做这些操作时：
+#   - 撤销 → 画面继续用旧对象，**看起来像撤销没生效**（不报错、不崩溃）；
+#   - 删帧 → 已删的帧仍在播；
+#   - 加帧 → 新帧永远轮不到。
+#
+# 修法是让模型的结构性变更信号在播放时重建 playlist。**五条信号各接一次，就必须
+# 各测一遍** —— 与 `clone()` 分散在两条路径上那条教训同源：少接哪一条，对应的那条
+# 路径就静默退回旧行为，而其余用例全绿。
+
+@contextlib.contextmanager
+def _playing(win):
+    """进入即开始播放、退出必停。
+
+    两端都不能省：
+
+    - **进入前先 `stop_playback()`** —— `toggle_play` 是**切换**语义，若上一个用例
+      残留 `is_playing=True`，再调它就成了「停止」，断言随即假通过（实测踩到）。
+    - **退出必停** —— 留下的 `is_playing=True` 会让**后续**用例的每一次模型变更都
+      去重建 playlist，是标准的用例间状态污染。而本文件其余 11 个用例全程在做撤销
+      /重做，正好落在被污染的区间里。
+    """
+    win.stop_playback()
+    win.toggle_play()
+    assert win.is_playing, "前置条件失败：播放没能开始，后续断言会全部假通过"
+    assert win.playlist, "前置条件失败：playlist 为空"
+    try:
+        yield win
+    finally:
+        win.stop_playback()
+
+
+def _expected_playlist(win):
+    """按模型**现算**的期望播放列表：未禁用的帧、按模型顺序。"""
+    return [f for f in win.timeline.get_all_frames() if f and not f.is_disabled]
+
+
+def _assert_playlist_fresh(win, what):
+    """playlist 必须与模型同序且**同一批对象**。
+
+    不能只比值：`FrameData` 是 dataclass，`==` 是值相等。撤销后的旧对象与模型里的
+    新克隆**值可能仍然相同**（例如撤销后又重做、或改的值恰好一样），比值得不出结论。
+    必须比身份 —— 这正是本组用例要钉的东西。
+    """
+    fresh = _expected_playlist(win)
+    assert len(win.playlist) == len(fresh), (
+        f"{what}：playlist 长度与模型不符（{len(win.playlist)} vs {len(fresh)}）")
+    stale = [i for i, (p, m) in enumerate(zip(win.playlist, fresh)) if p is not m]
+    assert not stale, (
+        f"{what}：playlist 第 {stale} 项不是模型里的当前对象 —— "
+        "画面会继续用已失效的旧帧")
+
+
+def test_playlist_tracks_undo_during_playback():
+    """播放中撤销：playlist 必须重建，不能继续用被 `apply_frames` 换掉的旧对象。
+
+    这是 P2-6 记录里那条未修缺陷的主体。撤销的增量路径**刻意**把快照里的帧克隆进
+    模型（不复用快照对象，否则后续原地编辑会写进历史），playlist 里缓存的对象就此
+    失效 —— 用户撤销后画面继续按旧值播放，看起来像「撤销没生效」。
+    """
+    win = _reload()
+    _edit_scale(win, 0, win.timeline.get_frame_at(0).scale + 0.5)
+    with _playing(win):
+        win.undo_history()
+        _assert_playlist_fresh(win, "播放中撤销后")
+
+
+def test_playlist_tracks_removed_frame_during_playback():
+    """播放中删帧：已删的帧必须立刻从 playlist 消失（否则会继续播出来）。"""
+    win = _reload()
+    with _playing(win):
+        victim = win.timeline.get_frame_at(1)
+        win.timeline.model.set_selection([1])
+        win.remove_frame()
+
+        assert not any(f is victim for f in win.timeline.get_all_frames()), \
+            "前置条件失败：帧没被删掉，后续断言会假通过"
+        assert not any(f is victim for f in win.playlist), \
+            "已删除的帧仍在 playlist 里 —— 播放会把它再放出来"
+        _assert_playlist_fresh(win, "播放中删帧后")
+
+
+def test_playlist_tracks_inserted_frame_during_playback():
+    """播放中加帧：新帧必须进 playlist（否则永远轮不到它）。"""
+    win = _reload()
+    with _playing(win):
+        win.add_files([SAMPLE_IMG])
+
+        added = win.timeline.get_all_frames()[-1]
+        assert any(f is added for f in win.playlist), \
+            "新加的帧没进 playlist —— 播放永远不会轮到它"
+        _assert_playlist_fresh(win, "播放中加帧后")
+
+
+def test_playlist_tracks_reorder_during_playback():
+    """播放中拖拽换序：播放顺序必须跟着模型走。"""
+    win = _reload()
+    with _playing(win):
+        _drag_row(win, 0, 3)  # 内部已断言顺序确实变了
+        _assert_playlist_fresh(win, "播放中拖拽换序后")
+
+
+def test_playlist_tracks_undo_of_row_count_change_during_playback():
+    """播放中撤销一次**增删帧**：走的是 `frames_replaced`，与撤销属性变更不是同一条信号。
+
+    撤销属性变更时行数不变，`apply_frames` 走增量路径发 `data_changed`；而撤销加/删
+    帧时行数变了，它回落到 `set_frames`，发的是 `frames_replaced`。两条信号各接一次，
+    就必须各测一遍 —— 只测前者的话，把 `frames_replaced` 那条连接删掉所有用例照样全绿。
+    """
+    win = _reload()
+    with _playing(win):
+        n_before = win.timeline.get_frame_count()
+        win.timeline.model.set_selection([1])
+        win.remove_frame()
+        assert win.timeline.get_frame_count() == n_before - 1, \
+            "前置条件失败：帧没被删掉，后续断言会假通过"
+
+        win.undo_history()
+        assert win.timeline.get_frame_count() == n_before, \
+            "前置条件失败：撤销没有把帧加回来，后续断言会假通过"
+        _assert_playlist_fresh(win, "播放中撤销删帧后")
+
+
+def test_playlist_tracks_disable_during_playback():
+    """播放中禁用一帧：被禁的帧必须立刻从 playlist 消失。
+
+    这条钉的是"**刻意不接** `frame_disabled_changed`"那个决断的另一半。不接的前提
+    是禁用态的**每一条**写入路径都会自己调 `_refresh_playlist_if_playing()` —— 而
+    那是分散的人工调用、不是信号驱动的：少一处，被禁用的帧就继续播，而上面五条
+    用例一个都测不到（它们只走结构与内容变更）。
+
+    故两条禁用写入路径**各测一遍**：
+      - `toggle_enable_disable` —— 菜单/工具栏的"启用/禁用"；
+      - `on_frame_disabled_state_changed` —— 右键菜单与视图勾选（`disabled_state_changed`）。
+    第三条（`on_selection_changed`）不是禁用路径，由
+    `test_playlist_follows_selection_change_during_playback` 覆盖。
+    """
+    # 路径一：toggle_enable_disable
+    win = _reload()
+    with _playing(win):
+        win.timeline.model.set_selection([1])
+        win.toggle_enable_disable(False)
+        assert win.timeline.get_frame_at(1).is_disabled, \
+            "前置条件失败：帧没被禁用，后续断言会假通过"
+
+        assert not any(f.is_disabled for f in win.playlist), \
+            "被禁用的帧仍在 playlist 里 —— 播放会跳过禁用逻辑把它放出来"
+        _assert_playlist_fresh(win, "播放中禁用帧后（toggle_enable_disable）")
+
+    # 路径二：视图勾选/右键菜单 —— 走真实的 `disabled_state_changed` 信号。
+    # 该信号由视图在**改完 frame.is_disabled 之后**发出，故这里也要先改再发。
+    win = _reload()
+    with _playing(win):
+        f = win.timeline.get_frame_at(1)
+        f.is_disabled = True
+        win.timeline.disabled_state_changed.emit(f, True)
+        assert win.timeline.get_frame_at(1).is_disabled, \
+            "前置条件失败：帧没被禁用，后续断言会假通过"
+
+        assert not any(f.is_disabled for f in win.playlist), \
+            "被禁用的帧仍在 playlist 里 —— 播放会跳过禁用逻辑把它放出来"
+        _assert_playlist_fresh(win, "播放中禁用帧后（disabled_state_changed）")
+
+
+def test_playlist_follows_selection_change_during_playback():
+    """播放中改选中：playlist 必须跟着变成"只播选中的帧"。
+
+    这是 `on_selection_changed` 里那处 `_refresh_playlist_if_playing()` —— 它既不
+    是禁用路径也不是模型变更路径，是第三条独立的人工调用点。
+    """
+    win = _reload()
+    with _playing(win):
+        _select_rows_like_user(win, [2, 4])
+        expected = [win.timeline.get_frame_at(2), win.timeline.get_frame_at(4)]
+        assert len(win.playlist) == len(expected), (
+            "播放中改了选中，playlist 却没有跟着变成“只播选中的帧”"
+            "（%d vs %d）" % (len(win.playlist), len(expected)))
+        # 仍比身份而非比值（理由同 `_assert_playlist_fresh`），但不能复用它 ——
+        # 它算的是"播全部"，而这里走的是"只播选中"分支。
+        stale = [i for i, (p, e) in enumerate(zip(win.playlist, expected)) if p is not e]
+        assert not stale, \
+            "播放中改选中后：playlist 第 %s 项不是模型里的当前对象" % stale
+
+
+def test_playback_stops_when_playlist_empties():
+    """播放中把帧删光：必须**当场**停下，不能留下僵尸播放态。
+
+    刷新 playlist 之后不判空的话：`next_frame()` 在列表为空时静默 return，计时器
+    继续空转、`is_playing` 一直是 True、按钮卡在"暂停"、状态栏停在最后一帧的文案 ——
+    不报错、不崩溃，但界面看起来像卡死，只能靠用户再点一次按钮解开。
+
+    断言必须写在 `_playing` 上下文**内部**：它的 `finally` 也会 `stop_playback()`，
+    放到外面就是标准的假通过。
+    """
+    win = _reload()
+    with _playing(win):
+        win.timeline.model.set_selection(list(range(win.timeline.get_frame_count())))
+        win.remove_frame()
+        assert win.timeline.get_frame_count() == 0, \
+            "前置条件失败：帧没被删光，后续断言会假通过"
+
+        assert not win.is_playing, "帧全删光了却还在播放 —— 留下僵尸播放态"
+        assert not win.timer.isActive(), "播放已停但计时器还在空转"
+        assert win.playlist == [], "playlist 没有跟着清空"
+
+
+def test_playlist_refresh_is_noop_when_not_playing():
+    """不播放时模型变更不得动 playlist —— 这是 `_load_from_path` 的安全前提。
+
+    载入工程会批量 emit 一次 `frames_removed`（clear）+ N 次 `frames_inserted`，
+    这些信号现在都接到了 `_refresh_playlist_if_playing`。`_load_from_path` 里那条
+    「`timeline.clear()` 期间安全」的论证正是建立在这个 `is_playing` 守卫上 ——
+    守卫一去掉，载入就会一边灌帧一边重建 playlist，而且是在 `project.frames` 正
+    处于半填充状态时。
+
+    五条信号全部走**真实变更**，不用手工 `emit`：这两条结构性信号还有别的订阅者
+    （适配层会在 `frames_inserted/removed` 里 `beginInsertRows/beginRemoveRows`），
+    伪造 emit 等于往它灌一次**并不存在**的结构变更 —— 测的是守卫，却顺手破坏了
+    模型与视图之间的契约（行数没变却通知增减行）。
+    """
+    win = _reload()
+    sentinel = object()
+    win.playlist = [sentinel]
+    win.play_index = 7
+
+    # 结构类：frames_removed → frames_inserted → frames_reordered
+    win.timeline.model.set_selection([0])
+    win.remove_frame()
+    win.add_files([SAMPLE_IMG])
+    _drag_row(win, 0, 3)
+    # 内容类：撤销加帧/删帧走 frames_replaced（行数变），撤销属性走 data_changed
+    win.undo_history()
+    win.undo_history()
+    _edit_scale(win, 0, win.timeline.get_frame_at(0).scale + 0.5)
+    win.undo_history()
+
+    assert win.playlist == [sentinel], "不播放时 playlist 被刷新了 —— 载入路径的安全前提没了"
+    assert win.play_index == 7, "不播放时 play_index 被改了"
 
 
 # ---------------------------------------------------------------------------
