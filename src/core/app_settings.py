@@ -1,18 +1,11 @@
-"""应用级 `QSettings` 的单一来源（P3-8）。
+"""应用级 `QSettings` 的单一来源。
 
-原来 `QSettings("tumuyan", "PinFrame")` 在 6 处各自 new（`image_formats.py` 3、
-`editor_settings_dialog.py` 2、`main_window.py` 1），org/app 名是复制粘贴的字面量。
+org/app 名只有一处，将来改名或换存储后端只改这里；调用点不再各自 new，读代码时
+"配置存在哪"是一眼可见的。
 
-收拢的价值**不是**"少几个对象" —— QSettings 对同一 (org, app) 本来就共享底层
-存储，构造多少次行为都一样。真正的价值是：
-
-1. org/app 名只有一处，将来改名或换存储后端只改这里；
-2. 调用点不再重复构造，读代码时"配置存在哪"是一眼可见的，而不是散在 6 处；
-3. 将来若要给 key 加统一前缀、迁移或默认值注册表，这里是唯一的落点。
-
-**这里刻意不做** key 名常量表与默认值注册表：全应用 34 个 key 的搬迁改完行为
-完全不变、也不消除任何既有缺陷，属于"能独立成一坨"但收益不成立的机械搬迁 ——
-详见 dev/architecture_review.md 的「P3 实施计划」事实 3。
+**这里刻意不做** key 名常量表与默认值注册表：全应用 34 个 key 的搬迁改完行为完全
+不变、也不消除任何既有缺陷。判据见 `dev/known_issues.md` —— 是否消除一个真实缺陷，
+不满足就不搬。
 """
 from PyQt6.QtCore import QSettings
 

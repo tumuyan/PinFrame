@@ -28,8 +28,8 @@ class TimelineWidget(QStackedWidget):
         self.model = TimelineModel()
 
         # Qt 适配层 —— **两个视图共用同一个实例**。
-        # 这是它们能共享 QItemSelectionModel 的前提（P1-3 的核心收益）：
-        # 选中因此只有一份，切换视图不再需要任何同步仪式。
+        # 这是它们能共享 QItemSelectionModel 的前提：选中因此只有一份，
+        # 切换视图不需要任何同步仪式。
         self.item_model = TimelineItemModel(self.model, self)
 
         # Connect model signals to view updates
@@ -323,9 +323,9 @@ class TimelineWidget(QStackedWidget):
         列表视图没有缩略图，所以只有网格那一份需要清（迁移前两视图各有一个
         clear_view()，列表那个迁到 model/view 后退化为空，已删）。
 
-        **公开**接口：载入工程后 `MainWindow` 要清它，此前只能跨层调
-        `grid_view._clear_thumbnail_cache()` —— 那是"公开接口不够用"的症状
-        （见 `architecture_review.md` 的 P2-5）。
+        **公开**接口：`MainWindow` 载入工程后要清它。跨层调私有方法（
+        `grid_view._clear_thumbnail_cache()`）是"公开接口不够用"的症状，
+        正确做法是补公开方法，不要在调用方伸手进别人的私有成员。
         """
         self.grid_view.clear_view()
 
@@ -469,9 +469,9 @@ class TimelineWidget(QStackedWidget):
     def apply_selection_to_view(self, selected_indices, mode=None):
         """Apply selection indices to a view and sync currentIndex/anchor
 
-        **公开**接口（曾是 `_apply_selection_to_view`）。升为公开的理由见
-        `architecture_review.md` 的 P2-5：`MainWindow` 撤销恢复时要用它，此前只能
-        跨层调私有方法 —— 那是"公开接口不够用"的症状，不是调用方写得随意。
+        **公开**接口。`MainWindow` 撤销恢复时要用它，所以不能是私有的 ——
+        需要跨层访问时，正确做法是补公开方法，而不是在调用方伸手进别人的
+        私有成员。
 
         mode: 目标视图（`"list"` / `"grid"`）；省略时取 `current_view_mode`。
 

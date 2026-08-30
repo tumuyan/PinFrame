@@ -13,14 +13,13 @@ import os
 class TimelineGridWidget(QListView):
     """时间轴的网格视图（缩略图形态）。
 
-    已迁到 Qt model/view：与列表视图挂**同一个** `TimelineItemModel` 实例，因此两
-    个视图天然共享 `QItemSelectionModel`（P1-3 最大的一条收益）。本视图**不持有
-    帧数据或顺序** —— 那些都在 `TimelineModel` 里。
+    与列表视图挂**同一个** `TimelineItemModel` 实例，因此两个视图天然共享
+    `QItemSelectionModel` —— 选中只有一份。本视图**不持有帧数据或顺序** ——
+    那些都在 `TimelineModel` 里。
 
     缩略图仍由本视图计算与缓存（它是网格的展示形态：尺寸、背景模式都是网格的设置），
     通过 `TimelineItemModel.set_thumbnail_provider` 注入、经
-    `TimelineItemModel.ThumbnailRole` 递给 delegate。迁移前它是 `QListWidget`，
-    帧数据挂在 `QListWidgetItem` 的 UserRole 上。
+    `TimelineItemModel.ThumbnailRole` 递给 delegate。
     """
 
     def __init__(self, parent=None):
@@ -267,7 +266,7 @@ class TimelineGridWidget(QListView):
         """
         self._model = model
         # 与列表视图共用**同一个**适配层实例（由 TimelineWidget 创建），于是两个视图
-        # 共享同一个 QItemSelectionModel —— 这才是 P1-3 想要的"选中只有一份"。
+        # 共享同一个 QItemSelectionModel —— 选中只有一份。
         self._item_model = getattr(self.parent(), 'item_model', None)
         if self._item_model is None:  # 单独构造本视图时的兜底
             self._item_model = TimelineItemModel(model, self)

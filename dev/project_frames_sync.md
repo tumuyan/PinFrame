@@ -25,7 +25,7 @@
 
 当时的对策是在每个入口补一行 `self.project.frames = self.timeline.get_all_frames()`。
 问题在于**这是纪律而不是结构**：新增任何遍历帧的功能都要重新记得补这一行，而遗漏的
-失败模式是静默删除用户文件。架构评审把它列为 P0-2。
+失败模式是静默删除用户文件。
 
 顺带一个当时没被发现的同类问题：改画布尺寸时重算所有帧位置的循环
 （`main_window` 的 project settings 处理）也读 `project.frames`，因此**上次同步之后
@@ -78,7 +78,7 @@ for frame in loaded_frames:                # 用局部变量驱动填充
 
 ## 5. 为什么不用更彻底的方案
 
-评审里提过"把 `ProjectData` 降级为纯序列化 DTO、帧列表由 `TimelineModel` 独占持有"。
+另一个方案是"把 `ProjectData` 降级为纯序列化 DTO、帧列表由 `TimelineModel` 独占持有"。
 没走这条路的原因：`to_json` / `from_json` 是既定的持久化契约（`ProjectData` 是
 `model/` 层，而 `TimelineModel` 在 `ui/` 层），让 `ProjectData` 直接依赖 `TimelineModel`
 会造成 model → ui 的反向依赖。依赖注入一个 provider 回调把这个方向掰正了，同时保住了
@@ -91,7 +91,7 @@ for frame in loaded_frames:                # 用局部变量驱动填充
 | 测试 | 锁定的性质 |
 |---|---|
 | `test_frames_unbound_uses_static_list` | 未绑定时走后备列表（载入路径可用） |
-| `test_frames_bound_reads_live_source` | 绑定后能看到实时新增的帧（P0-2 的核心） |
+| `test_frames_bound_reads_live_source` | 绑定后能看到实时新增的帧（本设计的核心） |
 | `test_frames_assignment_after_binding_is_rejected` | 绑定后赋值必须报错 |
 | `test_to_json_serializes_live_frames` | 存盘不再需要"先同步" |
 | `test_from_json_roundtrip_still_works` | 载入阶段仍能正常写入帧 |

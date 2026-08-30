@@ -4,7 +4,7 @@
 覆盖范围（已超出文件名的字面含义，暂未拆分）：
   - `core.transform`：变换几何、镜像编码、取整约定
   - `FrameData.clone()`：帧复制不得漏字段
-  - `ProjectData.frames`：单一真相（P0-2），绑定后恒为实时值
+  - `ProjectData.frames`：单一真相，绑定后恒为实时值
 
 为什么能有单测：`core.transform` 刻意不 import PyQt6，几何逻辑是纯函数；
 `project_data` 只需 PyQt6 已安装，不需要 QApplication 或显示环境。
@@ -347,7 +347,7 @@ def test_clone_does_not_share_mutable_fields():
 
 
 # ---------------------------------------------------------------------------
-# ProjectData.frames —— 单一真相（P0-2）
+# ProjectData.frames —— 单一真相
 # ---------------------------------------------------------------------------
 def test_frames_unbound_uses_static_list():
     """未绑定 provider 时（from_json 载入阶段、无 UI 脚本）走后备列表。"""
@@ -362,8 +362,9 @@ def test_frames_unbound_uses_static_list():
 def test_frames_bound_reads_live_source():
     """绑定后读 frames 恒为活跃数据源的实时内容——无需任何手工同步。
 
-    回归 P0-2：`frames` 曾是普通字段，只在保存/导出时手工同步一次，于是
-    "删除未使用素材"可能把未保存新增的在用素材判为未使用并物理删除。
+    `frames` 曾是普通字段、只在保存/导出时手工同步一次，于是"删除未使用素材"可能
+    把未保存新增的在用素材判为未使用并物理删除。现设计见
+    `dev/project_frames_sync.md`。
     """
     from model.project_data import FrameData, ProjectData
 
@@ -374,7 +375,7 @@ def test_frames_bound_reads_live_source():
     assert [f.file_path for f in p.frames] == ["a.png"]
     live.append(FrameData("new.png"))          # 模拟用户新增一帧、尚未保存
     assert [f.file_path for f in p.frames] == ["a.png", "new.png"], \
-        "绑定后必须看到实时新增的帧，否则 P0-2 的数据丢失风险回归"
+        "绑定后必须看到实时新增的帧，否则就退回了 frames 双源的数据丢失风险"
 
 
 def test_frames_getter_never_exposes_internal_list():

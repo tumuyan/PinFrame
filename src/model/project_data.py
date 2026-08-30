@@ -18,7 +18,8 @@ def clear_source_image_size_cache(path: Optional[str] = None) -> None:
     不失效的话时间轴列 6/列 7 会继续显示旧尺寸。
 
     注意这里**不能**依赖 image_cache 的失效：`image_cache` 存的是解码后的像素，
-    与本缓存无关，两者的失效时机相同但互不感知（见 P2-7「三层缓存互不知情」）。
+    与本缓存无关，两者的失效时机相同但互不感知（三层缓存刻意不合并，见
+    `dev/known_issues.md`）。
     """
     if path is None:
         _SOURCE_SIZE_CACHE.clear()

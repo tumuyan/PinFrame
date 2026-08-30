@@ -47,15 +47,14 @@ from utils.exporter import Exporter, ExportError, ExportFailedError
 from core.history import HistoryManager
 
 # ---------------------------------------------------------------------------
-# 构建版本信息（P3-9）
+# 构建版本信息
 #
 # `src/core/version.py` **不入库**（见 .gitignore），只在打包时由 `PinFrame.spec`
 # 生成。所以它在本机可能不存在 —— 这里是**容错导入**：缺文件就回落到运行时
 # `git describe` 与内置默认 URL，绝不因缺一个"展示用的版本号"而让应用起不来。
 #
-# 为什么这个文件不入库：它在入库时的值必然是过期的（评审时记录的是
-# `v0.4.1-6-gce17dec`，而当时 HEAD 已是 `v0.5.3-14-g2507384`），而且每次打包都
-# 重写一个入库文件，会在 git status 里留下一条莫名其妙的改动。
+# 为什么这个文件不入库：入库的值必然是过期的（它在每次打包时被重写），而且它会
+# 在 git status 里留下一条与代码无关的改动。
 #
 # 注意：容错逻辑必须写在**入库**的文件里。若把 `git describe` 的回落写进那个被
 # ignore 的 version.py，全新克隆就会因为没有它而直接 ImportError —— 正好是本段
@@ -82,7 +81,7 @@ BUILD_REPO_URL = str(getattr(_build_info, "REPO_URL", "") or "") or DEFAULT_REPO
 
 
 def _git_describe():
-    """运行 `git describe --tags --long`；拿不到返回空字符串（P3-9）。
+    """运行 `git describe --tags --long`；拿不到返回空字符串。
 
     开发态没有 `version.py`（它只在打包时生成），版本号就靠这里现算 —— 因此它
     **永远是当前 HEAD 的真实值**，不可能过期。
@@ -113,7 +112,7 @@ def _git_describe():
 
 
 def _valid_sizes(value):
-    """把 QSettings 里读到的布局比例规整成 `[int, int]`；不可用返回 None（P2-5 #4）。
+    """把 QSettings 里读到的布局比例规整成 `[int, int]`；不可用返回 None。
 
     三个布局比例 key（`stack_split_sizes` / `custom_layout_v_sizes` /
     `custom_layout_h_sizes`）存的都是"两个 pane 的像素比例"。Qt 有时会持久化出
@@ -136,10 +135,10 @@ def _valid_sizes(value):
 
 
 def _parse_color(value):
-    """把 QSettings 里读到的 `"r,g,b"` 规整成 `(int, int, int)`；不可用返回 None（P3-8）。
+    """把 QSettings 里读到的 `"r,g,b"` 规整成 `(int, int, int)`；不可用返回 None。
 
     三个颜色 key（`raster_grid_color` / `canvas_border_inner_color` /
-    `canvas_border_outer_color`）此前在 `__init__` 里各抄一份
+    `canvas_border_outer_color`）共用本函数。此前每处各抄一份
     `try: tuple(map(int, s.split(','))) except: 默认值`。抄三遍只是其一，真正的问题是
     那个**裸 `except:`** —— 它连 `KeyboardInterrupt` / `SystemExit` 都吞，而这里要兜的
     其实只有"用户手改过配置文件 / 旧版本写坏了"这一种 ValueError。
@@ -178,7 +177,7 @@ _EXPORT_ERROR_DETAIL_LIMIT = 8
 
 
 def _describe_export_error(err) -> str:
-    """把一条 `ExportError` 翻成用户能看懂的一行（P3-11）。
+    """把一条 `ExportError` 翻成用户能看懂的一行。
 
     三种 kind 分开处理，因为"源图找不到"与"尺寸退化"的用户动作完全不同 ——
     前者是去把素材找回来，后者是去改缩放参数。都塞进一句"导出失败"等于没说。
@@ -258,7 +257,7 @@ class MainWindow(QMainWindow):
         # 把工程的 frames 读取绑定到 timeline 模型（唯一权威数据源）。
         # 绑定后 project.frames 恒为实时值，保存/导出/素材类功能都不再需要
         # （也不允许）手工 `project.frames = timeline.get_all_frames()`。
-        # 绑定只发生在 `_adopt_project` 一处（P2-5 #2）。
+        # 绑定只发生在 `_adopt_project` 一处。
         self._adopt_project(self._project)
         self.timeline.signals.selection_changed.connect(self.on_selection_changed)
         self.timeline.signals.order_changed.connect(self.on_order_changed)
@@ -365,9 +364,9 @@ class MainWindow(QMainWindow):
         self.playlist = []
         self.play_index = 0
 
-        # 播放列表的鲜度 —— 模型一变就重建（修 P2-6 记录里那条未修的既有缺陷）。
+        # 播放列表的鲜度 —— 模型一变就重建。
         #
-        # `playlist` 缓存的是**帧对象**，而"模型里的帧对象"会在三种情况下被换掉，
+        # `playlist` 缓存的是**帧对象**，而"模型里的帧对象"会在多种情况下被换掉，
         # 此前没有任何一处通知它，于是播放中做这些操作都会静默失效：
         #   - 撤销/重做（行数不变走 `data_changed`，行数变走 `frames_replaced`）：
         #     `apply_frames` **刻意**把快照里的帧克隆进模型（不复用快照对象，否则
@@ -565,10 +564,9 @@ class MainWindow(QMainWindow):
         `reuse_from` 是复用基准：内容未变的帧**直接复用它的对象**，只克隆真正变了
         的那些。省略时取 `_history_reuse_base()`（历史栈最新那条记录的 after）。
 
-        为什么要复用：这是 P2-6「每条历史都深拷贝全部帧」的解法。撤销一次
-        "把 scale 从 1.0 调成 1.1"只有 1 帧变了，但若每次都全量克隆，500 帧的
-        工程每记一条历史就要克隆 1000 个 `FrameData`。复用之后，一条历史的
-        **增量成本 = 变化的帧数**，未变的帧在整个历史栈里只有一份。
+        为什么要复用：撤销一次"把 scale 从 1.0 调成 1.1"只有 1 帧变了，但若每次
+        都全量克隆，500 帧的工程每记一条历史就要克隆 1000 个 `FrameData`。复用之后，
+        一条历史的**增量成本 = 变化的帧数**，未变的帧在整个历史栈里只有一份。
 
         安全性：被复用的对象只被快照持有，模型里的活对象是另一个（`get_all_frames()`
         返回的是模型当前对象），后续原地编辑改的是活对象，动不到快照里的副本。
@@ -1592,7 +1590,7 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(i18n.t("msg_debug_settings_saved"), 2000)
 
     def get_git_version(self):
-        """当前版本号（P3-9）。
+        """当前版本号。
 
         取值顺序：
           1. 打包时生成的值（`version.py`，只在打包产物里存在）；
@@ -3134,12 +3132,12 @@ class MainWindow(QMainWindow):
         self._load_from_path(path)
 
     # ------------------------------------------------------------------
-    # 工程对象的唯一持有点（P2-5 改道后的最小结构修复 #2/#3）
+    # 工程对象的唯一持有点
     # ------------------------------------------------------------------
     # `project` 是**只读**属性。`ProjectData` 会被整体替换（新建 / 载入），若允许
-    # 随处赋值，任何持有旧引用的协作者都会静默读到过期工程对象（与 P0-2 的 frames
-    # 双源同形）。替换的唯一途径是 `_adopt_project()` —— 它把"换对象"与"重新绑定
-    # frames 活跃数据源"强制做成一步，二者不可能只发生其一。
+    # 随处赋值，任何持有旧引用的协作者都会静默读到过期工程对象。替换的唯一途径是
+    # `_adopt_project()` —— 它把"换对象"与"重新绑定 frames 活跃数据源"强制做成
+    # 一步，二者不可能只发生其一。
     @property
     def project(self) -> ProjectData:
         """当前工程对象（**只读**）。替换请走 `_adopt_project()`。"""
@@ -3291,9 +3289,10 @@ class MainWindow(QMainWindow):
         """Reset the current project to an empty state without any prompts."""
         # Reset project to empty state
         #
-        # 先清 timeline 再接管新工程（P2-5 #3 次序修复）：绑定之后 project.frames
-        # 就是 timeline 的实时内容。原实现先绑定（此刻 timeline 里还是**上一个
-        # 工程**的帧）、末尾才 clear —— 两者之间新工程会"报告上一个工程的帧"。
+        # 先清 timeline 再接管新工程：绑定之后 project.frames 就是 timeline 的
+        # 实时内容。若先绑定（此刻 timeline 里还是**上一个工程**的帧）、末尾才 clear，
+        # 两者之间新工程会"报告上一个工程的帧"。两种次序的**终态相同**，只有 AST
+        # 检查（dev/verify_project_ownership.py）拦得住。
         self.timeline.clear()
         self._adopt_project(ProjectData())
         self.fps_spin.setValue(self.project.fps)
@@ -3570,7 +3569,7 @@ class MainWindow(QMainWindow):
         )
 
     # ------------------------------------------------------------------
-    # QSettings 里三个布局比例 key 的读写（P2-5 #4；顺带完成 P3-8 的这部分）
+    # QSettings 里三个布局比例 key 的读写
     # ------------------------------------------------------------------
     # 三个 key（stack_split_sizes / custom_layout_v_sizes / custom_layout_h_sizes）
     # 存的全是"两个 pane 的像素比例"。读写都要过 `_valid_sizes`：Qt 会持久化出
@@ -3607,7 +3606,7 @@ class MainWindow(QMainWindow):
         return parsed
 
     def _read_color(self, key, default):
-        """读一个 `"r,g,b"` 形式的颜色 key；坏值退回 `default`（P3-8）。
+        """读一个 `"r,g,b"` 形式的颜色 key；坏值退回 `default`。
 
         与 `_read_sizes` 同一套路，但**不 `remove` 坏值**：颜色是标量而非比例，
         下次写入时会被整体覆盖，`remove` 只是多一次磁盘操作。
@@ -3797,7 +3796,6 @@ class MainWindow(QMainWindow):
         default_v = [int(win_h * 3 / 4), int(win_h * 1 / 4)]
 
         # 读回时必须校验（塌缩值 [x, 0] 会让属性列永远为 0）：无效值当场丢弃。
-        # 这里原先**没有任何校验**，是三个比例 key 里唯一漏防的（P2-5 #4）。
         v_sizes = self._read_sizes("custom_layout_v_sizes")
         h_sizes = self._read_sizes("custom_layout_h_sizes")
 
@@ -4359,7 +4357,7 @@ class MainWindow(QMainWindow):
             self._report_export_errors(errors)
 
     def _report_export_errors(self, errors):
-        """导出结束后汇总提示失败帧（P3-11）。
+        """导出结束后汇总提示失败帧。
 
         单帧失败在 exporter 侧**不**抛异常 —— 缺几帧但其余都导出来是有价值的，
         不该整体失败。但静默就更糟：用户拿到"导出完成"却少了几张素材，且无从

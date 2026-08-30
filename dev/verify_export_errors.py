@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""P3-11 导出失败可见化的回归验证。
+"""导出失败可见化的回归验证。
 
 为什么单独一个文件
 ------------------
@@ -246,8 +246,7 @@ def test_gif_succeeds_when_at_least_one_frame_renders():
 def test_exception_is_recorded_and_does_not_abort_batch():
     """单帧合成抛异常：记进 errors，且**不中断**整批。
 
-    这是评审原文盯住的那条路径（`except Exception` 只 print）。它比"忽略返回值"
-    罕见，但同样静默。
+    单帧合成抛异常走的是 `except Exception`。它比"忽略返回值"罕见，但同样静默。
     """
     good = _png("exc_good.png", 32, 32)
     broken = _png("exc_broken.png", 32, 32)

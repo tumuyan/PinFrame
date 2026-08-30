@@ -180,7 +180,7 @@ class TimelineListView(QTreeView):
         """
         self._model = model
         # 与网格视图共用**同一个**适配层实例（由 TimelineWidget 创建），于是两个视图
-        # 共享同一个 QItemSelectionModel —— 这才是 P1-3 想要的"选中只有一份"。
+        # 共享同一个 QItemSelectionModel —— 选中只有一份。
         shared = getattr(self.parent(), 'item_model', None)
         if shared is not None and shared is not self._item_model:
             self._item_model = shared

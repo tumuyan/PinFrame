@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""P2-6 撤销快照的回归验证：增量恢复 + 快照之间的结构共享。
+"""撤销快照的回归验证：增量恢复 + 快照之间的结构共享。
 
 为什么单独一个文件
 ------------------
@@ -64,8 +64,7 @@ def _reload():
 
     不清历史的话用例之间会互相污染：上一个用例留下的快照会被下一个用例的
     `record_history` 当成"上一条记录的 after"去复用（`HistoryManager.push`），
-    于是断言莫名其妙地失败 —— 看起来像撤销坏了，实际是测试自身的状态残留
-    （P1-3 补网时踩过完全一样的问题）。
+    于是断言莫名其妙地失败 —— 看起来像撤销坏了，实际是测试自身的状态残留。
     """
     win = _win()
     win._load_from_path(PROJECT)
@@ -172,7 +171,7 @@ def _drag_row(win, from_row, insert_before):
 def test_undo_property_change_is_incremental():
     """撤销一次单帧属性变更：只发 data_changed，不得触发整体替换。
 
-    这是 P2-6 的核心收益。改坏（把 `_apply_snapshot_inner` 换回 `set_frames`）
+    这是本脚本最核心的一条。改坏（把 `_apply_snapshot_inner` 换回 `set_frames`）
     之后状态仍然正确，只有本条会红 —— 这也正是 `smoke_reorder.py` 盖不住的地方。
     """
     win = _reload()
@@ -294,7 +293,7 @@ def test_snapshot_not_polluted__fallback_path():
 
 
 def test_snapshots_share_unchanged_frames():
-    """未变的帧必须在快照之间共享同一对象 —— 否则 P2-6 等于没修。
+    """未变的帧必须在快照之间共享同一对象 —— 否则本项等于没修。
 
     三条断言分别钉住三个环节，任何一环退化回全量克隆都会让对应断言变红：
       - 同一条历史内 before/after 之间共享（省掉一半克隆）；
@@ -371,7 +370,7 @@ def test_undo_redo_reorder():
     """拖拽重排的撤销/重做往返。
 
     为什么这条必须单独在**本脚本**：`smoke_reorder.py` 覆盖的只是拖拽的 undo，
-    而 P2-6 之后撤销重排走的是**增量路径**（帧对象被逐个 clone、发 `data_changed`）
+    而撤销重排走的是**增量路径**（帧对象被逐个 clone、发 `data_changed`）
     而不是整体替换。重排是唯一一个"映射变了但对象没变"的撤销场景，
     它与属性变更共用同一条 `apply_frames` 路径，但语义完全不同 ——
     属性变更是"内容变了、映射没变"（`data_changed` 的正统语义），
@@ -457,7 +456,7 @@ def test_reference_frame_survives_undo():
 def test_history_cost_is_independent_of_frame_count():
     """记一条历史的克隆次数必须与**帧数无关**，只跟本次改了几帧有关。
 
-    这是 P2-6 最核心的主张。它测的是 CPU 成本而非内存：`_capture_snapshot` 若退化回
+    这是本脚本最核心的主张。它测的是 CPU 成本而非内存：`_capture_snapshot` 若退化回
     "无脑克隆全部帧"，功能一样正确、内存也只差一倍（靠 `HistoryManager.push` 的
     before 复用还能救回来），只有这里的计数会暴露 —— 500 帧的工程每改一帧就多克隆
     1000 个对象，拖滑块的手感差异就在这种地方。
@@ -566,7 +565,7 @@ def test_apply_frames_contract():
 
 
 # ---------------------------------------------------------------------------
-# 播放列表的鲜度（P2-6 实施记录里那条「未修的既有缺陷」）
+# 播放列表的鲜度
 # ---------------------------------------------------------------------------
 #
 # `MainWindow.playlist` 缓存的是**帧对象**，而模型在撤销 / 增删 / 换序时会把帧对象
@@ -625,9 +624,9 @@ def _assert_playlist_fresh(win, what):
 def test_playlist_tracks_undo_during_playback():
     """播放中撤销：playlist 必须重建，不能继续用被 `apply_frames` 换掉的旧对象。
 
-    这是 P2-6 记录里那条未修缺陷的主体。撤销的增量路径**刻意**把快照里的帧克隆进
-    模型（不复用快照对象，否则后续原地编辑会写进历史），playlist 里缓存的对象就此
-    失效 —— 用户撤销后画面继续按旧值播放，看起来像「撤销没生效」。
+    撤销的增量路径**刻意**把快照里的帧克隆进模型（不复用快照对象，否则后续原地
+    编辑会写进历史），playlist 里缓存的对象就此失效 —— 用户撤销后画面继续按旧值
+    播放，看起来像「撤销没生效」。
     """
     win = _reload()
     _edit_scale(win, 0, win.timeline.get_frame_at(0).scale + 0.5)

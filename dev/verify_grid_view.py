@@ -247,8 +247,8 @@ def test_thumbnail_reflects_crop_rect():
 def test_thumbnail_follows_source_image_change():
     """换掉磁盘上的源图后，缩略图必须重算 —— 需要显式失效缓存。
 
-    这是 P2-7 那类"缓存互不知情"缺陷的探测点：源图尺寸有缓存、缩略图有缓存、
-    图内容有 image_cache，三者失效时机必须对齐。
+    三处缓存互不知情的探测点：源图尺寸有缓存、缩略图有缓存、图内容有
+    image_cache，三者失效时机必须对齐（三层刻意不合并，见 `dev/known_issues.md`）。
     """
     tw = TimelineWidget()
     tw.set_view_mode("grid")

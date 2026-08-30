@@ -6,6 +6,8 @@ This file provides guidance to CodeBuddy and other AI coding tools when working 
 
 PinFrame (定帧) is a PyQt6 desktop application for previewing, fine-tuning, and consolidating sprite sequences / sprite sheets, plus a general-purpose GIF tool. It is AI-driven developed. Projects are stored as JSON referencing external image files (lossless, no duplication). Entry point is `main.py`.
 
+**配套文档：** `dev/known_issues.md` 记"哪些不做、为什么不做、还剩什么"（不做清单与判据、已知残留、后续独立议题、无自动化覆盖项、写测试与复核命令的陷阱）。本文件记"是什么、怎么用"，那文件记"为什么不做" —— 提议一个重构前先翻它，很可能那条路已经走过并给出了不做的判据。
+
 ## Common Commands
 
 - **Install dependencies (dev/headless):**
@@ -63,7 +65,7 @@ PinFrame (定帧) is a PyQt6 desktop application for previewing, fine-tuning, an
   `configure_reference_settings` 定义 3 份、`update_onion_state` 定义 3 份。
   判据：重名且**至少一个定义不带装饰器**才报错 —— 全都带装饰器视为有意的重载
   （`@property` + setter、`@pyqtSlot` 重载、`typing.overload`），必须放行否则误报淹没。
-  **例外集合应当恒为空**（曾装过 `src/ui/temp_prop.py`，那个死文件已随 P3-10 删除）；
+  **例外集合应当恒为空**（曾装过 `src/ui/temp_prop.py`，那个死文件已删除）；
   想加豁免前先问"能不能直接删掉那个文件"。
 
 - **做破坏性验证前必须清字节码缓存:**
@@ -92,8 +94,8 @@ PinFrame is a single-window PyQt6 app. `main.py` bootstraps `QApplication` + `Ma
 Two dataclasses form the entire project state:
 - `FrameData`: one sprite frame — `file_path`, `scale`, `position`, `rotation`, `aspect_ratio` (X/Y distortion, negative = mirror), `crop_rect`, `is_disabled`, and an ephemeral `target_resolution`. Supports `to_dict`/`from_dict` with project-relative path normalization (so projects stay portable when moved).
 - `ProjectData`: the document — `fps`, `width`, `height`, `background_color`, `frames`, plus persisted export settings. `to_json`/`from_json` (file path drives relative-path resolution) are the save/load contract. **All persistence goes through these methods.**
-- **`ProjectData.frames` 是绑定活跃数据源的属性，不是第二份副本。** `MainWindow._adopt_project(project)` 调用 `project.bind_frames_provider(self.timeline.get_all_frames)`——这是**绑定发生的唯一地点**（P2-5 改道后 #2）：`MainWindow.project` 是只读属性，替换工程对象的唯一途径是 `_adopt_project()`，它把"换对象"与"重新绑定"强制做成一步，二者不可能只发生其一。调用时机：`__init__`（timeline 就位后，以 `self._adopt_project(self._project)` 补绑定）、`_load_from_path` 与 `_reset_project_to_empty`（都必须**先 `timeline.clear()` 再 adopt**）。之后读 `project.frames` 恒为 `TimelineModel` 的实时列表。**绑定后赋值会抛 `RuntimeError`**——旧的 `project.frames = self.timeline.get_all_frames()` 同步仪式已全部删除，不要再写回来。未绑定时（刚 `from_json`、或无 UI 脚本）回退到 `_static_frames`，载入流程正是靠这条路径填充帧。
-  - 注意"先 `timeline.clear()`、再 `_adopt_project`"这个次序：`clear()` 之前 timeline 里还是**上一个工程**的帧，提前绑定会让新工程对象短暂地报告旧工程的帧。`_reset_project_to_empty` 曾因次序反了踩过这个坑（P2-5 #3）。
+- **`ProjectData.frames` 是绑定活跃数据源的属性，不是第二份副本。** `MainWindow._adopt_project(project)` 调用 `project.bind_frames_provider(self.timeline.get_all_frames)`——这是**绑定发生的唯一地点**：`MainWindow.project` 是只读属性，替换工程对象的唯一途径是 `_adopt_project()`，它把"换对象"与"重新绑定"强制做成一步，二者不可能只发生其一。调用时机：`__init__`（timeline 就位后，以 `self._adopt_project(self._project)` 补绑定）、`_load_from_path` 与 `_reset_project_to_empty`（都必须**先 `timeline.clear()` 再 adopt**）。之后读 `project.frames` 恒为 `TimelineModel` 的实时列表。**绑定后赋值会抛 `RuntimeError`**——旧的 `project.frames = self.timeline.get_all_frames()` 同步仪式已全部删除，不要再写回来。未绑定时（刚 `from_json`、或无 UI 脚本）回退到 `_static_frames`，载入流程正是靠这条路径填充帧。
+  - 注意"先 `timeline.clear()`、再 `_adopt_project`"这个次序：`clear()` 之前 timeline 里还是**上一个工程**的帧，提前绑定会让新工程对象短暂地报告旧工程的帧。两种次序的**终态相同**，只有 `dev/verify_project_ownership.py` 的 AST 检查拦得住。
   - 载入路径里推 UI 设置（`fps_spin.setValue` 等）要放在 adopt **之后**：`setValue` 会同步触发 `update_fps`，其守卫 `self.project.fps != fps` 只有在 `self.project` 已是新工程时才为 False。
   - 附带影响：`project.frames` 每次读取都返回**新列表**（`get_all_frames()` 是拷贝）。循环前先存到局部变量（`Exporter` 已这么做），且不要去改这个返回的列表；改它里面的 `FrameData` 对象**是有效的**，会作用到模型上。
 - **`FrameData.clone()` 是唯一的帧复制实现。** 不要再手写字段列表复制帧——曾经有 4 份手写克隆，其中 3 份（`duplicate_frame` 与重复帧对话框的 ABAB / AABB 模式）漏拷 `aspect_ratio`，导致重复一个镜像帧时副本丢失镜像状态；第 4 份漏了 `target_resolution`。
@@ -127,14 +129,14 @@ Two dataclasses form the entire project state:
 
 `Exporter` 只有一份变换实现（`compose_frame`），三种导出模式共用：`export_iter`（PNG 序列，带进度的 generator）、`export_sprite_sheet`、`export_gif`。`parse_range_string` 把 `"1,3,5-7,10-"` 转成 0 基下标。
 
-**三层缓存刻意不合并**（理由见 `dev/architecture_review.md` 的 P2-7）：`core.image_cache`（解码后的 QImage，进程级）、网格缩略图缓存（QPixmap，key 含"背景模式 + 缩略图尺寸"这类**纯展示**维度，视图私有）、`SourceImageCache`（`utils/exporter.py`，PIL 原图）。把缩略图那层塞进全局 `image_cache` 是错的——那等于让画布与属性面板的全尺寸图也按缩略图尺寸分桶。
+**三层缓存刻意不合并**（理由与三层对照表见 `dev/known_issues.md`）：`core.image_cache`（解码后的 QImage，进程级）、网格缩略图缓存（QPixmap，key 含"背景模式 + 缩略图尺寸"这类**纯展示**维度，视图私有）、`SourceImageCache`（`utils/exporter.py`，PIL 原图）。把缩略图那层塞进全局 `image_cache` 是错的——那等于让画布与属性面板的全尺寸图也按缩略图尺寸分桶。
 
 **导出路径：`SourceImageCache` 的生命周期是一次导出。** 三种导出模式各开一个 `with SourceImageCache()`，经 `compose_frame` 的可选参数 `source_cache` 注入。
 - **不要跨导出复用**：跨次缓存会让"改了图再导出"拿到旧图，而它的失效时机比缩略图还难判。
 - **上限必须设（默认 256 MiB）**，不要做成无限：无上限会把峰值内存从 1 张变成 N 张，几百帧各用各的大图时**比不缓存更容易 OOM**。
 - 缓存**未裁切**的原图：安全前提是 PIL 的 crop / resize / transpose / rotate 一律返回新对象、从不在原地修改。改用任何原地 API 都会让多帧互相污染且不报错。
 
-**导出失败必须被看见（P3-11）。** `compose_frame` 返回 `False` 表示"源文件缺失或缩放后尺寸退化为 0"——它**不抛异常**，所以"看有没有报错"发现不了。三个导出方法都不许忽略这个返回值，必须经 `_compose_into_canvas()` 记进 `errors`：
+**导出失败必须被看见。** `compose_frame` 返回 `False` 表示"源文件缺失或缩放后尺寸退化为 0"——它**不抛异常**，所以"看有没有报错"发现不了。三个导出方法都不许忽略这个返回值，必须经 `_compose_into_canvas()` 记进 `errors`：
 - **`errors` 是可选出参**（`Optional[List[ExportError]] = None`），不传则行为与加该参数前完全一致 —— `transform_baseline.py` 与 `verify_image_cache.py` 都还在不传参地调用，别把它改成必填。
 - **缺帧不产出的具体形态，两种产物刻意相反**：PNG 序列**不写**该文件（写空图会让用户以为素材本来就是空的）；精灵表**留空但占位**（否则后续帧整体错位）；GIF **不 append**（补空白帧会同时改变动画时长与节奏）。
 - **整批失败（一帧都没渲染出来）必须抛 `ExportFailedError`** —— 只有 GIF 会这样。静默返回会让调用方接着弹"导出完成"而磁盘上没有产物。
@@ -158,34 +160,27 @@ python dev/transform_baseline.py --compare    # 改动后：MAIN_DIGEST 必须�
 `transform_baseline.py` 用一个夹具工程（旋转、镜像、裁切、失真、奇偶源图尺寸）跑 PNG 序列/精灵表/GIF 导出、canvas 普通与栅格化两条路径、属性面板单选与多选预览，再对输出取哈希。其 `EDGE` 组把 `aspect_ratio == 0` **隔离到子进程**——归一之前该用例会 abort 整个进程（PyQt6 把 `paintEvent` 内未捕获异常升级为 `abort()`，实测退出码 `0xC0000409`）。
 
 ### Timeline — design (`src/ui/timeline*.py`)
-The timeline is a **model/view system**: `TimelineModel` owns the frame list and is the sole authority over frame state; `TimelineWidget` (a `QStackedWidget`) hosts two read-only views — `TimelineListView` (tree) and `TimelineGridWidget` (thumbnails) — that share `BaseTimelineView` + `TimelineViewUtils` + a delegate. Every mutation broadcasts a `pyqtSignal` (`selection_changed`, `order_changed`, `files_dropped`, `duplicate_requested`, `reverse_order_requested`, `set_reference_requested`, ...) that `MainWindow` connects to actions. **These uplink signals are declared exactly once** — in `ui/timeline_view_signals.py` (`TimelineViewSignals`); `TimelineWidget`, the list view and the grid view each hold *one instance* exposed as `self.signals`, so `MainWindow` connects to `timeline.signals.<name>`. `TimelineWidget._connect_view_signals` forwards each view's signals up to its own — it is an explicit per-signal list on purpose (see its docstring); adding a signal there is a **second place to edit**, and missing it fails silently, so `dev/verify_timeline_view_sync.py` checks the forwarding list stays complete.
+The timeline is a **model/view system**: `TimelineModel` owns the frame list and is the sole authority over frame state; `TimelineWidget` (a `QStackedWidget`) hosts two read-only views — `TimelineListView` (`QTreeView`) and `TimelineGridWidget` (`QListView`). Every mutation broadcasts a `pyqtSignal` (`selection_changed`, `order_changed`, `files_dropped`, `duplicate_requested`, `reverse_order_requested`, `set_reference_requested`, ...) that `MainWindow` connects to actions. **These uplink signals are declared exactly once** — in `ui/timeline_view_signals.py` (`TimelineViewSignals`); `TimelineWidget`, the list view and the grid view each hold *one instance* exposed as `self.signals`, so `MainWindow` connects to `timeline.signals.<name>`. `TimelineWidget._connect_view_signals` forwards each view's signals up to its own — it is an explicit per-signal list on purpose (see its docstring); adding a signal there is a **second place to edit**, and missing it fails silently, so `dev/verify_timeline_view_sync.py` checks the forwarding list stays complete.
 
-> **两个视图都已迁到 Qt model/view（P1-3，见 `dev/architecture_review.md` 的
-> 「P1-3 实施计划」）。** 第 1 片（顺序归模型）、第 2 片-a（列表）、第 2 片-b（网格）
-> 均已完成，仅剩第 3 片收尾。下面几条已按新状态改写；下文其余旧描述以本节为准。
->
-> **`TimelineListView`（`QTreeView`）与 `TimelineGridWidget`（`QListView`）挂同一个
-> `TimelineItemModel` 实例**（`ui/timeline_item_model.py`），并**共享同一个
-> `QItemSelectionModel`**。两者都**不持有帧数据或顺序** —— 内容由 model 的 `data()`
-> 现算，帧经 `FrameDataRole`（任意列都能取到本行的 `FrameData`）交给 delegate。
->
-> `TimelineModel` **刻意不是** `QAbstractItemModel`：它是一维帧列表，"8 列"与"缩略图"
-> 都只是某种视图的展示形态，把列定义 / 缩略图塞进业务模型会污染导出与存档。适配层
-> 负责把 `TimelineModel` 的语义化信号翻译成 `beginInsertRows` / `dataChanged` /
-> `beginResetModel`。
->
-> 两个必须记住的 Qt 事实（都踩过）：
-> - **`setModel()` 同一个实例并不会共享选中** —— `QAbstractItemView.setModel()`
->   会给每个视图各建一个新的 `QItemSelectionModel`。必须显式
->   `grid_view.setSelectionModel(list_view.selectionModel())`。
-> - **选中必须整行生效**（`SelectionFlag.Rows`）。两个视图显示不同列（列表是序号
->   列 0、网格是文件名列 2），只选中某一列的话，另一个视图按自己的 modelColumn
->   过滤 `selectedIndexes()` 就什么都看不到。
->
-> 后果：`TimelineWidget` 里"事件 → 手工镜像到两个视图"的逻辑**全部消失**；
-> `topLevelItem()` / `selectedItems()` / `setCurrentItem()` /
-> `extract_frame_data_from_item()` 等 item 兼容外壳已删除。外部代码请直接问模型，
-> 或按行操作（`TimelineWidget.setCurrentRow`）。
+**两个视图挂同一个 `TimelineItemModel` 实例**（`ui/timeline_item_model.py`），
+并**共享同一个 `QItemSelectionModel`**。两者都**不持有帧数据或顺序** —— 内容由
+model 的 `data()` 现算，帧经 `FrameDataRole`（任意列都能取到本行的 `FrameData`）
+交给 delegate。
+
+`TimelineModel` **刻意不是** `QAbstractItemModel`：它是一维帧列表，"8 列"与"缩略图"
+都只是某种视图的展示形态，把列定义 / 缩略图塞进业务模型会污染导出与存档。适配层
+负责把 `TimelineModel` 的语义化信号翻译成 `beginInsertRows` / `dataChanged` /
+`beginResetModel`。
+
+两个必须记住的 Qt 事实（都踩过）：
+- **`setModel()` 同一个实例并不会共享选中** —— `QAbstractItemView.setModel()`
+  会给每个视图各建一个新的 `QItemSelectionModel`。必须显式
+  `grid_view.setSelectionModel(list_view.selectionModel())`。
+- **选中必须整行生效**（`SelectionFlag.Rows`）。两个视图显示不同列（列表是序号
+  列 0、网格是文件名列 2），只选中某一列的话，另一个视图按自己的 modelColumn
+  过滤 `selectedIndexes()` 就什么都看不到。
+
+外部代码请直接问模型，或按行操作（`TimelineWidget.setCurrentRow`）。
 
 **Design tenet — one fact, one truth, one write-path, read-only views.** Any per-frame state is *business data owned by the model*, never copied into the view. The model is the single write-path and broadcasts change via a signal; list & grid views are read-only consumers that render straight from the model and repaint on that signal. This keeps both views always consistent and makes any new batch/conditional operation just a loop over the model. Concretely, this philosophy shapes every sub-feature:
 
@@ -278,8 +273,8 @@ Singleton `I18nManager` (`i18n`) loaded from `en_US.json` / `zh_CN.json`. Call `
     - `timeline_list.py` 的 `_DisableColumnDelegate`（"禁用"列：它会铺满整格，
       把选中背景整块盖掉）。
   三个必须记住的约束（违反就是 bug，且都真实踩过）：
-    - **QSS 选择器要写 `QTreeView, QListView`**。两个视图在 P1-3 已从
-      `QTreeWidget`/`QListWidget` 迁成 `QTreeView`/`QListView`。QSS 的 Type
+    - **QSS 选择器要写 `QTreeView, QListView`**。两个视图是 `QTreeView` /
+      `QListView`。QSS 的 Type
       Selector 只匹配"该类及其子类"，写 `QTreeWidget` 匹配的是它的**子类**，
       反过来不成立 —— 规则一次都不会生效，选中色随即退回平台调色板（Windows 上
       就是用户可自定义的系统强调色）。这正是"多选看不清哪帧被选中"的根因。

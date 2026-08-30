@@ -134,7 +134,7 @@ def test_rebuild_selection_list_active():
 
 
 # ---------------------------------------------------------------------------
-# P1-3 第 1 片：模型成为顺序的唯一权威（TimelineModel.move_frames）
+# 模型是顺序的唯一权威（TimelineModel.move_frames）
 # ---------------------------------------------------------------------------
 def _names(frames):
     return [f.file_path.rsplit(os.sep, 1)[-1] for f in frames]
@@ -564,7 +564,7 @@ def test_views_follow_model_without_manual_refresh():
 
 
 # ---------------------------------------------------------------------------
-# P1-3 第 3 片：set_frames（撤销恢复走这条路）
+# set_frames（撤销恢复走这条路）
 # ---------------------------------------------------------------------------
 def test_set_frames_emits_single_signal():
     """`set_frames` 只发**一条**信号，而不是 clear() + 逐帧 add_frame 的 N+1 条。
@@ -618,12 +618,12 @@ def test_set_frames_drops_stale_selection_and_reference():
 
 
 # ---------------------------------------------------------------------------
-# P1-3 第 2 片-b：两个视图共享同一个 QItemSelectionModel
+# 两个视图共享同一个 QItemSelectionModel
 # ---------------------------------------------------------------------------
 def test_both_views_share_selection_model():
     """两个视图必须共享**同一个** `QItemSelectionModel` —— 选中只有一份。
 
-    这是 P1-3 最大的一条收益，但也是最容易"以为做到了其实没有"的一条：
+    这是最容易"以为做到了其实没有"的一条：
     **两个视图 `setModel()` 同一个 model 实例，并不会共享选中** —— Qt 的
     `QAbstractItemView.setModel()` 会给每个视图各建一个新的 QItemSelectionModel。
     必须显式 `grid_view.setSelectionModel(list_view.selectionModel())`。

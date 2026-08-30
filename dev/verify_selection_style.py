@@ -319,7 +319,7 @@ def test_qss_targets_the_actual_view_classes():
     qss = QApplication.instance().styleSheet()
 
     assert "QTreeWidget" not in qss, \
-        "QSS 里仍有 QTreeWidget 规则 —— 仓库中已无 QTreeWidget 实例（P1-3 已迁到 " \
+        "QSS 里仍有 QTreeWidget 规则 —— 仓库中已无 QTreeWidget 实例（两个视图都是 " \
         "QTreeView/QListView），这类规则永远匹配不到，是死代码"
     for cls in ("QTreeView", "QListView"):
         assert f"{cls}::item:selected" in qss, \

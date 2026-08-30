@@ -5,8 +5,8 @@
 用脚本按行提取的，不是手工重录。把 QSS 留在
 `apply_theme` 里，`main_window.py` 就凭空多出近 300 行**纯字面量**：它既没有控制
 流、也不参与任何计算，却让那个文件的行数指标看起来像"上帝对象"，从而误导后来者
-去拆其实并不复杂的方法（评审 P2-5 实测过：`apply_theme` 331 行里 87% 是 QSS 字面
-量，拆类是错的工具）。
+去拆其实并不复杂的方法 —— 搬运当时 `apply_theme` 有 331 行、其中 87% 是 QSS 字面
+量（现已落在本文件，那里只剩 26 行控制流），拆类是错的工具。
 
 留在 `main_window.py` 里的只有取用与刷新那一小段控制流。
 
@@ -34,10 +34,9 @@ from ui.timeline_selection_style import apply_to_qss
 # 时间轴视图那两条规则的说明（**刻意写在字符串外面**，理由见模块 docstring）：
 #
 # 选择器必须是 `QTreeView, QListView`：QSS 的 Type Selector 只匹配"该类及其子类"，
-# 而这两个视图是 P1-3 从 QTreeWidget/QListWidget 迁过来的，基类就是
-# QTreeView/QListView。写 `QTreeWidget` 匹配的是它的**子类**，反过来不成立，规则
-# 一次都不会生效 —— 选中色于是全交给平台调色板，Windows 上取决于用户自定义的
-# 系统强调色，表现为"多选时看不清哪帧被选中"。
+# 而这两个视图的基类正是 QTreeView/QListView。写 `QTreeWidget` 匹配的是它的
+# **子类**，反过来不成立，规则一次都不会生效 —— 选中色于是全交给平台调色板，
+# Windows 上取决于用户自定义的系统强调色，表现为"多选时看不清哪帧被选中"。
 #
 # `@SELECTED_BG@` / `@SELECTED_FG@` 是占位符，由下面的 `stylesheet_for()` 经
 # `apply_to_qss()` 换成 `ui.timeline_selection_style.py` 的真值。网格底部文字条由

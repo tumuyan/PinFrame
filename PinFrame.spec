@@ -21,7 +21,7 @@ def update_version_info():
 
     build_date = datetime.datetime.now(datetime.timezone.utc).isoformat(timespec='minutes')
     
-    # 写 `version.py`（P3-9）：该文件**不入库**（见 .gitignore），只在打包时生成，
+    # 写 `version.py`：该文件**不入库**（见 .gitignore），只在打包时生成，
     # 故每次构建重写它不会再污染工作区。开发态没有它 —— `main_window` 的导入是
     # **容错**的（缺文件时回落到运行时 git describe / 内置默认 URL）。
     #

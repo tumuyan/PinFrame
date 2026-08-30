@@ -6,9 +6,8 @@
 为什么是「持有一个 QObject 实例」而不是基类 / mixin
 ------------------------------------------------
 
-评审（`dev/architecture_review.md` P1-3）把根因归结为「`BaseTimelineView` 不是
-QObject，无法声明信号」，最直觉的修法自然是造一个声明信号的**基类**让两个视图
-继承，让声明只剩一份。这条路在 PyQt6 里走不通，有两个独立的障碍：
+最直觉的修法自然是造一个声明信号的**基类**让两个视图继承，让声明只剩一份。
+这条路在 PyQt6 里走不通，有两个独立的障碍：
 
 1. **QObject 不能多继承。** 两个视图已经是 `QTreeView` / `QListView`。若本类
    继承 `QObject`，`class TimelineListView(TimelineViewSignals, QTreeView)` 就是

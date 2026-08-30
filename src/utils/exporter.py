@@ -29,8 +29,8 @@ class SourceImageCache:
     """导出期生命周期的源图缓存：`{path: PIL.Image}`。
 
     `compose_frame` 原本对每一帧都 `Image.open(path).convert("RGBA")` —— 精灵表工程
-    里几百帧共用同一张源图，于是同一文件被完整解码几百遍（P2-7 第 4 点）。这里按
-    路径缓存**解码后、未裁切**的原图。
+    里几百帧共用同一张源图，于是同一文件被完整解码几百遍。这里按路径缓存
+    **解码后、未裁切**的原图。
 
     缓存未裁切的原图是安全的：`compose_frame` 随后对它做的 crop / resize /
     transpose / rotate **一律返回新对象**，PIL 从不在原地修改图像，所以多帧共享
@@ -502,7 +502,7 @@ class Exporter:
             )
             export_debug(f"[Export] GIF saved: {output_path}, {len(pil_frames)} frames, duration={duration}ms")
         else:
-            # 一帧都没渲染出来：这是整批失败，不是部分成功。此前只是 print，调用方
-            # 随后照样弹"导出完成"，而磁盘上根本没有这个文件（P3-11）。
+            # 一帧都没渲染出来：这是整批失败，不是部分成功。必须抛，否则调用方
+            # 会接着弹"导出完成"，而磁盘上根本没有这个文件。
             export_debug(f"[Export] GIF export failed: no frames rendered for {output_path}")
             raise ExportFailedError(list(errors) if errors is not None else [])
