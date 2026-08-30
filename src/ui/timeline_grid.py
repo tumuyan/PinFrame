@@ -1,9 +1,10 @@
 from PyQt6.QtWidgets import QListView, QAbstractItemView, QMenu
-from PyQt6.QtCore import Qt, pyqtSignal, QSize, QTimer, QItemSelectionModel, QMimeData
+from PyQt6.QtCore import Qt, QSize, QTimer, QItemSelectionModel, QMimeData
 from PyQt6.QtGui import QColor, QImage, QPixmap, QPainter, QPen, QAction, QDrag
 from i18n.manager import i18n
 from ui.timeline_grid_delegate import TimelineGridDelegate
 from ui.timeline_item_model import COL_FILENAME, TimelineItemModel
+from ui.timeline_view_signals import TimelineViewSignals
 from model.project_data import FrameData
 from typing import List, Optional
 import os
@@ -22,30 +23,13 @@ class TimelineGridWidget(QListView):
     帧数据挂在 `QListWidgetItem` 的 UserRole 上。
     """
 
-    selection_changed = pyqtSignal(list)
-    order_changed = pyqtSignal()
-    # 顺序变更前发出（拖拽已算出目标位置、尚未调用 model.move_frames）。
-    # 撤销快照必须在改模型之前捕获，否则快照到的就是新顺序。
-    reorder_about_to_happen = pyqtSignal()
-    files_dropped = pyqtSignal(list, int)
-    copy_properties_requested = pyqtSignal()
-    paste_properties_requested = pyqtSignal()
-    duplicate_requested = pyqtSignal()
-    duplicate_dialog_requested = pyqtSignal()
-    remove_requested = pyqtSignal()
-    disabled_state_changed = pyqtSignal(object, bool)
-    enable_requested = pyqtSignal(bool)
-    reverse_order_requested = pyqtSignal()
-    integerize_offset_requested = pyqtSignal()
-    smooth_params_requested = pyqtSignal()
-    set_reference_requested = pyqtSignal()
-    clear_reference_requested = pyqtSignal()
-    edit_default_editor_requested = pyqtSignal()
-    edit_in_editor_requested = pyqtSignal(object)  # 编辑器 dict（{name, path, default}）
-    thumbnail_size_changed = pyqtSignal(int, int)  # width, height
-
     def __init__(self, parent=None):
         super().__init__(parent)
+
+        # 上行动作通知（右键菜单 / 拖拽 / 选中 / 缩略图尺寸）。声明在
+        # `ui.timeline_view_signals` —— 与列表视图、`TimelineWidget` 共用同一份，
+        # 只声明一遍。
+        self.signals = TimelineViewSignals(self)
 
         # View mode settings
         self.thumbnail_width = 120
@@ -113,7 +97,7 @@ class TimelineGridWidget(QListView):
         self.thumbnail_height = height
         self.update_item_size()
         self.refresh_all_items()
-        self.thumbnail_size_changed.emit(width, height)
+        self.signals.thumbnail_size_changed.emit(width, height)
     
     def set_show_multiline(self, multiline):
         """Set whether to show multiline filename"""
@@ -349,7 +333,7 @@ class TimelineGridWidget(QListView):
     def _emit_selection_changed(self):
         if self._selection_blocked:
             return
-        self.selection_changed.emit(self.get_selected_frames())
+        self.signals.selection_changed.emit(self.get_selected_frames())
 
     def _apply_selection_from_set(self, selected_indices_set: set):
         """Apply selection from a set of row indices.
@@ -605,7 +589,7 @@ class TimelineGridWidget(QListView):
             final_index = drop_row + 1 if drop_row >= 0 else -1
 
             event.accept()
-            self.files_dropped.emit(links, final_index)
+            self.signals.files_dropped.emit(links, final_index)
         else:
             # 内部重排：完全受控，保证原有先后顺序且绝不丢帧
             selected_indices = sorted(getattr(self, '_dragged_rows', None)
@@ -645,7 +629,7 @@ class TimelineGridWidget(QListView):
                 return
 
             # 快照必须在改模型之前捕获（MainWindow 连这个信号做撤销记录）
-            self.reorder_about_to_happen.emit()
+            self.signals.reorder_about_to_happen.emit()
             if not model.move_frames(selected_indices, insert_index):
                 self._clear_drag_state()
                 event.ignore()
@@ -653,7 +637,7 @@ class TimelineGridWidget(QListView):
 
             event.accept()
             self._clear_drag_state()
-            self.order_changed.emit()
+            self.signals.order_changed.emit()
 
     def _clear_drag_state(self):
         """Clear drag state"""
@@ -716,42 +700,42 @@ class TimelineGridWidget(QListView):
         has_selection = selected_count > 0
 
         copy_action = QAction(i18n.t("action_copy_props"), self)
-        copy_action.triggered.connect(self.copy_properties_requested.emit)
+        copy_action.triggered.connect(self.signals.copy_properties_requested.emit)
         copy_action.setEnabled(has_selection)
 
         paste_action = QAction(i18n.t("action_paste_props"), self)
-        paste_action.triggered.connect(self.paste_properties_requested.emit)
+        paste_action.triggered.connect(self.signals.paste_properties_requested.emit)
 
         dup_action = QAction(i18n.t("action_dup_frame"), self)
-        dup_action.triggered.connect(self.duplicate_requested.emit)
+        dup_action.triggered.connect(self.signals.duplicate_requested.emit)
         dup_action.setEnabled(has_selection)
 
         dup_dialog_action = QAction(i18n.t("action_dup_frames_dialog"), self)
-        dup_dialog_action.triggered.connect(self.duplicate_dialog_requested.emit)
+        dup_dialog_action.triggered.connect(self.signals.duplicate_dialog_requested.emit)
         dup_dialog_action.setEnabled(has_selection)
 
         rem_action = QAction(i18n.t("action_rem_frame"), self)
-        rem_action.triggered.connect(self.remove_requested.emit)
+        rem_action.triggered.connect(self.signals.remove_requested.emit)
         rem_action.setEnabled(has_selection)
 
         disable_action = QAction(i18n.t("disable_frame_label", "Disable Frame(s)"), self)
-        disable_action.triggered.connect(lambda: self.enable_requested.emit(False))
+        disable_action.triggered.connect(lambda: self.signals.enable_requested.emit(False))
         disable_action.setEnabled(has_selection)
 
         enable_action = QAction(i18n.t("enable_frame_label", "Enable Frame(s)"), self)
-        enable_action.triggered.connect(lambda: self.enable_requested.emit(True))
+        enable_action.triggered.connect(lambda: self.signals.enable_requested.emit(True))
         enable_action.setEnabled(has_selection)
 
         reverse_action = QAction(i18n.t("action_reverse_order"), self)
-        reverse_action.triggered.connect(self.reverse_order_requested.emit)
+        reverse_action.triggered.connect(self.signals.reverse_order_requested.emit)
         reverse_action.setEnabled(selected_count > 1)
 
         int_action = QAction(i18n.t("action_integerize"), self)
-        int_action.triggered.connect(self.integerize_offset_requested.emit)
+        int_action.triggered.connect(self.signals.integerize_offset_requested.emit)
         int_action.setEnabled(has_selection)
 
         smooth_action = QAction(i18n.t("action_smooth_params"), self)
-        smooth_action.triggered.connect(self.smooth_params_requested.emit)
+        smooth_action.triggered.connect(self.signals.smooth_params_requested.emit)
         smooth_action.setEnabled(selected_count > 1)
 
         menu.addAction(copy_action)
@@ -766,11 +750,11 @@ class TimelineGridWidget(QListView):
         menu.addSeparator()
 
         ref_action = QAction(i18n.t("action_set_reference"), self)
-        ref_action.triggered.connect(self.set_reference_requested.emit)
+        ref_action.triggered.connect(self.signals.set_reference_requested.emit)
         ref_action.setEnabled(selected_count == 1)
 
         clear_ref_action = QAction(i18n.t("action_clear_reference"), self)
-        clear_ref_action.triggered.connect(self.clear_reference_requested.emit)
+        clear_ref_action.triggered.connect(self.signals.clear_reference_requested.emit)
 
         menu.addAction(ref_action)
         menu.addAction(clear_ref_action)
@@ -784,7 +768,7 @@ class TimelineGridWidget(QListView):
         if has_selection:
             menu.addSeparator()
             default_action = QAction(i18n.t("action_edit_default_editor"), self)
-            default_action.triggered.connect(self.edit_default_editor_requested.emit)
+            default_action.triggered.connect(self.signals.edit_default_editor_requested.emit)
             menu.addAction(default_action)
             if self._editors:
                 editor_menu = menu.addMenu(i18n.t("menu_edit_external_editor"))
@@ -792,7 +776,7 @@ class TimelineGridWidget(QListView):
                     name = ed.get("name") or os.path.basename(ed.get("path") or "")
                     act = editor_menu.addAction(name)
                     act.triggered.connect(
-                        lambda checked=False, ed=ed: self.edit_in_editor_requested.emit(ed))
+                        lambda checked=False, ed=ed: self.signals.edit_in_editor_requested.emit(ed))
             else:
                 default_action.setEnabled(False)
 

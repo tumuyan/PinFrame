@@ -490,7 +490,7 @@ def test_selected_colors_meet_contrast_floor():
         f"选中文字 {SELECTED_FG} 在选中底色 {SELECTED_BG} 上对比度 {c_fg:.2f} " \
         f"低于 {MIN_CONTRAST}"
 
-    # 两个主题的行底色（与 main_window.py 的 QSS 保持一致）
+    # 两个主题的行底色（与 ui/app_theme.py 的 QSS 保持一致）
     for theme, row_bg_hex in (("暗色", "#1E1E1E"), ("亮色", "#FFFFFF")):
         c = _contrast(bg, _hex_to_rgb(row_bg_hex))
         assert c >= MIN_CONTRAST, \
@@ -499,10 +499,22 @@ def test_selected_colors_meet_contrast_floor():
 
 
 def test_single_source_of_truth():
-    """QSS 与 delegate 必须引用同一份常量，不得各自硬编码。"""
-    main_src = open(os.path.join(REPO_ROOT, "src/ui/main_window.py"),
-                    encoding="utf-8").read()
-    for path in ("src/ui/timeline_grid_delegate.py", "src/ui/timeline_list.py"):
+    """QSS 与 delegate 必须引用同一份常量，不得各自硬编码。
+
+    被检查的三个文件就是"会画出选中色"的全部位置：
+
+      - `src/ui/app_theme.py` —— QSS（主题样式表，2026-08-30 从
+        `main_window.apply_theme()` 搬出）。判据原先断言的是 `main_window.py`
+        源码里**包含** "timeline_selection_style" 这个子串 —— 那是条**弱断言**：
+        在注释里提一句也能过。QSS 搬走后 `main_window.py` 已不再引用它，故把
+        守卫对象改为真正写 QSS 的新模块，并统一成与另两个文件相同的 AST 检查
+        （必须真的 import），判据因此变强而不是变弱。
+      - `src/ui/timeline_grid_delegate.py` —— 网格底部文字条（自绘）
+      - `src/ui/timeline_list.py` —— "禁用"列（自绘，会盖掉整行选中色）
+    """
+    for path in ("src/ui/app_theme.py",
+                 "src/ui/timeline_grid_delegate.py",
+                 "src/ui/timeline_list.py"):
         src = open(os.path.join(REPO_ROOT, path), encoding="utf-8").read()
         tree = ast.parse(src)
         imported = set()
@@ -522,9 +534,6 @@ def test_single_source_of_truth():
                     raise AssertionError(
                         f"{path} 仍有硬编码的 QColor(0, 120, 215, ...) "
                         f"（第 {node.lineno} 行）—— 应改用 SELECTED_BG_QCOLOR")
-
-    assert "timeline_selection_style" in main_src, \
-        "main_window.py 没有引用 ui.timeline_selection_style"
 
 
 # ---------------------------------------------------------------------------

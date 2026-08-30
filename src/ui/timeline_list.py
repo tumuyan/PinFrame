@@ -2,13 +2,14 @@ from PyQt6.QtWidgets import (
     QTreeView, QAbstractItemView, QHeaderView, QMenu,
     QStyledItemDelegate, QStyleOptionViewItem, QStyle,
 )
-from PyQt6.QtCore import Qt, pyqtSignal, QTimer, QItemSelectionModel, QModelIndex, QMimeData, QRect
+from PyQt6.QtCore import Qt, QTimer, QItemSelectionModel, QModelIndex, QMimeData, QRect
 from PyQt6.QtGui import QColor, QAction, QDrag, QPixmap, QPainter, QPen
 from i18n.manager import i18n
 from ui.timeline_item_model import (
     TimelineItemModel, FrameDataRole, COL_DISABLED, COL_FILENAME, COLUMN_COUNT,
 )
 from ui.timeline_selection_style import SELECTED_BG_QCOLOR
+from ui.timeline_view_signals import TimelineViewSignals
 from model.project_data import FrameData
 from typing import List, Optional
 import os
@@ -101,29 +102,12 @@ class TimelineListView(QTreeView):
     迁移前它是 `QTreeWidget`，帧数据挂在 `QTreeWidgetItem` 的 `UserRole` 上。
     """
 
-    selection_changed = pyqtSignal(list)
-    order_changed = pyqtSignal()
-    # 顺序变更前发出（拖拽已算出目标位置、尚未调用 model.move_frames）。
-    # 撤销快照必须在改模型之前捕获，否则快照到的就是新顺序。
-    reorder_about_to_happen = pyqtSignal()
-    files_dropped = pyqtSignal(list, int)
-    copy_properties_requested = pyqtSignal()
-    paste_properties_requested = pyqtSignal()
-    duplicate_requested = pyqtSignal()
-    duplicate_dialog_requested = pyqtSignal()
-    remove_requested = pyqtSignal()
-    disabled_state_changed = pyqtSignal(object, bool)
-    enable_requested = pyqtSignal(bool)
-    reverse_order_requested = pyqtSignal()
-    integerize_offset_requested = pyqtSignal()
-    smooth_params_requested = pyqtSignal()
-    set_reference_requested = pyqtSignal()
-    clear_reference_requested = pyqtSignal()
-    edit_default_editor_requested = pyqtSignal()
-    edit_in_editor_requested = pyqtSignal(object)  # 编辑器 dict（{name, path, default}）
-
     def __init__(self, parent=None):
         super().__init__(parent)
+
+        # 上行动作通知（右键菜单 / 拖拽 / 选中）。声明在 `ui.timeline_view_signals`
+        # —— 列表视图、网格视图与 `TimelineWidget` 共用同一份，只声明一遍。
+        self.signals = TimelineViewSignals(self)
 
         self._editors = []
         # 帧数据与顺序的唯一真源（TimelineModel）。由 TimelineWidget 注入
@@ -291,7 +275,7 @@ class TimelineListView(QTreeView):
         """Emit selection changed signal"""
         if self._selection_blocked:
             return
-        self.selection_changed.emit(self.get_selected_frames())
+        self.signals.selection_changed.emit(self.get_selected_frames())
 
     def _apply_selection_from_set(self, selected_indices_set: set):
         """Apply selection from a set of indices.
@@ -416,7 +400,7 @@ class TimelineListView(QTreeView):
                     final_index = -1
 
             event.accept()
-            self.files_dropped.emit(links, final_index)
+            self.signals.files_dropped.emit(links, final_index)
         elif event.mimeData().hasFormat("application/x-pinframe-internal-reorder"):
             # 内部重排：完全受控，保证原有先后顺序
             selected_indices = sorted(getattr(self, '_dragged_rows', None) or self.get_selected_indices())
@@ -455,16 +439,16 @@ class TimelineListView(QTreeView):
                 return
 
             # 快照必须在改模型之前捕获（MainWindow 连这个信号做撤销记录）
-            self.reorder_about_to_happen.emit()
+            self.signals.reorder_about_to_happen.emit()
             if not model.move_frames(selected_indices, insert_index):
                 event.ignore()
                 return
 
             event.accept()
-            self.order_changed.emit()
+            self.signals.order_changed.emit()
         else:
             super().dropEvent(event)
-            self.order_changed.emit()
+            self.signals.order_changed.emit()
 
     def show_context_menu(self, position):
         menu = QMenu()
@@ -474,42 +458,42 @@ class TimelineListView(QTreeView):
         has_selection = selected_count > 0
 
         copy_action = QAction(i18n.t("action_copy_props"), self)
-        copy_action.triggered.connect(self.copy_properties_requested.emit)
+        copy_action.triggered.connect(self.signals.copy_properties_requested.emit)
         copy_action.setEnabled(has_selection)
 
         paste_action = QAction(i18n.t("action_paste_props"), self)
-        paste_action.triggered.connect(self.paste_properties_requested.emit)
+        paste_action.triggered.connect(self.signals.paste_properties_requested.emit)
 
         dup_action = QAction(i18n.t("action_dup_frame"), self)
-        dup_action.triggered.connect(self.duplicate_requested.emit)
+        dup_action.triggered.connect(self.signals.duplicate_requested.emit)
         dup_action.setEnabled(has_selection)
 
         dup_dialog_action = QAction(i18n.t("action_dup_frames_dialog"), self)
-        dup_dialog_action.triggered.connect(self.duplicate_dialog_requested.emit)
+        dup_dialog_action.triggered.connect(self.signals.duplicate_dialog_requested.emit)
         dup_dialog_action.setEnabled(has_selection)
 
         rem_action = QAction(i18n.t("action_rem_frame"), self)
-        rem_action.triggered.connect(self.remove_requested.emit)
+        rem_action.triggered.connect(self.signals.remove_requested.emit)
         rem_action.setEnabled(has_selection)
 
         disable_action = QAction(i18n.t("disable_frame_label", "Disable Frame(s)"), self)
-        disable_action.triggered.connect(lambda: self.enable_requested.emit(False))
+        disable_action.triggered.connect(lambda: self.signals.enable_requested.emit(False))
         disable_action.setEnabled(has_selection)
 
         enable_action = QAction(i18n.t("enable_frame_label", "Enable Frame(s)"), self)
-        enable_action.triggered.connect(lambda: self.enable_requested.emit(True))
+        enable_action.triggered.connect(lambda: self.signals.enable_requested.emit(True))
         enable_action.setEnabled(has_selection)
 
         reverse_action = QAction(i18n.t("action_reverse_order"), self)
-        reverse_action.triggered.connect(self.reverse_order_requested.emit)
+        reverse_action.triggered.connect(self.signals.reverse_order_requested.emit)
         reverse_action.setEnabled(selected_count > 1)
 
         int_action = QAction(i18n.t("action_integerize"), self)
-        int_action.triggered.connect(self.integerize_offset_requested.emit)
+        int_action.triggered.connect(self.signals.integerize_offset_requested.emit)
         int_action.setEnabled(has_selection)
 
         smooth_action = QAction(i18n.t("action_smooth_params"), self)
-        smooth_action.triggered.connect(self.smooth_params_requested.emit)
+        smooth_action.triggered.connect(self.signals.smooth_params_requested.emit)
         smooth_action.setEnabled(selected_count > 1)
 
         menu.addAction(copy_action)
@@ -524,11 +508,11 @@ class TimelineListView(QTreeView):
         menu.addSeparator()
 
         ref_action = QAction(i18n.t("action_set_reference"), self)
-        ref_action.triggered.connect(self.set_reference_requested.emit)
+        ref_action.triggered.connect(self.signals.set_reference_requested.emit)
         ref_action.setEnabled(selected_count == 1)
 
         clear_ref_action = QAction(i18n.t("action_clear_reference"), self)
-        clear_ref_action.triggered.connect(self.clear_reference_requested.emit)
+        clear_ref_action.triggered.connect(self.signals.clear_reference_requested.emit)
 
         menu.addAction(ref_action)
         menu.addAction(clear_ref_action)
@@ -542,7 +526,7 @@ class TimelineListView(QTreeView):
         if has_selection:
             menu.addSeparator()
             default_action = QAction(i18n.t("action_edit_default_editor"), self)
-            default_action.triggered.connect(self.edit_default_editor_requested.emit)
+            default_action.triggered.connect(self.signals.edit_default_editor_requested.emit)
             menu.addAction(default_action)
             if self._editors:
                 editor_menu = menu.addMenu(i18n.t("menu_edit_external_editor"))
@@ -550,7 +534,7 @@ class TimelineListView(QTreeView):
                     name = ed.get("name") or os.path.basename(ed.get("path") or "")
                     act = editor_menu.addAction(name)
                     act.triggered.connect(
-                        lambda checked=False, ed=ed: self.edit_in_editor_requested.emit(ed))
+                        lambda checked=False, ed=ed: self.signals.edit_in_editor_requested.emit(ed))
             else:
                 default_action.setEnabled(False)
 
@@ -585,7 +569,7 @@ class TimelineListView(QTreeView):
                         if model is not None and model.set_frame_disabled(idx, new_is_disabled):
                             # Model 已改真源并触发 dataChanged，视图自动重绘；
                             # 仅转发信号供 MainWindow 记录 undo。
-                            self.disabled_state_changed.emit(frame_data, new_is_disabled)
+                            self.signals.disabled_state_changed.emit(frame_data, new_is_disabled)
                         event.accept()
                         return
         super().mousePressEvent(event)

@@ -158,7 +158,7 @@ python dev/transform_baseline.py --compare    # 改动后：MAIN_DIGEST 必须�
 `transform_baseline.py` 用一个夹具工程（旋转、镜像、裁切、失真、奇偶源图尺寸）跑 PNG 序列/精灵表/GIF 导出、canvas 普通与栅格化两条路径、属性面板单选与多选预览，再对输出取哈希。其 `EDGE` 组把 `aspect_ratio == 0` **隔离到子进程**——归一之前该用例会 abort 整个进程（PyQt6 把 `paintEvent` 内未捕获异常升级为 `abort()`，实测退出码 `0xC0000409`）。
 
 ### Timeline — design (`src/ui/timeline*.py`)
-The timeline is a **model/view system**: `TimelineModel` owns the frame list and is the sole authority over frame state; `TimelineWidget` (a `QStackedWidget`) hosts two read-only views — `TimelineListView` (tree) and `TimelineGridWidget` (thumbnails) — that share `BaseTimelineView` + `TimelineViewUtils` + a delegate. Every mutation broadcasts a `pyqtSignal` (`selection_changed`, `order_changed`, `files_dropped`, `duplicate_requested`, `reverse_order_requested`, `set_reference_requested`, ...) that `MainWindow` connects to actions.
+The timeline is a **model/view system**: `TimelineModel` owns the frame list and is the sole authority over frame state; `TimelineWidget` (a `QStackedWidget`) hosts two read-only views — `TimelineListView` (tree) and `TimelineGridWidget` (thumbnails) — that share `BaseTimelineView` + `TimelineViewUtils` + a delegate. Every mutation broadcasts a `pyqtSignal` (`selection_changed`, `order_changed`, `files_dropped`, `duplicate_requested`, `reverse_order_requested`, `set_reference_requested`, ...) that `MainWindow` connects to actions. **These uplink signals are declared exactly once** — in `ui/timeline_view_signals.py` (`TimelineViewSignals`); `TimelineWidget`, the list view and the grid view each hold *one instance* exposed as `self.signals`, so `MainWindow` connects to `timeline.signals.<name>`. `TimelineWidget._connect_view_signals` forwards each view's signals up to its own — it is an explicit per-signal list on purpose (see its docstring); adding a signal there is a **second place to edit**, and missing it fails silently, so `dev/verify_timeline_view_sync.py` checks the forwarding list stays complete.
 
 > **两个视图都已迁到 Qt model/view（P1-3，见 `dev/architecture_review.md` 的
 > 「P1-3 实施计划」）。** 第 1 片（顺序归模型）、第 2 片-a（列表）、第 2 片-b（网格）
@@ -291,7 +291,8 @@ Singleton `I18nManager` (`i18n`) loaded from `en_US.json` / `zh_CN.json`. Call `
       混成第三种颜色。注意 `QImage` 不做预乘，只看 `getRgb()[:3]` **区分不了**
       alpha=200 与 255，检查时必须单独查 `alpha()`。
   另外 **QSS 里那两个颜色是占位符 `@SELECTED_BG@`/`@SELECTED_FG@`**，由
-  `apply_to_qss()` 在 `apply_theme()` 里替换。不做这步，Qt 解析失败后静默丢弃整条
+  `apply_to_qss()` 在 `ui/app_theme.py::stylesheet_for()` 里替换（`apply_theme()`
+  只负责取用返回值，不参与替换）。不做这步，Qt 解析失败后静默丢弃整条
   规则，选中色又悄悄退回平台值。用占位符而不是 f-string，是因为 QSS 通篇是
   `{}`，整段改 f-string 要转义几百处花括号，必然出错。
 - **写 Qt 事件测试时，`QMimeData` 必须挂在 event 上保持引用**（`event._keep_mime = mime`）。`QDropEvent` 只持有裸指针、不接管所有权，局部变量被 GC 后 `mimeData()` 就是悬空指针 → 进程直接 abort，且没有 Python traceback。

@@ -40,7 +40,7 @@ from ui.raster_settings import RasterizationSettingsDialog
 from ui.canvas_border_settings import CanvasBorderSettingsDialog
 from ui.unused_assets_dialog import UnusedAssetsDialog
 from ui.utils.icon_generator import IconGenerator
-from ui.timeline_selection_style import apply_to_qss
+from ui import app_theme
 from i18n.manager import i18n
 from utils.debug_config import import_debug, layout_debug, DebugConfig
 from utils.exporter import Exporter, ExportError, ExportFailedError
@@ -260,27 +260,27 @@ class MainWindow(QMainWindow):
         # （也不允许）手工 `project.frames = timeline.get_all_frames()`。
         # 绑定只发生在 `_adopt_project` 一处（P2-5 #2）。
         self._adopt_project(self._project)
-        self.timeline.selection_changed.connect(self.on_selection_changed)
-        self.timeline.order_changed.connect(self.on_order_changed)
+        self.timeline.signals.selection_changed.connect(self.on_selection_changed)
+        self.timeline.signals.order_changed.connect(self.on_order_changed)
         # 顺序变更**前**捕获撤销快照。顺序如今是在拖拽当场改模型的（视图只算出
         # 目标位置后调 model.move_frames），等 order_changed 时模型已经是新顺序了。
-        self.timeline.reorder_about_to_happen.connect(self._capture_reorder_snapshot)
-        self.timeline.files_dropped.connect(self.add_files)
-        self.timeline.copy_properties_requested.connect(self.copy_frame_properties)
-        self.timeline.paste_properties_requested.connect(self.paste_frame_properties)
-        self.timeline.duplicate_requested.connect(self.duplicate_frame)
-        self.timeline.duplicate_dialog_requested.connect(self.duplicate_frames_dialog)
-        self.timeline.remove_requested.connect(self.remove_frame)
-        self.timeline.disabled_state_changed.connect(self.on_frame_disabled_state_changed)
-        self.timeline.enable_requested.connect(self.toggle_enable_disable)
-        self.timeline.reverse_order_requested.connect(self.reverse_selected_frames)
-        self.timeline.integerize_offset_requested.connect(self.integerize_selection_offset)
-        self.timeline.smooth_params_requested.connect(self.smooth_params_dialog)
-        self.timeline.set_reference_requested.connect(self.set_reference_frame_from_selection)
-        self.timeline.clear_reference_requested.connect(self.clear_reference_frame)
-        self.timeline.thumbnail_size_changed.connect(self.on_grid_thumbnail_size_changed)
-        self.timeline.edit_default_editor_requested.connect(self._edit_selected_with_default_editor)
-        self.timeline.edit_in_editor_requested.connect(self._edit_selected_with_editor)
+        self.timeline.signals.reorder_about_to_happen.connect(self._capture_reorder_snapshot)
+        self.timeline.signals.files_dropped.connect(self.add_files)
+        self.timeline.signals.copy_properties_requested.connect(self.copy_frame_properties)
+        self.timeline.signals.paste_properties_requested.connect(self.paste_frame_properties)
+        self.timeline.signals.duplicate_requested.connect(self.duplicate_frame)
+        self.timeline.signals.duplicate_dialog_requested.connect(self.duplicate_frames_dialog)
+        self.timeline.signals.remove_requested.connect(self.remove_frame)
+        self.timeline.signals.disabled_state_changed.connect(self.on_frame_disabled_state_changed)
+        self.timeline.signals.enable_requested.connect(self.toggle_enable_disable)
+        self.timeline.signals.reverse_order_requested.connect(self.reverse_selected_frames)
+        self.timeline.signals.integerize_offset_requested.connect(self.integerize_selection_offset)
+        self.timeline.signals.smooth_params_requested.connect(self.smooth_params_dialog)
+        self.timeline.signals.set_reference_requested.connect(self.set_reference_frame_from_selection)
+        self.timeline.signals.clear_reference_requested.connect(self.clear_reference_frame)
+        self.timeline.signals.thumbnail_size_changed.connect(self.on_grid_thumbnail_size_changed)
+        self.timeline.signals.edit_default_editor_requested.connect(self._edit_selected_with_default_editor)
+        self.timeline.signals.edit_in_editor_requested.connect(self._edit_selected_with_editor)
         self._push_editors_to_timeline()
         self.timeline_dock.setWidget(self.timeline)
         self.addDockWidget(Qt.DockWidgetArea.BottomDockWidgetArea, self.timeline_dock)
@@ -506,315 +506,10 @@ class MainWindow(QMainWindow):
         if hasattr(self, 'theme_dark_action'):
             self.theme_dark_action.setChecked(theme_name == "dark")
             self.theme_light_action.setChecked(theme_name == "light")
-        # 样式表里时间轴视图那两条规则的说明（**刻意写在 qss 字符串外面**）：
-        #
-        # 选择器必须是 `QTreeView, QListView`：QSS 的 Type Selector 只匹配"该类及
-        # 其子类"，而这两个视图是 P1-3 从 QTreeWidget/QListWidget 迁过来的，基类
-        # 就是 QTreeView/QListView。写 `QTreeWidget` 匹配的是它的**子类**，反过来
-        # 不成立，规则一次都不会生效 —— 选中色于是全交给平台调色板，Windows 上取
-        # 决于用户自定义的系统强调色，表现为"多选时看不清哪帧被选中"。
-        #
-        # `@SELECTED_BG@` 是占位符，在下面 `apply_to_qss()` 里换成
-        # `ui.timeline_selection_style.py` 的真值。网格底部文字条由 delegate 自绘，
-        # 两边必须同一个值，否则一个选中帧会被切成两种颜色。
-        #
-        # 为什么这些话不能写进 qss 字符串：QSS **只认 `/* */` 注释**，`#` 在那里
-        # 是 ID 选择器（如 `QPushButton#playBtn`）。写成 `# 注释` 会让 Qt 解析失败
-        # 并**中断整个样式表的后续解析**，后面所有规则静默失效（Qt 只在 stderr 打
-        # 一句 "Could not parse stylesheet"，GUI 程序里根本看不见）。这个坑踩过。
-        if theme_name == "dark":
-            qss = """
-                QMainWindow, QDialog, QMessageBox {
-                    background-color: #252526;
-                    color: #CCCCCC;
-                }
-                QWidget {
-                    background-color: #252526;
-                    color: #CCCCCC;
-                }
-                QMainWindow::separator {
-                    background-color: #333333;
-                    width: 4px;
-                    height: 4px;
-                }
-                QMainWindow::separator:hover {
-                    background-color: #007ACC;
-                }
-                QDockWidget {
-                    background-color: #2D2D2D;
-                    color: #CCCCCC;
-                }
-                QDockWidget::title {
-                    background-color: #333333;
-                    padding: 4px;
-                    text-align: center;
-                }
-                QMenuBar {
-                    background-color: #2D2D2D;
-                    color: #CCCCCC;
-                    border-bottom: 1px solid #333;
-                }
-                QMenuBar::item:selected {
-                    background-color: #3E3E3E;
-                }
-                QMenu {
-                    background-color: #2D2D2D;
-                    color: #CCCCCC;
-                    border: 1px solid #454545;
-                }
-                QMenu::item:selected {
-                    background-color: #007ACC;
-                    color: white;
-                }
-                QToolBar {
-                    background-color: #2D2D2D;
-                    border: none;
-                    spacing: 5px;
-                    padding: 3px;
-                }
-                QToolButton {
-                    background-color: transparent;
-                    border: 1px solid transparent;
-                    border-radius: 3px;
-                    padding: 3px;
-                }
-                QToolButton:hover {
-                    background-color: rgba(255, 255, 255, 0.1);
-                    border: 1px solid rgba(255, 255, 255, 0.2);
-                }
-                QStatusBar {
-                    background-color: #007ACC;
-                    color: white;
-                }
-                QPushButton {
-                    background-color: #3E3E42;
-                    color: #CCCCCC;
-                    border: 1px solid #454545;
-                    padding: 4px 8px;
-                    border-radius: 3px;
-                    min-width: 60px;
-                }
-                QRadioButton, QCheckBox {
-                    spacing: 8px;
-                    color: #CCCCCC;
-                }
-                QRadioButton::indicator, QCheckBox::indicator {
-                    width: 16px;
-                    height: 16px;
-                    border: 1px solid #454545;
-                    border-radius: 9px;
-                    background-color: #333333;
-                }
-                QRadioButton::indicator:checked, QCheckBox::indicator:checked {
-                    background-color: #007ACC;
-                    border: 3px solid #454545;
-                    width: 12px;
-                    height: 12px;
-                }
-                QPushButton:hover {
-                    background-color: #4E4E52;
-                    border: 1px solid #007ACC;
-                }
-                QPushButton:pressed {
-                    background-color: #2D2D30;
-                }
-                QPushButton#playBtn:checked {
-                    background-color: #28a745;
-                    color: white;
-                    border: 1px solid #1e7e34;
-                    font-weight: bold;
-                }
-                QPushButton#revPlayBtn:checked {
-                    background-color: #17a2b8;
-                    color: white;
-                    border: 1px solid #117a8b;
-                    font-weight: bold;
-                }
-                QSpinBox, QDoubleSpinBox {
-                    color: #CCCCCC;
-                }
-                QLineEdit {
-                    background-color: #333333;
-                    color: #CCCCCC;
-                    border: 1px solid #454545;
-                    padding: 2px;
-                    selection-background-color: #007ACC;
-                }
-                QHeaderView::section {
-                    background-color: #333333;
-                    color: #CCCCCC;
-                    border: 1px solid #454545;
-                    padding: 4px;
-                }
-                QTreeView, QListView {
-                    background-color: #1E1E1E;
-                    color: #CCCCCC;
-                    border: none;
-                }
-                QTreeView::item:selected, QListView::item:selected {
-                    background-color: @SELECTED_BG@;
-                    color: @SELECTED_FG@;
-                }
-                QGroupBox {
-                    border: 1px solid #454545;
-                    margin-top: 10px;
-                    font-weight: bold;
-                }
-                QGroupBox::title {
-                    subcontrol-origin: margin;
-                    left: 10px;
-                    padding: 0 3px 0 3px;
-                    color: #007ACC;
-                }
-            """
-        # 亮色主题。时间轴两条规则与暗色主题同源，说明见上面 `if` 分支的注释。
-        # 选中色与暗色主题同一个值（理由见 ui/timeline_selection_style.py）：原先
-        # 这里是 `#E5F3FF` 淡蓝底 + 黑字，在白底上对比度仅约 1.1，多选时几乎看不
-        # 出哪些行被选中，故改成实色底 + 白字（4.50）。
-        else:
-            qss = """
-                QMainWindow, QDialog, QMessageBox {
-                    background-color: #F3F3F3;
-                    color: #333333;
-                }
-                QWidget {
-                    background-color: #F3F3F3;
-                    color: #333333;
-                }
-                QMainWindow::separator {
-                    background-color: #CCCCCC;
-                    width: 4px;
-                    height: 4px;
-                }
-                QMainWindow::separator:hover {
-                    background-color: #007ACC;
-                }
-                QDockWidget {
-                    background-color: #E0E0E0;
-                    color: #333333;
-                }
-                QDockWidget::title {
-                    background-color: #D6D6D6;
-                    padding: 4px;
-                }
-                QMenuBar {
-                    background-color: #E0E0E0;
-                    color: #333333;
-                    border-bottom: 1px solid #CCCCCC;
-                }
-                QMenuBar::item:selected {
-                    background-color: #D0D0D0;
-                }
-                QMenu {
-                    background-color: white;
-                    color: #333333;
-                    border: 1px solid #CCCCCC;
-                }
-                QMenu::item:selected {
-                    background-color: #007ACC;
-                    color: white;
-                }
-                QToolBar {
-                    background-color: #E0E0E0;
-                    border: none;
-                    padding: 3px;
-                }
-                QToolButton {
-                    background-color: transparent;
-                    border: 1px solid transparent;
-                    border-radius: 3px;
-                    padding: 3px;
-                }
-                QToolButton:hover {
-                    background-color: rgba(0, 0, 0, 0.05);
-                    border: 1px solid rgba(0, 0, 0, 0.1);
-                }
-                QStatusBar {
-                    background-color: #007ACC;
-                    color: white;
-                }
-                QPushButton {
-                    background-color: #FFFFFF;
-                    color: #333333;
-                    border: 1px solid #CCCCCC;
-                    padding: 4px 8px;
-                    border-radius: 3px;
-                }
-                QRadioButton, QCheckBox {
-                    spacing: 8px;
-                    color: #333333;
-                }
-                QRadioButton::indicator, QCheckBox::indicator {
-                    width: 16px;
-                    height: 16px;
-                    border: 1px solid #CCCCCC;
-                    border-radius: 9px;
-                    background-color: #FFFFFF;
-                }
-                QRadioButton::indicator:checked, QCheckBox::indicator:checked {
-                    background-color: #007ACC;
-                    border: 3px solid #CCCCCC;
-                    width: 12px;
-                    height: 12px;
-                }
-                QPushButton:hover {
-                    background-color: #F0F7FF;
-                    border: 1px solid #007ACC;
-                }
-                QPushButton#playBtn:checked {
-                    background-color: #4CAF50;
-                    color: white;
-                    border: 1px solid #388E3C;
-                    font-weight: bold;
-                }
-                QPushButton#revPlayBtn:checked {
-                    background-color: #03A9F4;
-                    color: white;
-                    border: 1px solid #0288D1;
-                    font-weight: bold;
-                }
-                QSpinBox, QDoubleSpinBox {
-                    color: #333333;
-                }
-                QLineEdit {
-                    background-color: white;
-                    color: #333333;
-                    border: 1px solid #CCCCCC;
-                    padding: 2px;
-                }
-                QHeaderView::section {
-                    background-color: #EAEAEA;
-                    color: #333333;
-                    border: 1px solid #CCCCCC;
-                    padding: 4px;
-                }
-                QTreeView, QListView {
-                    background-color: white;
-                    color: #333333;
-                    border: 1px solid #EEEEEE;
-                }
-                QTreeView::item:selected, QListView::item:selected {
-                    background-color: @SELECTED_BG@;
-                    color: @SELECTED_FG@;
-                }
-                QGroupBox {
-                    border: 1px solid #CCCCCC;
-                    margin-top: 10px;
-                    font-weight: bold;
-                }
-                QGroupBox::title {
-                    subcontrol-origin: margin;
-                    left: 10px;
-                    padding: 0 3px 0 3px;
-                    color: #007ACC;
-                }
-            """
-            
-        # 把选中色占位符替换成 ui/timeline_selection_style.py 里的值。
-        # 不做这步，QSS 里会留着字面的 `@SELECTED_BG@`，Qt 解析失败后**静默丢弃
-        # 整条规则**（只在 stderr 打一句 "Could not parse stylesheet"）—— 于是
-        # 选中色又悄悄退回平台调色板，正是本次要修的现象，而且极难察觉。
-        qss = apply_to_qss(qss)
+
+        # 主题 QSS 是纯数据（近 300 行字面量），已搬到 `ui/app_theme.py`。
+        # 留在这里的只有取用与刷新那一小段控制流。
+        qss = app_theme.stylesheet_for(theme_name)
 
         QApplication.instance().setStyleSheet(qss)
         

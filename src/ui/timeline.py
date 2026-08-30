@@ -1,10 +1,11 @@
 from PyQt6.QtWidgets import QStackedWidget
-from PyQt6.QtCore import Qt, pyqtSignal, QTimer, QItemSelectionModel, QModelIndex
+from PyQt6.QtCore import Qt, QTimer, QItemSelectionModel, QModelIndex
 from i18n.manager import i18n
 from ui.timeline_grid import TimelineGridWidget
 from ui.timeline_list import TimelineListView
 from ui.timeline_model import TimelineModel
 from ui.timeline_item_model import TimelineItemModel
+from ui.timeline_view_signals import TimelineViewSignals
 from model.project_data import FrameData
 from utils.debug_config import timeline_debug
 from typing import List, Optional
@@ -13,30 +14,15 @@ import os
 class TimelineWidget(QStackedWidget):
     """Timeline widget that supports both list and grid views"""
 
-    selection_changed = pyqtSignal(list)
-    order_changed = pyqtSignal()
-    # 顺序变更**前**发出，供 MainWindow 捕获撤销快照。
-    # 顺序现在在信号发出时还没变，等 order_changed 再捕获快照就已经是新的了。
-    reorder_about_to_happen = pyqtSignal()
-    files_dropped = pyqtSignal(list, int)
-    copy_properties_requested = pyqtSignal()
-    paste_properties_requested = pyqtSignal()
-    duplicate_requested = pyqtSignal()
-    duplicate_dialog_requested = pyqtSignal()
-    remove_requested = pyqtSignal()
-    disabled_state_changed = pyqtSignal(object, bool)
-    enable_requested = pyqtSignal(bool)
-    reverse_order_requested = pyqtSignal()
-    integerize_offset_requested = pyqtSignal()
-    smooth_params_requested = pyqtSignal()
-    set_reference_requested = pyqtSignal()
-    clear_reference_requested = pyqtSignal()
-    edit_default_editor_requested = pyqtSignal()
-    edit_in_editor_requested = pyqtSignal(object)  # 编辑器 dict（{name, path, default}）
-    thumbnail_size_changed = pyqtSignal(int, int)  # width, height
+    # 上行动作通知（右键菜单 / 拖拽 / 选中 / 缩略图尺寸）全部挂在 `self.signals`
+    # 上，信号本身声明在 `ui.timeline_view_signals` —— 本类与两个视图共用同一份，
+    # 只声明一遍。对外（`MainWindow`）的连接点相应写成 `timeline.signals.<name>`。
 
     def __init__(self, parent=None):
         super().__init__(parent)
+
+        # 必须在 `_connect_view_signals` 之前创建：那里要把两个视图的信号转发到它。
+        self.signals = TimelineViewSignals(self)
 
         # Create data model
         self.model = TimelineModel()
@@ -96,30 +82,44 @@ class TimelineWidget(QStackedWidget):
         self.grid_view.set_background_mode(self.grid_background_mode)
 
     def _connect_view_signals(self, view, is_grid=False):
-        """Connect common signals from a view to this widget"""
-        view.selection_changed.connect(self._on_view_selection_changed)
-        view.selection_changed.connect(self.selection_changed)
-        view.order_changed.connect(self.order_changed)
-        view.reorder_about_to_happen.connect(self.reorder_about_to_happen)
-        view.files_dropped.connect(self.files_dropped)
-        view.copy_properties_requested.connect(self.copy_properties_requested)
-        view.paste_properties_requested.connect(self.paste_properties_requested)
-        view.duplicate_requested.connect(self.duplicate_requested)
-        view.duplicate_dialog_requested.connect(self.duplicate_dialog_requested)
-        view.remove_requested.connect(self.remove_requested)
-        view.disabled_state_changed.connect(self.disabled_state_changed)
-        view.enable_requested.connect(self.enable_requested)
-        view.reverse_order_requested.connect(self.reverse_order_requested)
-        view.integerize_offset_requested.connect(self.integerize_offset_requested)
-        view.smooth_params_requested.connect(self.smooth_params_requested)
-        view.set_reference_requested.connect(self.set_reference_requested)
-        view.clear_reference_requested.connect(self.clear_reference_requested)
-        view.edit_default_editor_requested.connect(self.edit_default_editor_requested)
-        view.edit_in_editor_requested.connect(self.edit_in_editor_requested)
+        """Connect common signals from a view to this widget
+
+        逐条转发是**有意的**，不是漏改：视图的 `signals` 与本类的是两个不同实例，
+        Qt 不会自动串联。这里重写成循环会更短，但会把"哪些视图动作能冒到
+        `MainWindow`"这条契约藏进一个字符串列表 —— 拼错不报错，正是
+        `ui/timeline_view_signals.py` 模块 docstring 里明令禁止的做法。
+
+        下面唯一的例外是 `thumbnail_size_changed`：它不直连 `dst`，而是接到
+        `_on_grid_thumbnail_changed`（要先把尺寸记进 `grid_thumbnail_width/height`
+        再 re-emit），且只有网格视图会连 —— 列表视图没有缩略图尺寸这个概念。它是
+        刻意的特例，新增信号时照抄直连那 17 行即可，别套用这个例外。
+        """
+        src = view.signals
+        dst = self.signals
+
+        src.selection_changed.connect(self._on_view_selection_changed)
+        src.selection_changed.connect(dst.selection_changed)
+        src.order_changed.connect(dst.order_changed)
+        src.reorder_about_to_happen.connect(dst.reorder_about_to_happen)
+        src.files_dropped.connect(dst.files_dropped)
+        src.copy_properties_requested.connect(dst.copy_properties_requested)
+        src.paste_properties_requested.connect(dst.paste_properties_requested)
+        src.duplicate_requested.connect(dst.duplicate_requested)
+        src.duplicate_dialog_requested.connect(dst.duplicate_dialog_requested)
+        src.remove_requested.connect(dst.remove_requested)
+        src.disabled_state_changed.connect(dst.disabled_state_changed)
+        src.enable_requested.connect(dst.enable_requested)
+        src.reverse_order_requested.connect(dst.reverse_order_requested)
+        src.integerize_offset_requested.connect(dst.integerize_offset_requested)
+        src.smooth_params_requested.connect(dst.smooth_params_requested)
+        src.set_reference_requested.connect(dst.set_reference_requested)
+        src.clear_reference_requested.connect(dst.clear_reference_requested)
+        src.edit_default_editor_requested.connect(dst.edit_default_editor_requested)
+        src.edit_in_editor_requested.connect(dst.edit_in_editor_requested)
 
         # Grid-specific signal
         if is_grid:
-            view.thumbnail_size_changed.connect(self._on_grid_thumbnail_changed)
+            src.thumbnail_size_changed.connect(self._on_grid_thumbnail_changed)
 
     def set_editors(self, editors):
         """把外部图像编辑器列表推送给两个视图，用于构建右键子菜单。"""
@@ -153,7 +153,7 @@ class TimelineWidget(QStackedWidget):
         """Handle grid thumbnail size change"""
         self.grid_thumbnail_width = width
         self.grid_thumbnail_height = height
-        self.thumbnail_size_changed.emit(width, height)
+        self.signals.thumbnail_size_changed.emit(width, height)
 
     def update_grid_settings(self, width, height, multiline, multiline_label_height, background):
         """Update grid view settings"""

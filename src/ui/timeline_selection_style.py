@@ -5,7 +5,7 @@
 ---------------------------------------------------------------------------
 同一个"选中色"同时被三种**互不相干**的机制使用：
 
-  - `main_window.py` 的 **QSS 字符串** —— 控制列表视图的普通列、网格的图标区；
+  - `ui/app_theme.py` 的 **QSS 字符串** —— 控制列表视图的普通列、网格的图标区；
   - `timeline_grid_delegate.py` 的 **QColor** —— 控制网格底部文字条（它先用
     `CompositionMode_Source` 把 Qt 刚画好的背景清空，再自己填一遍）；
   - `timeline_list.py` 的 `_DisableColumnDelegate` —— 控制"禁用"列（它同样会用
@@ -48,7 +48,8 @@ SELECTED_FG = "#FFFFFF"
 SELECTED_BG_QCOLOR = QColor(SELECTED_BG)
 SELECTED_FG_QCOLOR = QColor(SELECTED_FG)
 
-#: QSS 占位符 —— 在 `main_window.apply_theme()` 里被替换为上面的常量。
+#: QSS 占位符 —— 在 `ui/app_theme.py::stylesheet_for()` 里被替换为上面的常量
+#: （QSS 从 `main_window.apply_theme()` 搬出后，替换点也随之搬走）。
 #:
 #: 为什么用占位符而不是 f-string：QSS 通篇是 `{` `}`，整段改成 f-string 要把
 #: 每一个花括号转义成 `{{` `}}`，几百处手工转义必然出错，且出错后 QSS 静默失效

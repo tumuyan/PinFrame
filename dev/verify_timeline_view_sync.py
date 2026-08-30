@@ -30,7 +30,7 @@ import tempfile
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PyQt6.QtWidgets import QApplication  # noqa: E402
-from PyQt6.QtCore import QMimeData, QPoint, QPointF, Qt, QEvent  # noqa: E402
+from PyQt6.QtCore import QMimeData, QPoint, QPointF, Qt, QEvent, QMetaMethod  # noqa: E402
 from PyQt6.QtGui import QDropEvent, QDrag  # noqa: E402
 from PyQt6.QtTest import QTest  # noqa: E402
 
@@ -39,6 +39,7 @@ sys.path.insert(0, os.path.join(REPO_ROOT, "src"))
 
 from model.project_data import FrameData  # noqa: E402
 from ui.timeline import TimelineWidget  # noqa: E402
+from ui.timeline_view_signals import TimelineViewSignals  # noqa: E402
 
 _TMPDIR = tempfile.mkdtemp(prefix="pinframe_view_sync_")
 app = QApplication(sys.argv)
@@ -381,7 +382,7 @@ def test_click_grid_row_notifies_downstream():
     app.processEvents()
 
     got = []
-    tw.selection_changed.connect(lambda frames: got.append(list(frames)))
+    tw.signals.selection_changed.connect(lambda frames: got.append(list(frames)))
 
     _click_row(tw.grid_view, 2, tw.grid_view.modelColumn())
 
@@ -419,6 +420,91 @@ def test_both_views_agree_on_clicked_row():
     assert tw.list_view.get_selected_indices() == [1]
     assert tw.grid_view.get_selected_indices() == [1], (
         f"网格看不到列表点选的行: {tw.grid_view.get_selected_indices()}")
+
+
+# ---------------------------------------------------------------------------
+# 上行动作信号：声明只有一份，但**转发清单**是第二处必须同步改的地方
+# ---------------------------------------------------------------------------
+# 按 QMetaObject 里的参数类型造 emit 用的占位值。类型名来自 C++ 侧的
+# 归一化签名（`pyqtSignal(list)` → `QVariantList`，`pyqtSignal(object)` →
+# `PyQt_PyObject`），与 Python 注解不是一回事。
+_DUMMY_BY_TYPE = {
+    "QVariantList": [],
+    "PyQt_PyObject": None,
+    "bool": False,
+    "int": 0,
+    "double": 0.0,
+    "QString": "",
+}
+
+
+def _declared_view_signals():
+    """枚举 `TimelineViewSignals` 上声明的全部信号 → {名字: emit 用的占位参数}。"""
+    out = {}
+    meta = TimelineViewSignals.staticMetaObject
+    for i in range(meta.methodOffset(), meta.methodCount()):
+        m = meta.method(i)
+        if m.methodType() != QMetaMethod.MethodType.Signal:
+            continue
+        name = m.name().data().decode()
+        args = []
+        for t in m.parameterTypes():
+            tname = t.data().decode()
+            assert tname in _DUMMY_BY_TYPE, (
+                f"信号 {name} 的参数类型 {tname} 没有占位值 —— 补进 _DUMMY_BY_TYPE，"
+                f"否则这条测试会用一个错误的实参去 emit 它")
+            args.append(_DUMMY_BY_TYPE[tname])
+        out[name] = args
+    return out
+
+
+def test_every_view_signal_reaches_timeline_widget():
+    """视图 `signals` 上的每一条信号，都必须真的冒到 `TimelineWidget.signals`。
+
+    为什么加这条：声明已经收敛到 `ui/timeline_view_signals.py` 一份了（此前是三个
+    文件各抄一遍，加一个右键菜单项要改三个文件），但 `TimelineWidget.
+    _connect_view_signals` 里的**转发清单**是第二个必须同步改动的地方 —— 新加一个
+    信号却忘了在那儿加一行，Python 不报错、也没有任何测试变红，表现只是"右键菜单
+    这一项点了没反应"。这和"用字符串/枚举合并信号"是同一类失败模式，只是位置从
+    声明处搬到了转发处。
+
+    断言落在**行为**上而不是比对名字：真的从视图 emit 一次，看 `TimelineWidget`
+    那侧收不收得到。名字比对挡不住"连了但连错对象"这种情况。
+
+    唯一例外 `thumbnail_size_changed`：它不直连，而是接到
+    `_on_grid_thumbnail_changed`（先把尺寸记进 `grid_thumbnail_width/height` 再
+    re-emit），且只有网格视图会连 —— 列表视图没有缩略图尺寸这个概念。它是刻意的
+    特例，故被显式豁免；**不要**往这个集合里加第二个名字。
+    """
+    tw = TimelineWidget()
+    _fill(tw)
+
+    declared = _declared_view_signals()
+    assert declared, "从 TimelineViewSignals 上枚举不到任何信号 —— 检查方式本身失效了"
+
+    only_grid = {"thumbnail_size_changed"}
+
+    for name, args in sorted(declared.items()):
+        sources = {"grid": tw.grid_view}
+        if name not in only_grid:
+            sources["list"] = tw.list_view
+
+        for who, view in sources.items():
+            got = []
+            dst = getattr(tw.signals, name)
+
+            def _recv(*_a, _got=got):
+                _got.append(True)
+
+            dst.connect(_recv)
+            try:
+                getattr(view.signals, name).emit(*args)
+            finally:
+                dst.disconnect(_recv)
+
+            assert got, (
+                f"{who} 视图的 {name} 没有转发到 TimelineWidget —— "
+                f"`_connect_view_signals` 里漏了一行？")
 
 
 # ---------------------------------------------------------------------------

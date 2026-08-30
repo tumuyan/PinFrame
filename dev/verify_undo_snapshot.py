@@ -724,7 +724,7 @@ def test_playlist_tracks_disable_during_playback():
     with _playing(win):
         f = win.timeline.get_frame_at(1)
         f.is_disabled = True
-        win.timeline.disabled_state_changed.emit(f, True)
+        win.timeline.signals.disabled_state_changed.emit(f, True)
         assert win.timeline.get_frame_at(1).is_disabled, \
             "前置条件失败：帧没被禁用，后续断言会假通过"
 
