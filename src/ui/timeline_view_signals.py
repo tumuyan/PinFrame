@@ -59,3 +59,16 @@ class TimelineViewSignals(QObject):
     edit_default_editor_requested = pyqtSignal()
     edit_in_editor_requested = pyqtSignal(object)  # 编辑器 dict（{name, path, default}）
     thumbnail_size_changed = pyqtSignal(int, int)  # width, height
+    # ---- 按所选帧适配项目分辨率 ----
+    #
+    # 四个独立信号而非一个 `fit_requested(mode)`：模块 docstring 明令禁止用字符串
+    # 或枚举把多个动作合成一个信号 —— 那只是把"多份声明"换成"多份字面量"，
+    # 拼错不报错，比现在更糟。
+    #
+    # 两个"点对点"分开是有实质原因的：帧的两个方向倍率独立（scale 作用于 X、
+    # scale/aspect_ratio 作用于 Y），因此 X/Y 各有自己的 1:1 因子，只有无比例
+    # 失真时才重合 —— 它们不是同一个命令的两个选项，而是两个不同的解。
+    fit_width_pixel_exact_requested = pyqtSignal()
+    fit_height_pixel_exact_requested = pyqtSignal()
+    fit_circumscribed_requested = pyqtSignal()
+    fit_inscribed_requested = pyqtSignal()

@@ -24,20 +24,24 @@ PinFrame (定帧) is a PyQt6 desktop application for previewing, fine-tuning, an
 
 - **Run all automated checks (全量回归):**
   `bash dev/run_all_checks.sh`（退出码 0=全过 / 1=有失败 / 2=前置依赖缺失）。
-  依次跑 13 项：`check_no_duplicate_defs.py` → 语法编译 → `test_transform.py` →
+  依次跑 14 项：`check_no_duplicate_defs.py` → 语法编译 → `test_transform.py` →
   `transform_baseline.py --compare` → `verify_timeline_view_sync.py` →
   `verify_grid_view.py` → `smoke_reorder.py` → `smoke_reference_frame.py` →
   `verify_selection_style.py` → `verify_undo_snapshot.py` → `verify_image_cache.py`
-  → `verify_project_ownership.py` → `verify_export_errors.py`。
+  → `verify_project_ownership.py` → `verify_export_errors.py` →
+  `verify_fit_resolution.py`。
   `--verbose` 实时回显完整输出，`--fail-fast` 首败即停。
   **改动触及共享层（`core/transform.py`、`timeline_model.py`、`timeline_item_model.py`、
   `project_data.py`）或打包发布前，必须跑全量**；只动某个对话框/i18n 键时可只跑定向项。
 
 - **Run a single test script:**
-  `python dev/test_transform.py`（37 个 `core.transform` + 时间轴模型信号契约单测，纯 assert，无需 pytest）；
+  `python dev/test_transform.py`（55 个 `core.transform` + 时间轴模型信号契约单测，纯 assert，无需 pytest）；
   `python dev/transform_baseline.py [--compare]`（所有渲染路径的像素哈希回归）。
   **脚本全绿 ≠ 全覆盖**：右键菜单、外部文件拖入、播放时的选中跟随这三项没有任何
-  自动化覆盖，只能手动验证。
+  自动化覆盖，只能手动验证。不过右键菜单**背后的接线**有覆盖 ——
+  `dev/verify_fit_resolution.py` 断言信号从视图转发到了 `MainWindow` 且命令真的执行了，
+  漏改 `timeline.py:_connect_view_signals` 一行会红；它能挡住"点了没反应"，
+  挡不住"菜单项文案错 / 位置不对"，后者仍需手点。
 
 - **像素基线的正确用法（`transform_baseline.py`）:**
   `dev/tmp_baseline/` 在 `.gitignore` 中，**基线不入库**。所以 `--compare` 比的是
@@ -125,6 +129,23 @@ Two dataclasses form the entire project state:
 - `scaled_size_floor` —— exporter 的 `int()` 截断，**刻意**与 `FrameData.effective_target_size()` 保持一致，使 UI 显示的"目标分辨率"等于导出实际像素尺寸。
 - `composite_origin` —— 变换后位图贴到画布的整数左上角。用 `math.floor`，**不用** `int()`（它在 0 处翻转取整方向，帧移出左/上边缘时平移动画会顿跳 1px），**也不用** `round()`（banker's rounding 与位图宽度的奇偶交替相互干涉，实测把缩放渐变的质心抖动从 0.5px 放大到 1.0px）。
 
+- **算"能装下这一帧的画布"时，用 `rotated_bitmap_size()`，绝不要用 `ceil(frame_aabb(...))`。**
+  后者在实测 1664 个（尺寸 × 角度）组合里有 935 个（56%）**小于** PIL 的实际输出，
+  拿它当画布就会静默裁掉一条边 —— 而 `alpha_composite` 对越界目标是 `crop + paste`、
+  **不报错**，用户只能在导出结果里发现少了一圈像素。差异来自两处：① PIL 是
+  "先给端点取整数边界、再相减"，与"先相减、再取整"差 1px（宽或高为奇数时旋转中心
+  必不在整数格点上）；② PIL 先 `angle % 360` 让 0/90/180/270 走 transpose 捷径，
+  与通用公式不等价（3×8 转 90°：捷径 `(8,3)`、通用 `(9,4)`）。`rotated_bitmap_size()`
+  逐行复刻了 PIL，并把 PIL 实测对照写成了常驻单测（PIL 缺失时自动跳过）。
+  配套的 `circumscribed_size()`（外接，含 position）、`inscribed_size()`（内接，保原
+  宽高比）、`pixel_exact_factors()`（1:1 的 X/Y 两个可逆因子）供时间轴右键菜单的
+  「调整项目分辨率」子菜单使用 —— 注意 X/Y 是两个**不同**的解，因为两个方向的倍率
+  独立（`scale` 与 `scale/aspect_ratio`），只有无比例失真时才重合。
+  **`inscribed_size()` 对应的菜单项当前是隐藏的**（`timeline_context_menu.py` 里
+  `setVisible(False)`）：它固定的是源图宽高比，而源图转 90° 后导出位图已转置，
+  200×100@90° 会算出 (100, 50)、画布只剩 1/4 内容。函数与命令、信号、单测全部保留，
+  修好后删掉那一行 `setVisible` 即可恢复显示。
+
 **几何共用，像素化不共用。** `CanvasWidget` 用连续浮点 `QPainter` 变换；`Exporter.compose_frame` 用 PIL 量化（`int()` 尺寸、`rotate(expand=True)`、LANCZOS/BICUBIC）。预览与导出**不可能**逐像素一致——重采样滤波器不同、导出两遍重采样而预览一遍、预览还叠了 `view_scale`。`dev/export_pipeline_precision.md` 记录了实测数据、为什么"让两者一致"是错的目标，以及真正值得修的部分（分数位置的阶梯抖动、缩放渐变的 ±0.5px 交替）该如何用单次仿射变换解决。
 
 `Exporter` 只有一份变换实现（`compose_frame`），三种导出模式共用：`export_iter`（PNG 序列，带进度的 generator）、`export_sprite_sheet`、`export_gif`。`parse_range_string` 把 `"1,3,5-7,10-"` 转成 0 基下标。
@@ -171,6 +192,12 @@ model 的 `data()` 现算，帧经 `FrameDataRole`（任意列都能取到本行
 都只是某种视图的展示形态，把列定义 / 缩略图塞进业务模型会污染导出与存档。适配层
 负责把 `TimelineModel` 的语义化信号翻译成 `beginInsertRows` / `dataChanged` /
 `beginResetModel`。
+
+**两个视图的右键菜单只有一份构建代码** —— `ui/timeline_context_menu.py` 的
+`build_timeline_context_menu()`。此前列表视图与网格视图各抄了一份（除一行注释外
+逐行相同），而右键菜单**没有任何自动化覆盖**，漏改一处的症状"列表视图有这个命令、
+网格视图没有"只能靠人眼发现。加菜单项时改这一处即可；菜单里每个 QAction 只
+`emit` 一个上行信号，业务逻辑一律放 `MainWindow`。
 
 两个必须记住的 Qt 事实（都踩过）：
 - **`setModel()` 同一个实例并不会共享选中** —— `QAbstractItemView.setModel()`

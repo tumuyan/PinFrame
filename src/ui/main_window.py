@@ -45,6 +45,8 @@ from i18n.manager import i18n
 from utils.debug_config import import_debug, layout_debug, DebugConfig
 from utils.exporter import Exporter, ExportError, ExportFailedError
 from core.history import HistoryManager
+from core.transform import (circumscribed_size, inscribed_size,
+                            pixel_exact_factors)
 
 # ---------------------------------------------------------------------------
 # 构建版本信息
@@ -280,6 +282,10 @@ class MainWindow(QMainWindow):
         self.timeline.signals.thumbnail_size_changed.connect(self.on_grid_thumbnail_size_changed)
         self.timeline.signals.edit_default_editor_requested.connect(self._edit_selected_with_default_editor)
         self.timeline.signals.edit_in_editor_requested.connect(self._edit_selected_with_editor)
+        self.timeline.signals.fit_width_pixel_exact_requested.connect(self.fit_width_pixel_exact)
+        self.timeline.signals.fit_height_pixel_exact_requested.connect(self.fit_height_pixel_exact)
+        self.timeline.signals.fit_circumscribed_requested.connect(self.fit_circumscribed_resolution)
+        self.timeline.signals.fit_inscribed_requested.connect(self.fit_inscribed_resolution)
         self._push_editors_to_timeline()
         self.timeline_dock.setWidget(self.timeline)
         self.addDockWidget(Qt.DockWidgetArea.BottomDockWidgetArea, self.timeline_dock)
@@ -1744,6 +1750,166 @@ class MainWindow(QMainWindow):
                 # Refresh UI
                 self.canvas.update()
                 self.property_panel.update_ui_from_selection()
+
+    # ------------------------------------------------------------------
+    # 按所选帧适配项目分辨率（时间轴右键菜单）
+    # ------------------------------------------------------------------
+    #
+    # 四个命令分两组，与菜单上的括注对应：
+    #   - "（缩放）"：画布 + 所有帧同除以一个因子，构图逐点不变，只有导出的
+    #     像素数变了。X / Y 是两个不同的解，因为两个方向的倍率独立。
+    #   - "（裁剪）"：只改画布尺寸、帧参数一个都不动，超出新画布的部分被切掉。
+    #
+    # 两组都改 `project.width/height`，因此都影响**所有**帧与三种导出模式；
+    # 也都进历史栈，可撤销。这里不做越界警告 —— 被画布裁掉与"在项目设置里
+    # 手动改分辨率"是同一件事，属于用户可预期的后果。
+
+    # 与 SettingsDialog 的 QSpinBox 范围一致（1..16384）
+    _RESOLUTION_RANGE = (1, 16384)
+
+    @classmethod
+    def _clamp_resolution(cls, value) -> int:
+        """把计算出的画布尺寸收敛到合法区间。"""
+        low, high = cls._RESOLUTION_RANGE
+        return max(low, min(high, int(round(value))))
+
+    def _apply_project_resolution(self, new_w: int, new_h: int):
+        """改项目分辨率并同步画布与属性面板（**不**记历史，由调用方记）。
+
+        调用方必须先抓 `before` 快照再调本方法，否则记到的是新状态。
+        """
+        self.project.width = new_w
+        self.project.height = new_h
+        self.canvas.set_project_settings(new_w, new_h)
+        self.property_panel.set_project_info(new_w, new_h)
+        self.mark_dirty()
+        self.canvas.update()
+        self.property_panel.update_ui_from_selection()
+
+    def _fit_resolution_pixel_exact(self, use_width: bool):
+        """按选中第一帧的缩放值等比换算整个工程，使指定方向达到 1:1。
+
+        画布、所有帧的 `scale` 与 `position` **同除以因子 k**：帧的像素尺寸与
+        画布同比变化，故画面构图逐点不变，只有导出的像素数变了。这就是"（缩放）"
+        的含义 —— 与"（裁剪）"那组（只改画布、帧参数不动）相对。
+
+        只用第一帧计算：`get_selected_frames()` 返回的顺序由 `_selected_indices`
+        决定，而它恒为升序，故"第一帧"是时间轴上最靠前的选中帧，与点击顺序无关
+        （确定的）。同序列各帧的 scale 通常相同，因此全选时它们会一起归 1。
+        """
+        selected = self.timeline.get_selected_frames()
+        if not selected:
+            return
+
+        first = selected[0]
+        k_x, k_y = pixel_exact_factors(first.scale, first.aspect_ratio)
+        k = k_x if use_width else k_y
+        if k <= 0:
+            self.statusBar().showMessage(i18n.t("msg_fit_res_zero_scale"), 3000)
+            return
+
+        new_w = self._clamp_resolution(self.project.width / k)
+        new_h = self._clamp_resolution(self.project.height / k)
+        if new_w == self.project.width and new_h == self.project.height:
+            return      # k == 1：该方向已经是 1:1，此命令是空操作
+
+        self._flush_pending_history()
+        before = self._capture_snapshot()
+
+        # project.frames 每次读取都返回新列表，但元素是模型里的**活对象**，
+        # 改它们即作用到模型上（见 ProjectData.frames 的契约）。
+        for f in self.project.frames:
+            f.scale /= k
+            f.position = (f.position[0] / k, f.position[1] / k)
+
+        self._apply_project_resolution(new_w, new_h)
+        self.record_history(
+            i18n.t("hist_fit_res_width_pixel" if use_width
+                   else "hist_fit_res_height_pixel"), before=before)
+        self.statusBar().showMessage(
+            i18n.t("msg_fit_res_applied").format(width=new_w, height=new_h), 3000)
+
+    def fit_width_pixel_exact(self):
+        self._fit_resolution_pixel_exact(use_width=True)
+
+    def fit_height_pixel_exact(self):
+        self._fit_resolution_pixel_exact(use_width=False)
+
+    def _selected_target_sizes(self):
+        """选中帧的「缩放后、旋转前」位图尺寸（与导出位图逐像素一致）。"""
+        return [(f, f.effective_target_size())
+                for f in self.timeline.get_selected_frames()]
+
+    def fit_circumscribed_resolution(self):
+        """把项目分辨率设为选中帧的外接矩形：内容完整保留，不留透明角。
+
+        多选时取**所有选中帧的并集** —— 只用第一帧的话，其余帧会被静默裁掉，
+        而"不裁内容"正是这一项的承诺。`circumscribed_size` 已把 position 计入
+        （位图 + 2·|offset|），故带偏移的帧也不会出界。
+
+        代价是旋转帧的四角会留下透明三角区（要去掉它们用「内接矩形」）。
+        """
+        sizes = self._selected_target_sizes()
+        if not sizes:
+            return
+
+        new_w = new_h = 0
+        for frame, (tw, th) in sizes:
+            if tw <= 0 or th <= 0:
+                continue        # 源图缺失，跳过（它不是"没有帧"，不报错）
+            ox, oy = frame.position
+            cw, ch = circumscribed_size(tw, th, frame.rotation, ox, oy)
+            new_w, new_h = max(new_w, cw), max(new_h, ch)
+
+        if new_w <= 0 or new_h <= 0:
+            self.statusBar().showMessage(i18n.t("msg_fit_res_no_size"), 3000)
+            return
+
+        new_w = self._clamp_resolution(new_w)
+        new_h = self._clamp_resolution(new_h)
+        if new_w == self.project.width and new_h == self.project.height:
+            return
+
+        self._flush_pending_history()
+        before = self._capture_snapshot()
+        self._apply_project_resolution(new_w, new_h)
+        self.record_history(i18n.t("hist_fit_res_circumscribed"), before=before)
+        self.statusBar().showMessage(
+            i18n.t("msg_fit_res_applied").format(width=new_w, height=new_h), 3000)
+
+    def fit_inscribed_resolution(self):
+        """把项目分辨率设为选中第一帧的内接矩形：去掉旋转产生的透明角。
+
+        只用第一帧：内接是"让画布恰好被内容包住"的视觉优化，对多帧取并集在
+        语义上不成立 —— 并集不是任何一个帧的内接矩形。
+
+        这一项**会裁掉内容边缘**：内接矩形完全落在旋转后的倾斜矩形内，若素材
+        本身在边缘有不透明像素，那一圈会被切掉。这正是"（裁剪）"的含义。
+        画布是整数而缩放因子通常是无理数，取整误差会让留白差 ≤ k/2 源像素，
+        但帧本身的像素尺寸不受影响（那才是 1:1 的承诺所在）。
+        """
+        selected = self.timeline.get_selected_frames()
+        if not selected:
+            return
+
+        first = selected[0]
+        tw, th = first.effective_target_size()
+        if tw <= 0 or th <= 0:
+            self.statusBar().showMessage(i18n.t("msg_fit_res_no_size"), 3000)
+            return
+
+        in_w, in_h = inscribed_size(tw, th, first.rotation)
+        new_w = self._clamp_resolution(in_w)
+        new_h = self._clamp_resolution(in_h)
+        if new_w == self.project.width and new_h == self.project.height:
+            return
+
+        self._flush_pending_history()
+        before = self._capture_snapshot()
+        self._apply_project_resolution(new_w, new_h)
+        self.record_history(i18n.t("hist_fit_res_inscribed"), before=before)
+        self.statusBar().showMessage(
+            i18n.t("msg_fit_res_applied").format(width=new_w, height=new_h), 3000)
 
     def import_images(self):
         files, _ = QFileDialog.getOpenFileNames(self, i18n.t("dlg_import_title"), "",

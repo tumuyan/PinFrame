@@ -19,15 +19,17 @@
 """
 import math
 import os
+import random
 import sys
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(REPO_ROOT, "src"))
 
 from core.transform import (apply_to_painter, base_size,  # noqa: E402
-                            composite_origin, frame_aabb,
-                            normalize_aspect_ratio, resolve_frame_geometry,
-                            scaled_size_floor)
+                            circumscribed_size, composite_origin, frame_aabb,
+                            inscribed_size, normalize_aspect_ratio,
+                            pixel_exact_factors, resolve_frame_geometry,
+                            rotated_bitmap_size, scaled_size_floor)
 
 
 class FakeFrame:
@@ -499,6 +501,288 @@ def test_reorder_emits_frames_reordered_not_data_changed():
     m = _filled()
     reordered, data_changed = _record(m, lambda: m.update_frame_data(2))
     assert (reordered, data_changed) == (0, 1), f"内容变更: {(reordered, data_changed)}"
+
+
+# ---------------------------------------------------------------------------
+# 按帧适配画布 —— rotated_bitmap_size / circumscribed_size / inscribed_size
+# ---------------------------------------------------------------------------
+def _pil_rotated_size(w, h, rotation):
+    """用真实 PIL 量一遍导出位图尺寸；PIL 不可用时返回 None（跳过对照）。"""
+    try:
+        from PIL import Image
+    except ImportError:                                   # noqa: BLE001
+        return None
+    # 与 Exporter.compose_frame 完全一致：PIL 的 rotate 正向为逆时针，故传负值
+    return Image.new("RGBA", (w, h)).rotate(
+        -rotation, resample=Image.Resampling.BICUBIC, expand=True).size
+
+
+def _inside_rotated_rect(u, v, w, h, rotation):
+    """内接矩形 u×v 的四角是否都落在「w×h 绕中心旋转 rotation 度」之内。
+
+    判据：把角点逆旋转回未旋转的坐标系，再检查是否落在 [-w/2,w/2]×[-h/2,h/2]。
+    """
+    rad = math.radians(rotation)
+    c, s = math.cos(rad), math.sin(rad)
+    for x, y in ((u / 2, v / 2), (u / 2, -v / 2), (-u / 2, v / 2), (-u / 2, -v / 2)):
+        xr = c * x + s * y
+        yr = -s * x + c * y
+        if abs(xr) > w / 2 + 1e-9 or abs(yr) > h / 2 + 1e-9:
+            return False
+    return True
+
+
+def _x_factor(scale, aspect):
+    """帧在 X 方向的实际倍率（与 resolve_frame_geometry 同一套约定）。"""
+    return abs(scale)
+
+
+def _y_factor(scale, aspect):
+    """帧在 Y 方向的实际倍率。"""
+    return abs(scale / normalize_aspect_ratio(aspect))
+
+
+def test_pixel_exact_factors_x_mode():
+    """除以 k_x 后 X 倍率必须恰好为 1，Y 倍率为 1/|aspect|。"""
+    for scale in (2.0, 0.5, -2.0, 1.0, 3.7):
+        for aspect in (1.0, 2.0, 0.5, -1.0, -2.0):
+            kx, _ky = pixel_exact_factors(scale, aspect)
+            new_scale = scale / kx
+            assert abs(_x_factor(new_scale, aspect) - 1.0) < 1e-12, f"{scale}/{aspect}"
+            assert abs(_y_factor(new_scale, aspect) - 1.0 / abs(aspect)) < 1e-12, \
+                f"{scale}/{aspect}: Y 倍率应为 1/|aspect|"
+
+
+def test_pixel_exact_factors_y_mode():
+    """除以 k_y 后 Y 倍率必须恰好为 1，X 倍率为 |aspect|。"""
+    for scale in (2.0, 0.5, -2.0, 1.0, 3.7):
+        for aspect in (1.0, 2.0, 0.5, -1.0, -2.0):
+            _kx, ky = pixel_exact_factors(scale, aspect)
+            new_scale = scale / ky
+            assert abs(_y_factor(new_scale, aspect) - 1.0) < 1e-12, f"{scale}/{aspect}"
+            assert abs(_x_factor(new_scale, aspect) - abs(aspect)) < 1e-12, \
+                f"{scale}/{aspect}: X 倍率应为 |aspect|"
+
+
+def test_pixel_exact_two_modes_coincide_when_no_distortion():
+    """无比例失真时 X / Y 两个解重合 —— 菜单此时不需要区分两者。
+
+    工程允许失真（aspect_ratio ≠ ±1），两个方向的倍率可以不等，所以才有两种
+    1:1；一旦没有失真，它们就是同一件事。
+    """
+    for scale in (1.0, 2.0, 0.5, -1.0, -3.0):
+        for aspect in (1.0, -1.0):
+            kx, ky = pixel_exact_factors(scale, aspect)
+            assert abs(kx - ky) < 1e-12, f"{scale}/{aspect}: 无失真时两解应重合"
+            new_scale = scale / kx
+            assert abs(_x_factor(new_scale, aspect) - 1.0) < 1e-12
+            assert abs(_y_factor(new_scale, aspect) - 1.0) < 1e-12
+
+
+def test_pixel_exact_factors_preserve_mirror_state():
+    """换算不得改变镜像：因子取绝对值，符号留在 scale / aspect_ratio 上。"""
+    for scale, aspect in ((-2.0, 1.0), (2.0, -1.0), (-2.0, -1.0)):
+        for k in pixel_exact_factors(scale, aspect):
+            new_scale = scale / k
+            assert (new_scale < 0) == (scale < 0), f"scale 符号被翻: {scale}"
+            assert (aspect < 0) == (aspect < 0)
+    # 显式确认：水平镜像（scale<0）换算后仍是水平镜像
+    kx, _ = pixel_exact_factors(-2.0, 1.0)
+    assert -2.0 / kx < 0
+
+
+def test_pixel_exact_roundtrip_is_reversible():
+    """整套换算必须可逆：除以 k 再乘回去，帧参数完全还原、画布只差 ≤1px。
+
+    这正是"构图不变"的严格表述 —— 画布、scale、position 三者同比缩放，
+    画面上任意一点的相对位置都不动。
+
+    **画布无法严格可逆，是架构性的，不是 bug**：画布尺寸是整数，而 k 通常是
+    无理的比例，取整必然丢失亚像素。误差上界是 `k/2` 源像素而非 1px —— 放大
+    （k>1）时画布上那 1px 的取整误差在乘回去时被放大了 k 倍。它只影响"画布比
+    帧多出来的那圈留白"，不影响帧本身的像素尺寸（那才是 1:1 的承诺所在）。
+    scale 与 position 是 float，故严格可逆 —— 断言对它们不设容差。
+    """
+    random.seed(31337)
+    for _ in range(200):
+        scale = random.choice([1.0, 2.0, 0.5, 3.7]) * random.choice([1, -1])
+        aspect = random.choice([1.0, 2.0, 0.5, 4.0]) * random.choice([1, -1])
+        canvas_w, canvas_h = 512, 288
+        pos_x, pos_y = 37.0, -19.0
+
+        kx, ky = pixel_exact_factors(scale, aspect)
+        for k in (kx, ky):
+            new_scale = scale / k
+            new_pos = (pos_x / k, pos_y / k)
+            new_canvas = (round(canvas_w / k), round(canvas_h / k))
+
+            assert new_scale * k == scale, "scale 必须严格可逆"
+            assert (new_pos[0] * k, new_pos[1] * k) == (pos_x, pos_y), \
+                "position 必须严格可逆"
+            assert abs(new_canvas[0] * k - canvas_w) <= k / 2 + 1e-9, \
+                f"画布误差应 ≤k/2，实得 {abs(new_canvas[0] * k - canvas_w)}"
+            assert abs(new_canvas[1] * k - canvas_h) <= k / 2 + 1e-9
+
+
+def test_pixel_exact_factor_zero_is_not_silently_patched():
+    """scale == 0 的帧因子为 0，由调用方判断 —— 这里不兜底成 1.0。"""
+    assert pixel_exact_factors(0.0, 1.0) == (0.0, 0.0)
+
+
+def test_rotated_bitmap_size_matches_pil():
+    """锁死与 PIL `rotate(expand=True)` 的逐像素一致。
+
+    这是本组函数的**存在理由**：画布尺寸一旦小于 PIL 的实际输出，导出时那一圈
+    像素就被 `alpha_composite` 静默裁掉（它不报错），用户只能在结果里发现。
+    """
+    random.seed(20260830)
+    sizes = (1, 2, 3, 8, 9, 64, 65, 100, 101)
+    angles = (0.0, 1.0, 15.0, 30.0, 45.0, 60.0, 89.0, 90.0, -90.0, 120.0,
+              135.0, 180.0, -180.0, 200.0, 270.0, 271.5, 360.0, 450.0, -450.0,
+              -33.3)
+    cases = [(w, h, a) for w in sizes for h in sizes for a in angles]
+    cases += [(random.randint(1, 300), random.randint(1, 300),
+               random.uniform(-720, 720)) for _ in range(300)]
+
+    checked = 0
+    for w, h, a in cases:
+        expected = _pil_rotated_size(w, h, a)
+        if expected is None:
+            return                                        # 无 PIL：跳过
+        got = rotated_bitmap_size(w, h, a)
+        assert got == expected, f"{w}x{h} @{a}: {got} != PIL {expected}"
+        checked += 1
+    assert checked > 0
+
+
+def test_rotated_bitmap_size_special_angles_take_transpose_path():
+    """0/90/180/270 必须走 PIL 的 transpose 捷径，尺寸恰为 (w,h)/(h,w)。
+
+    通用公式在 90° 上会给出 (9,4) 而捷径给 (8,3) —— 差的那 1px 是白白多出来的
+    透明边。既然 90° 是最常见的旋转，这条捷径必须复刻。
+    """
+    assert rotated_bitmap_size(3, 8, 0.0) == (3, 8)
+    assert rotated_bitmap_size(3, 8, 360.0) == (3, 8)
+    assert rotated_bitmap_size(3, 8, 180.0) == (3, 8)
+    assert rotated_bitmap_size(3, 8, -180.0) == (3, 8)
+    assert rotated_bitmap_size(3, 8, 90.0) == (8, 3)
+    assert rotated_bitmap_size(3, 8, -90.0) == (8, 3)
+    assert rotated_bitmap_size(3, 8, 270.0) == (8, 3)
+    assert rotated_bitmap_size(3, 8, 450.0) == (8, 3)     # PIL 先取模，故也走捷径
+
+
+def test_ceil_aabb_is_not_a_safe_canvas_size():
+    """回归：`ceil(frame_aabb(...))` **不能**当画布尺寸，它经常偏小。
+
+    这条测试锁的是"为什么这里不用现成的 frame_aabb"。56% 的用例上 ceil(AABB)
+    小于 PIL 实际输出。差 1 的来源是先相减再取整 vs 先取整再相减。
+    """
+    random.seed(4242)
+    cases = [(w, h, random.uniform(0.0001, 89.9999))
+             for w in (3, 8, 9, 64, 65) for h in (3, 8, 9, 64, 65)
+             for _ in range(4)]
+    smaller = 0
+    for w, h, a in cases:
+        aabb_w = math.ceil(w * abs(math.cos(math.radians(a)))
+                           + h * abs(math.sin(math.radians(a))))
+        aabb_h = math.ceil(w * abs(math.sin(math.radians(a)))
+                           + h * abs(math.cos(math.radians(a))))
+        expected = _pil_rotated_size(w, h, a)
+        if expected is None:
+            return
+        got = rotated_bitmap_size(w, h, a)
+        assert got == expected
+        if (aabb_w, aabb_h) != expected:
+            smaller += 1
+        # 我们给的尺寸永远不该小于 PIL 的实际输出（否则就是裁边）
+        assert got[0] >= expected[0] and got[1] >= expected[1]
+    assert smaller > 0, "若这条不再成立，说明 PIL 改了实现，可以换回 ceil(AABB)"
+
+
+def test_rotated_bitmap_size_degenerate():
+    assert rotated_bitmap_size(0, 8, 45.0) == (0, 0)
+    assert rotated_bitmap_size(8, 0, 45.0) == (0, 0)
+
+
+def test_circumscribed_size_includes_position():
+    """外接矩形必须把 position 算进去，否则带偏移的帧照样出画布。"""
+    # 无偏移、无旋转：恰好等于位图尺寸
+    assert circumscribed_size(64, 32, 0.0) == (64, 32)
+    # 有偏移：两侧各外扩 |offset|
+    assert circumscribed_size(64, 32, 0.0, 10, 0) == (84, 32)
+    assert circumscribed_size(64, 32, 0.0, -10, 0) == (84, 32)   # 方向无关
+    assert circumscribed_size(64, 32, 0.0, 10, -5) == (84, 42)
+    # 分数偏移向上取整，宁可多 1px 也不裁（64.5 -> 65、32.5 -> 33）
+    assert circumscribed_size(64, 32, 0.0, 0.25, 0.25) == (65, 33)
+
+
+def test_circumscribed_size_covers_rotated_bitmap():
+    """不变量：外接尺寸恒不小于导出位图尺寸（position 只会让它变大）。"""
+    random.seed(99)
+    for _ in range(200):
+        w = random.randint(1, 200)
+        h = random.randint(1, 200)
+        a = random.uniform(-360, 360)
+        ox, oy = random.uniform(-50, 50), random.uniform(-50, 50)
+        cw, ch = circumscribed_size(w, h, a, ox, oy)
+        bw, bh = rotated_bitmap_size(w, h, a)
+        assert cw >= bw and ch >= bh, f"{w}x{h}@{a} off=({ox},{oy})"
+
+
+def test_circumscribed_size_degenerate():
+    assert circumscribed_size(0, 8, 45.0, 3, 3) == (0, 0)
+
+
+def test_inscribed_size_zero_rotation_is_identity():
+    """rotation == 0 时结果必须恒等于原尺寸 —— 不能把没旋转的帧改小。"""
+    for w, h in ((64, 32), (1, 1), (3, 8), (8, 3), (65, 65)):
+        assert inscribed_size(w, h, 0.0) == (w, h), f"{w}x{h}"
+    # 360 的整数倍同理
+    assert inscribed_size(64, 32, 360.0) == (64, 32)
+    assert inscribed_size(64, 32, -720.0) == (64, 32)
+
+
+def test_inscribed_size_known_solutions():
+    """与解析解对照。"""
+    # 正方形转 45°：最大内接正方形边长 = 100/√2 ≈ 70.71 -> int 截断 70
+    assert inscribed_size(100, 100, 45.0) == (70, 70)
+    # 90°：8×3 转成 3×8，保 8:3 比例的最大内接是 3×1.125 -> (3, 1)
+    assert inscribed_size(8, 3, 90.0) == (3, 1)
+    # 180° 与不转等价
+    assert inscribed_size(64, 32, 180.0) == (64, 32)
+
+
+def test_inscribed_size_is_actually_inscribed():
+    """不变量：算出的矩形四角必须真的落在旋转后的源矩形内。
+
+    这是内接解唯一真正的正确性判据 —— 前面几条只对了几个解析值，这条覆盖了
+    随机角度。注意用**未归约**的原始角度验证：归约依赖"θ 与 -θ、180°-θ 互为
+    镜像、而内接矩形在镜像下不变"，这条测试顺带把那个论证也锁住了。
+    """
+    random.seed(1234)
+    for _ in range(300):
+        w = random.randint(1, 200)
+        h = random.randint(1, 200)
+        a = random.uniform(-720, 720)
+        u, v = inscribed_size(w, h, a)
+        assert _inside_rotated_rect(u, v, w, h, a), f"{w}x{h}@{a} -> {u}x{v}"
+
+
+def test_inscribed_size_never_exceeds_circumscribed():
+    """不变量：内接 ≤ 外接，且两者在 rotation == 0 时相等。"""
+    random.seed(555)
+    for _ in range(200):
+        w = random.randint(1, 200)
+        h = random.randint(1, 200)
+        a = random.uniform(-360, 360)
+        iw, ih = inscribed_size(w, h, a)
+        cw, ch = circumscribed_size(w, h, a)
+        assert iw <= cw and ih <= ch, f"{w}x{h}@{a}: inscribed {iw}x{ih} > {cw}x{ch}"
+
+
+def test_inscribed_size_degenerate():
+    assert inscribed_size(0, 8, 45.0) == (0, 0)
+    assert inscribed_size(8, 0, 45.0) == (0, 0)
 
 
 # ---------------------------------------------------------------------------

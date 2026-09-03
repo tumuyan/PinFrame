@@ -92,7 +92,7 @@ class TimelineWidget(QStackedWidget):
         下面唯一的例外是 `thumbnail_size_changed`：它不直连 `dst`，而是接到
         `_on_grid_thumbnail_changed`（要先把尺寸记进 `grid_thumbnail_width/height`
         再 re-emit），且只有网格视图会连 —— 列表视图没有缩略图尺寸这个概念。它是
-        刻意的特例，新增信号时照抄直连那 17 行即可，别套用这个例外。
+        刻意的特例，新增信号时照抄直连那 21 行即可，别套用这个例外。
         """
         src = view.signals
         dst = self.signals
@@ -116,6 +116,10 @@ class TimelineWidget(QStackedWidget):
         src.clear_reference_requested.connect(dst.clear_reference_requested)
         src.edit_default_editor_requested.connect(dst.edit_default_editor_requested)
         src.edit_in_editor_requested.connect(dst.edit_in_editor_requested)
+        src.fit_width_pixel_exact_requested.connect(dst.fit_width_pixel_exact_requested)
+        src.fit_height_pixel_exact_requested.connect(dst.fit_height_pixel_exact_requested)
+        src.fit_circumscribed_requested.connect(dst.fit_circumscribed_requested)
+        src.fit_inscribed_requested.connect(dst.fit_inscribed_requested)
 
         # Grid-specific signal
         if is_grid:

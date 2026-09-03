@@ -45,13 +45,16 @@
 #    （configure_reference_settings ×3、update_onion_state ×3）。
 #
 # 5. 第 12 项（ProjectData 持有契约）与第 1 项同族：纯标准库 AST、~0.1s、拦的也是
-#    "跑了也测不到"的那类。它之所以排在倒数第二而非更靠前，**仅仅是为了不给
+#    "跑了也测不到"的那类。它之所以排在靠后而非更靠前，**仅仅是为了不给
 #    2~11 项重新编号** —— 脚本里多处注释按序号指认检查项，重排的收益远小于
-#    改错一处引用带来的风险。第 13 项同理，追加在最末。
+#    改错一处引用带来的风险。第 13、14 项同理，追加在最末。
 #    第 12 项守的是 ProjectData 持有的三条约定（project 只读 / clear 先于 adopt /
 #    无跨层私有访问），其中"次序"那条两种写法的**终态完全相同**，只有 AST 比
 #    行号能拦住。第 13 项守的是"导出失败必须被看见"：素材丢了照样导出完成、且产出
 #    一张全透明空图，这种失败既不报错也不崩溃。
+#    第 14 项守的是"按所选帧适配分辨率"的接线与几何不变量。右键菜单本身没有自动化
+#    覆盖，但它最容易出的错（_connect_view_signals 漏转发一行 → 菜单点了没反应、
+#    且不报任何错）恰恰是可断言的，故单列一项而不是留给手工验证。
 #
 # ---------------------------------------------------------------------------
 # 关于第 3 项的基线语义（重要）
@@ -239,8 +242,8 @@ echo "============================================================"
 FAILED=0
 ABORTED=0
 
-if [ "$ABORTED" -eq 0 ]; then run_check "1/13 重复定义（结构性）"      "$PY" dev/check_no_duplicate_defs.py          || FAILED=1; fi
-if [ "$ABORTED" -eq 0 ]; then run_check "2/13 语法编译 main.py+src"    "$PY" -m compileall -q main.py src            || FAILED=1; fi
+if [ "$ABORTED" -eq 0 ]; then run_check "1/14 重复定义（结构性）"      "$PY" dev/check_no_duplicate_defs.py          || FAILED=1; fi
+if [ "$ABORTED" -eq 0 ]; then run_check "2/14 语法编译 main.py+src"    "$PY" -m compileall -q main.py src            || FAILED=1; fi
 
 # compileall 刚把 pyc 写满了 src/ 与 dev/，3~11 项不清掉就会读这批而非源码。
 # 同样失败即中止。根目录 __pycache__（compileall 为 main.py 生成的）刻意不动：
@@ -250,17 +253,18 @@ if ! purge_bytecode; then
     ABORTED=1
 fi
 
-if [ "$ABORTED" -eq 0 ]; then run_check "3/13 几何与模型单测"          "$PY" dev/test_transform.py                   || FAILED=1; fi
-if [ "$ABORTED" -eq 0 ]; then run_check "4/13 渲染像素哈希 --compare"   "$PY" dev/transform_baseline.py --compare     || FAILED=1; fi
-if [ "$ABORTED" -eq 0 ]; then run_check "5/13 双视图同步与拖拽"         "$PY" dev/verify_timeline_view_sync.py        || FAILED=1; fi
-if [ "$ABORTED" -eq 0 ]; then run_check "6/13 网格视图"                 "$PY" dev/verify_grid_view.py                 || FAILED=1; fi
-if [ "$ABORTED" -eq 0 ]; then run_check "7/13 MainWindow 接线：重排"    "$PY" dev/smoke_reorder.py                    || FAILED=1; fi
-if [ "$ABORTED" -eq 0 ]; then run_check "8/13 MainWindow 接线：参考帧"  "$PY" dev/smoke_reference_frame.py            || FAILED=1; fi
-if [ "$ABORTED" -eq 0 ]; then run_check "9/13 选中配色跨平台一致"       "$PY" dev/verify_selection_style.py           || FAILED=1; fi
-if [ "$ABORTED" -eq 0 ]; then run_check "10/13 撤销快照：增量与共享"    "$PY" dev/verify_undo_snapshot.py             || FAILED=1; fi
-if [ "$ABORTED" -eq 0 ]; then run_check "11/13 图片缓存与导出缓存"      "$PY" dev/verify_image_cache.py               || FAILED=1; fi
-if [ "$ABORTED" -eq 0 ]; then run_check "12/13 ProjectData 持有契约"    "$PY" dev/verify_project_ownership.py         || FAILED=1; fi
-if [ "$ABORTED" -eq 0 ]; then run_check "13/13 导出失败可见化"          "$PY" dev/verify_export_errors.py             || FAILED=1; fi
+if [ "$ABORTED" -eq 0 ]; then run_check "3/14 几何与模型单测"          "$PY" dev/test_transform.py                   || FAILED=1; fi
+if [ "$ABORTED" -eq 0 ]; then run_check "4/14 渲染像素哈希 --compare"   "$PY" dev/transform_baseline.py --compare     || FAILED=1; fi
+if [ "$ABORTED" -eq 0 ]; then run_check "5/14 双视图同步与拖拽"         "$PY" dev/verify_timeline_view_sync.py        || FAILED=1; fi
+if [ "$ABORTED" -eq 0 ]; then run_check "6/14 网格视图"                 "$PY" dev/verify_grid_view.py                 || FAILED=1; fi
+if [ "$ABORTED" -eq 0 ]; then run_check "7/14 MainWindow 接线：重排"    "$PY" dev/smoke_reorder.py                    || FAILED=1; fi
+if [ "$ABORTED" -eq 0 ]; then run_check "8/14 MainWindow 接线：参考帧"  "$PY" dev/smoke_reference_frame.py            || FAILED=1; fi
+if [ "$ABORTED" -eq 0 ]; then run_check "9/14 选中配色跨平台一致"       "$PY" dev/verify_selection_style.py           || FAILED=1; fi
+if [ "$ABORTED" -eq 0 ]; then run_check "10/14 撤销快照：增量与共享"    "$PY" dev/verify_undo_snapshot.py             || FAILED=1; fi
+if [ "$ABORTED" -eq 0 ]; then run_check "11/14 图片缓存与导出缓存"      "$PY" dev/verify_image_cache.py               || FAILED=1; fi
+if [ "$ABORTED" -eq 0 ]; then run_check "12/14 ProjectData 持有契约"    "$PY" dev/verify_project_ownership.py         || FAILED=1; fi
+if [ "$ABORTED" -eq 0 ]; then run_check "13/14 导出失败可见化"          "$PY" dev/verify_export_errors.py             || FAILED=1; fi
+if [ "$ABORTED" -eq 0 ]; then run_check "14/14 适配分辨率：接线与不变量"  "$PY" dev/verify_fit_resolution.py             || FAILED=1; fi
 
 # ---- 基线未改写校验 ---------------------------------------------------------
 BASELINE_AFTER="$("$PY" -c "import hashlib,sys; print(hashlib.md5(open(sys.argv[1],'rb').read()).hexdigest())" "$BASELINE_JSON")"
@@ -346,6 +350,17 @@ if [ "$FAILED" -ne 0 ]; then
     echo "        调用方随后照样弹「导出完成」，而磁盘上没有产物；"
     echo "      · '不传 errors 就崩' → errors 必须是可选出参，"
     echo "        transform_baseline.py 与 verify_image_cache.py 都还在不传参地调用。"
+    echo "  - 若第 14 项失败（适配分辨率）：菜单本身无法自动化，所以这一项锁的是"
+    echo "     接线与几何不变量两个侧面。四个失败各对应一个改动点："
+    echo "      · '信号未转发' → timeline.py 的 _connect_view_signals 漏了一行。"
+    echo "        这是静默失败：菜单点了没反应，不抛异常，只有这一项会红；"
+    echo "      · '目标方向倍率不为 1' → pixel_exact_factors 取错了方向。"
+    echo "        注意 X/Y 是两个不同的解（scale 与 scale/aspect_ratio），"
+    echo "        只有无比例失真时才重合，别用同一个因子；"
+    echo "      · '外接矩形裁了像素' → 又退回用 ceil(frame_aabb(...)) 当画布了。"
+    echo "        PIL 是【先取整端点再相减】，与先相减再取整差 1px，"
+    echo "        且 0/90/180/270 走 transpose 捷径 —— 详见 core/transform.py；"
+    echo "      · '构图变了' → 画布 / scale / position 三者没有同除以同一个因子。"
     echo "  - 若第 11 项失败（缓存）：image_cache.py 与 exporter.py 的"
     echo "     SourceImageCache 都是「字节预算 + LRU」。退回按张数或 FIFO 功能完全正常，"
     echo "     只是内存/性能退化，肉眼几乎看不出来，所以只能靠这一项拦。"

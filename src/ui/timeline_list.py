@@ -8,6 +8,7 @@ from i18n.manager import i18n
 from ui.timeline_item_model import (
     TimelineItemModel, FrameDataRole, COL_DISABLED, COL_FILENAME, COLUMN_COUNT,
 )
+from ui.timeline_context_menu import build_timeline_context_menu
 from ui.timeline_selection_style import SELECTED_BG_QCOLOR
 from ui.timeline_view_signals import TimelineViewSignals
 from model.project_data import FrameData
@@ -451,93 +452,8 @@ class TimelineListView(QTreeView):
             self.signals.order_changed.emit()
 
     def show_context_menu(self, position):
-        menu = QMenu()
-
-        # 扁平列表（rootIsDecorated=False、且 model 无层级），不存在"折叠的子项"
-        selected_count = len(self.get_selected_indices())
-        has_selection = selected_count > 0
-
-        copy_action = QAction(i18n.t("action_copy_props"), self)
-        copy_action.triggered.connect(self.signals.copy_properties_requested.emit)
-        copy_action.setEnabled(has_selection)
-
-        paste_action = QAction(i18n.t("action_paste_props"), self)
-        paste_action.triggered.connect(self.signals.paste_properties_requested.emit)
-
-        dup_action = QAction(i18n.t("action_dup_frame"), self)
-        dup_action.triggered.connect(self.signals.duplicate_requested.emit)
-        dup_action.setEnabled(has_selection)
-
-        dup_dialog_action = QAction(i18n.t("action_dup_frames_dialog"), self)
-        dup_dialog_action.triggered.connect(self.signals.duplicate_dialog_requested.emit)
-        dup_dialog_action.setEnabled(has_selection)
-
-        rem_action = QAction(i18n.t("action_rem_frame"), self)
-        rem_action.triggered.connect(self.signals.remove_requested.emit)
-        rem_action.setEnabled(has_selection)
-
-        disable_action = QAction(i18n.t("disable_frame_label", "Disable Frame(s)"), self)
-        disable_action.triggered.connect(lambda: self.signals.enable_requested.emit(False))
-        disable_action.setEnabled(has_selection)
-
-        enable_action = QAction(i18n.t("enable_frame_label", "Enable Frame(s)"), self)
-        enable_action.triggered.connect(lambda: self.signals.enable_requested.emit(True))
-        enable_action.setEnabled(has_selection)
-
-        reverse_action = QAction(i18n.t("action_reverse_order"), self)
-        reverse_action.triggered.connect(self.signals.reverse_order_requested.emit)
-        reverse_action.setEnabled(selected_count > 1)
-
-        int_action = QAction(i18n.t("action_integerize"), self)
-        int_action.triggered.connect(self.signals.integerize_offset_requested.emit)
-        int_action.setEnabled(has_selection)
-
-        smooth_action = QAction(i18n.t("action_smooth_params"), self)
-        smooth_action.triggered.connect(self.signals.smooth_params_requested.emit)
-        smooth_action.setEnabled(selected_count > 1)
-
-        menu.addAction(copy_action)
-        menu.addAction(paste_action)
-        menu.addSeparator()
-        menu.addAction(int_action)
-        menu.addAction(smooth_action)
-        menu.addSeparator()
-        menu.addAction(disable_action)
-        menu.addAction(enable_action)
-        menu.addAction(reverse_action)
-        menu.addSeparator()
-
-        ref_action = QAction(i18n.t("action_set_reference"), self)
-        ref_action.triggered.connect(self.signals.set_reference_requested.emit)
-        ref_action.setEnabled(selected_count == 1)
-
-        clear_ref_action = QAction(i18n.t("action_clear_reference"), self)
-        clear_ref_action.triggered.connect(self.signals.clear_reference_requested.emit)
-
-        menu.addAction(ref_action)
-        menu.addAction(clear_ref_action)
-        menu.addSeparator()
-
-        menu.addAction(dup_action)
-        menu.addAction(dup_dialog_action)
-        menu.addAction(rem_action)
-
-        # ---- 外部图像编辑器 ----
-        if has_selection:
-            menu.addSeparator()
-            default_action = QAction(i18n.t("action_edit_default_editor"), self)
-            default_action.triggered.connect(self.signals.edit_default_editor_requested.emit)
-            menu.addAction(default_action)
-            if self._editors:
-                editor_menu = menu.addMenu(i18n.t("menu_edit_external_editor"))
-                for ed in self._editors:
-                    name = ed.get("name") or os.path.basename(ed.get("path") or "")
-                    act = editor_menu.addAction(name)
-                    act.triggered.connect(
-                        lambda checked=False, ed=ed: self.signals.edit_in_editor_requested.emit(ed))
-            else:
-                default_action.setEnabled(False)
-
+        menu = build_timeline_context_menu(
+            self, self.signals, len(self.get_selected_indices()), self._editors)
         menu.exec(self.viewport().mapToGlobal(position))
 
     def set_editors(self, editors):
